@@ -1,0 +1,19 @@
+pre-commit:
+  parallel: true
+  jobs:
+    - name: biome
+      run: bun x ultracite fix {staged_files}
+      glob:
+        - "*.js"
+        - "*.jsx"
+        - "*.ts"
+        - "*.tsx"
+        - "*.json"
+        - "*.jsonc"
+        - "*.css"
+      stage_fixed: true
+
+    - name: golangci-lint
+      run: golangci-lint run --fix {staged_files}
+      glob: "apps/cli/**/*.go"
+      stage_fixed: true
