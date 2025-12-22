@@ -13,12 +13,10 @@ var brandingStyle = lipgloss.NewStyle().
 	Foreground(lipgloss.Color("#808080"))
 
 var rootCmd = &cobra.Command{
-	Use:   "detent",
-	Short: "Run GitHub Actions locally with enhanced error reporting",
-	Long: `Detent wraps nektos/act to run GitHub Actions locally while:
-- Injecting continue-on-error to run all steps
-- Extracting and grouping errors by file
-- Providing structured error output for debugging`,
+	Use:     "detent",
+	Short:   "Run GitHub Actions locally with enhanced error reporting",
+	Long:    "Debug GitHub Actions locally with structured error extraction and grouping",
+	Version: Version,
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		fmt.Println(brandingStyle.Render(fmt.Sprintf("Detent v%s", Version)))
 	},
@@ -33,4 +31,9 @@ func init() {
 	rootCmd.AddCommand(checkCmd)
 	rootCmd.AddCommand(validateCmd)
 	rootCmd.AddCommand(injectCmd)
+
+	rootCmd.SetHelpTemplate(fmt.Sprintf(`%s
+{{with (or .Long .Short)}}{{. | trimTrailingWhitespaces}}
+
+{{end}}{{if or .Runnable .HasSubCommands}}{{.UsageString}}{{end}}`, brandingStyle.Render(fmt.Sprintf("Detent v%s", Version))))
 }

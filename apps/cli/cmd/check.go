@@ -6,13 +6,19 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/detent/cli/internal/act"
+	"github.com/detent/cli/internal/docker"
 	internalerrors "github.com/detent/cli/internal/errors"
 	"github.com/detent/cli/internal/output"
 	"github.com/detent/cli/internal/signal"
+	"github.com/detent/cli/internal/tui"
 	"github.com/detent/cli/internal/workflow"
+	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 )
 
@@ -58,49 +64,46 @@ func runCheck(cmd *cobra.Command, args []string) error {
 
 	workflowPath := filepath.Join(absRepoPath, workflowsDir)
 
-	if verbose {
-		_, _ = fmt.Fprintf(os.Stderr, "Repo path: %s\n", absRepoPath)
-		_, _ = fmt.Fprintf(os.Stderr, "Workflows: %s\n", workflowPath)
-	}
-
-	tmpDir, cleanup, err := workflow.PrepareWorkflows(workflowPath)
-	if err != nil {
-		return fmt.Errorf("preparing workflows: %w", err)
-	}
-	defer cleanup()
-
-	if verbose {
-		_, _ = fmt.Fprintf(os.Stderr, "Modified workflows in: %s\n", tmpDir)
-		_, _ = fmt.Fprintf(os.Stderr, "\n> Running workflows with act\n\n")
-	} else {
-		_, _ = fmt.Fprintf(os.Stderr, "Running workflows... ")
-	}
-
-	cfg := &act.RunConfig{
-		WorkflowPath: tmpDir,
-		Event:        event,
-		Verbose:      verbose,
-		WorkDir:      absRepoPath,
-		StreamOutput: verbose,
-	}
-
 	baseCtx := cmd.Context()
 	ctx, cancel := context.WithTimeout(baseCtx, actTimeout)
 	defer cancel()
 
-	result, err := act.Run(ctx, cfg)
+	// Check if we're in a TTY and not in verbose mode (use TUI)
+	useTUI := !verbose && isatty.IsTerminal(os.Stdout.Fd())
+
+	var tmpDir string
+	var cleanup func()
+
+	if useTUI {
+		// Run pre-flight checks with visual feedback
+		tmpDir, cleanup, err = runPreflightChecks(ctx, workflowPath)
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+	} else {
+		// Traditional flow without pre-flight display
+		tmpDir, cleanup, err = workflow.PrepareWorkflows(workflowPath)
+		if err != nil {
+			return fmt.Errorf("preparing workflows: %w", err)
+		}
+		defer cleanup()
+	}
+
+	var result *act.RunResult
+
+	if useTUI {
+		result, err = runWithTUI(ctx, absRepoPath, tmpDir)
+	} else {
+		result, err = runWithoutTUI(ctx, absRepoPath, tmpDir)
+	}
+
 	if err != nil {
 		if errors.Is(ctx.Err(), context.Canceled) {
 			signal.PrintCancellationMessage("check")
 			return nil
 		}
 		return fmt.Errorf("running act: %w", err)
-	}
-
-	if verbose {
-		_, _ = fmt.Fprintf(os.Stderr, "\n> Completed in %s (exit code %d)\n", result.Duration, result.ExitCode)
-	} else {
-		_, _ = fmt.Fprintf(os.Stderr, "done (%s)\n", result.Duration)
 	}
 
 	combinedOutput := result.Stdout + result.Stderr
@@ -118,4 +121,186 @@ func runCheck(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+func runWithTUI(ctx context.Context, repoPath, tmpDir string) (*act.RunResult, error) {
+	model := tui.NewCheckModel()
+	program := tea.NewProgram(&model, tea.WithAltScreen())
+
+	logChan := make(chan string, 100)
+	resultChan := make(chan *act.RunResult, 1)
+	errChan := make(chan error, 1)
+
+	// Start act in a goroutine
+	go func() {
+		cfg := &act.RunConfig{
+			WorkflowPath: tmpDir,
+			Event:        event,
+			Verbose:      false,
+			WorkDir:      repoPath,
+			StreamOutput: false,
+			LogChan:      logChan,
+		}
+
+		result, err := act.Run(ctx, cfg)
+		close(logChan)
+
+		if err != nil {
+			errChan <- err
+			return
+		}
+
+		resultChan <- result
+	}()
+
+	// Start log processor in a goroutine
+	go func() {
+		for line := range logChan {
+			program.Send(tui.LogMsg(line))
+
+			// Parse for progress information
+			if progress := parseActProgress(line); progress != nil {
+				program.Send(*progress)
+			}
+		}
+
+		// Wait for result or error
+		select {
+		case result := <-resultChan:
+			program.Send(tui.DoneMsg{
+				Duration: result.Duration,
+				ExitCode: result.ExitCode,
+			})
+		case err := <-errChan:
+			program.Send(tui.ErrMsg(err))
+		}
+	}()
+
+	if _, err := program.Run(); err != nil {
+		return nil, err
+	}
+
+	// Get the result
+	select {
+	case result := <-resultChan:
+		return result, nil
+	case err := <-errChan:
+		return nil, err
+	default:
+		return nil, fmt.Errorf("no result received")
+	}
+}
+
+func runWithoutTUI(ctx context.Context, repoPath, tmpDir string) (*act.RunResult, error) {
+	if verbose {
+		_, _ = fmt.Fprintf(os.Stderr, "Repo path: %s\n", repoPath)
+		_, _ = fmt.Fprintf(os.Stderr, "Modified workflows in: %s\n", tmpDir)
+		_, _ = fmt.Fprintf(os.Stderr, "\n> Running workflows with act\n\n")
+	} else {
+		_, _ = fmt.Fprintf(os.Stderr, "Running workflows... ")
+	}
+
+	cfg := &act.RunConfig{
+		WorkflowPath: tmpDir,
+		Event:        event,
+		Verbose:      verbose,
+		WorkDir:      repoPath,
+		StreamOutput: verbose,
+	}
+
+	result, err := act.Run(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	if verbose {
+		_, _ = fmt.Fprintf(os.Stderr, "\n> Completed in %s (exit code %d)\n", result.Duration, result.ExitCode)
+	} else {
+		_, _ = fmt.Fprintf(os.Stderr, "done (%s)\n", result.Duration)
+	}
+
+	return result, nil
+}
+
+// parseActProgress extracts progress information from act output
+func parseActProgress(line string) *tui.ProgressMsg {
+	// Pattern: [Job Name/Step Name] or similar
+	// act outputs lines like: "[job-name] 🚀  Start image..."
+	// "[job-name]   ✅  Success - Step Name"
+	// We'll parse these to extract current step info
+
+	// Match job/step patterns
+	jobStepPattern := regexp.MustCompile(`^\[([^\]]+)\]\s+(.+)`)
+	matches := jobStepPattern.FindStringSubmatch(line)
+
+	if len(matches) >= 3 {
+		jobName := matches[1]
+		stepInfo := strings.TrimSpace(matches[2])
+
+		// Clean up step info
+		stepInfo = strings.TrimPrefix(stepInfo, "🚀  ")
+		stepInfo = strings.TrimPrefix(stepInfo, "✅  ")
+		stepInfo = strings.TrimPrefix(stepInfo, "❌  ")
+
+		status := fmt.Sprintf("%s: %s", jobName, stepInfo)
+
+		return &tui.ProgressMsg{
+			Status:      status,
+			CurrentStep: 0,
+			TotalSteps:  0,
+		}
+	}
+
+	return nil
+}
+
+// runPreflightChecks performs and displays pre-flight checks before running act
+func runPreflightChecks(ctx context.Context, workflowPath string) (tmpDir string, cleanup func(), err error) {
+	checks := []string{
+		"Checking Docker availability",
+		"Preparing workflows (injecting continue-on-error)",
+		"Creating temporary workspace",
+	}
+
+	display := tui.NewPreflightDisplay(checks)
+	display.Render()
+
+	// Check 1: Docker availability
+	time.Sleep(200 * time.Millisecond) // Small delay for visual effect
+	display.UpdateCheck("Checking Docker availability", "running", nil)
+	display.Render()
+
+	err = docker.IsAvailable(ctx)
+	if err != nil {
+		display.UpdateCheck("Checking Docker availability", "error", err)
+		display.RenderFinal()
+		return "", nil, fmt.Errorf("docker is not available: %w", err)
+	}
+
+	display.UpdateCheck("Checking Docker availability", "success", nil)
+	display.Render()
+
+	// Check 2: Prepare workflows
+	time.Sleep(100 * time.Millisecond)
+	display.UpdateCheck("Preparing workflows (injecting continue-on-error)", "running", nil)
+	display.Render()
+
+	tmpDir, cleanup, err = workflow.PrepareWorkflows(workflowPath)
+	if err != nil {
+		display.UpdateCheck("Preparing workflows (injecting continue-on-error)", "error", err)
+		display.RenderFinal()
+		return "", nil, fmt.Errorf("preparing workflows: %w", err)
+	}
+
+	display.UpdateCheck("Preparing workflows (injecting continue-on-error)", "success", nil)
+	display.UpdateCheck("Creating temporary workspace", "success", nil)
+	display.Render()
+
+	// Small pause to show all checks passed
+	time.Sleep(300 * time.Millisecond)
+
+	// Add a blank line before TUI starts
+	fmt.Fprintln(os.Stderr)
+
+	return tmpDir, cleanup, nil
 }

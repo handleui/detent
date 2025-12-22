@@ -29,12 +29,11 @@ func FormatText(w io.Writer, grouped *errors.GroupedErrors) {
 	if errorCount > 0 || warningCount > 0 {
 		totalProblems := errorCount + warningCount
 		problemText := fmt.Sprintf("%d problem%s", totalProblems, plural(totalProblems))
-		// Make error count all red, warnings in yellow
-		detailText := fmt.Sprintf("(%s%d error%s, %d warning%s%s)",
+		detailText := fmt.Sprintf("(%s%d error%s, %d warning%s)%s",
 			colorRed, errorCount, plural(errorCount), warningCount, plural(warningCount), colorReset)
 
-		_, _ = fmt.Fprintf(w, "%s✖ %s %s%s\n", colorRed, problemText, detailText, colorReset)
-		_, _ = fmt.Fprintf(w, "%s  Errors logged for AI fix. Run 'detent fix' or re-run after manual changes%s\n\n", colorGray, colorReset)
+		_, _ = fmt.Fprintf(w, "%s> %s✖ %s %s%s\n", colorBold, colorRed, problemText, detailText, colorReset)
+		_, _ = fmt.Fprintf(w, "%s  Run 'detent fix' to auto-fix or fix manually and re-run%s\n\n", colorGray, colorReset)
 	}
 
 	if len(grouped.ByFile) > 0 {
@@ -70,7 +69,7 @@ func FormatText(w io.Writer, grouped *errors.GroupedErrors) {
 	}
 
 	if grouped.Total == 0 {
-		_, _ = fmt.Fprintf(w, "%s✓ No errors found.%s\n", colorGreen, colorReset)
+		_, _ = fmt.Fprintf(w, "%s> %s✓ No problems found%s\n", colorBold, colorGreen, colorReset)
 	}
 }
 

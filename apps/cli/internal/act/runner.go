@@ -1,6 +1,7 @@
 package act
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -20,7 +21,8 @@ type RunConfig struct {
 	Verbose      bool
 	WorkDir      string
 	ActBinary    string
-	StreamOutput bool // If true, stream act output to stderr in real-time
+	StreamOutput bool           // If true, stream act output to stderr in real-time
+	LogChan      chan<- string  // Optional channel to send log lines to (for TUI)
 }
 
 // RunResult contains the result of an act execution
@@ -49,14 +51,26 @@ func Run(ctx context.Context, cfg *RunConfig) (*RunResult, error) {
 
 	var stdout, stderr bytes.Buffer
 
+	// Set up output writers based on configuration
+	stdoutWriters := []io.Writer{&stdout}
+	stderrWriters := []io.Writer{&stderr}
+
 	if cfg.StreamOutput {
-		// Stream output to stderr in real-time while capturing it
-		cmd.Stdout = io.MultiWriter(&stdout, os.Stderr)
-		cmd.Stderr = io.MultiWriter(&stderr, os.Stderr)
-	} else {
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
+		// Stream output to stderr in real-time
+		stdoutWriters = append(stdoutWriters, os.Stderr)
+		stderrWriters = append(stderrWriters, os.Stderr)
 	}
+
+	if cfg.LogChan != nil {
+		// Stream to TUI via channel
+		stdoutChan := newChanWriter(cfg.LogChan)
+		stderrChan := newChanWriter(cfg.LogChan)
+		stdoutWriters = append(stdoutWriters, stdoutChan)
+		stderrWriters = append(stderrWriters, stderrChan)
+	}
+
+	cmd.Stdout = io.MultiWriter(stdoutWriters...)
+	cmd.Stderr = io.MultiWriter(stderrWriters...)
 
 	cmd.Env = os.Environ()
 
@@ -147,4 +161,40 @@ func buildArgs(cfg *RunConfig) []string {
 	)
 
 	return args
+}
+
+// chanWriter is an io.Writer that sends each line to a channel
+type chanWriter struct {
+	ch     chan<- string
+	buffer bytes.Buffer
+}
+
+func newChanWriter(ch chan<- string) *chanWriter {
+	return &chanWriter{ch: ch}
+}
+
+func (w *chanWriter) Write(p []byte) (n int, err error) {
+	n = len(p)
+	w.buffer.Write(p)
+
+	// Send complete lines to the channel
+	scanner := bufio.NewScanner(&w.buffer)
+	var remaining bytes.Buffer
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		select {
+		case w.ch <- line:
+		default:
+			// Channel full or closed, skip
+		}
+	}
+
+	// Keep incomplete line in buffer
+	if w.buffer.Len() > 0 {
+		remaining.Write(w.buffer.Bytes())
+	}
+	w.buffer = remaining
+
+	return n, nil
 }
