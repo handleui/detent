@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"strconv"
 	"strings"
+
+	"github.com/detent/cli/internal/messages"
 )
 
 // Extractor processes act output and extracts structured errors.
@@ -12,6 +14,18 @@ type Extractor struct {
 	currentWorkflowCtx *WorkflowContext // Tracks the current workflow/job context from act output
 	lastPythonError    *ExtractedError  // Tracks the last Python error (for multi-line traceback format)
 	lastRustError      *ExtractedError  // Tracks the last Rust error (for multi-line error format)
+
+	// Message builders for language-specific message construction
+	pythonBuilder *messages.PythonMessageBuilder
+	eslintBuilder *messages.ESLintMessageBuilder
+}
+
+// NewExtractor creates a new Extractor with initialized message builders.
+func NewExtractor() *Extractor {
+	return &Extractor{
+		pythonBuilder: messages.NewPythonMessageBuilder(),
+		eslintBuilder: messages.NewESLintMessageBuilder(),
+	}
 }
 
 // errKey is used for deduplication
@@ -130,16 +144,19 @@ func (e *Extractor) extractFromLine(line string) *ExtractedError {
 
 	// Python traceback: first check if this line has the exception message
 	if match := pythonExceptionPattern.FindStringSubmatch(line); match != nil {
+		// Build the Python error message using the builder
+		message := e.pythonBuilder.BuildMessage(match[1], match[2])
+
 		// If we have a pending Python error from traceback, update its message
 		if e.lastPythonError != nil {
-			e.lastPythonError.Message = match[1] + ": " + match[2]
+			e.lastPythonError.Message = message
 			err := e.lastPythonError
 			e.lastPythonError = nil
 			return err
 		}
 		// Standalone exception without traceback
 		return &ExtractedError{
-			Message:  match[1] + ": " + match[2],
+			Message:  message,
 			Category: CategoryRuntime,
 			Source:   "python",
 			Raw:      line,
@@ -222,21 +239,21 @@ func (e *Extractor) extractFromLine(line string) *ExtractedError {
 
 	if match := eslintPattern.FindStringSubmatch(line); match != nil {
 		lineNum, colNum := parseLineCol(match[1], match[2])
+		rawMessage := strings.TrimSpace(match[4])
+
+		// Parse rule ID from message using the ESLint builder
+		cleanMessage, ruleID := e.eslintBuilder.ParseRuleID(rawMessage)
+
 		err := &ExtractedError{
-			Message:  strings.TrimSpace(match[4]),
+			Message:  cleanMessage,
 			File:     e.lastFile, // Use the last seen file path
 			Line:     lineNum,
 			Column:   colNum,
 			Severity: match[3], // "error" or "warning"
+			RuleID:   ruleID,
 			Category: CategoryLint,
 			Source:   "eslint",
 			Raw:      line,
-		}
-
-		// Parse rule ID from message (format: "Message text rule-name")
-		if ruleMatch := eslintRulePattern.FindStringSubmatch(err.Message); ruleMatch != nil {
-			err.Message = strings.TrimSpace(ruleMatch[1])
-			err.RuleID = ruleMatch[2]
 		}
 
 		return err

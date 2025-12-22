@@ -52,14 +52,14 @@ to ensure all steps run. Extracts and groups errors by file for debugging.`,
 
 func init() {
 	checkCmd.Flags().StringVarP(&workflowsDir, "workflows", "w", ".github/workflows", "Path to workflows directory")
-	checkCmd.Flags().StringVarP(&outputFormat, "output", "o", "text", "Output format: text, json")
+	checkCmd.Flags().StringVarP(&outputFormat, "output", "o", "text", "Output format: text, json, json-detailed")
 	checkCmd.Flags().StringVarP(&event, "event", "e", "push", "Event to trigger")
 	checkCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Show act logs in real-time")
 }
 
 func runCheck(cmd *cobra.Command, args []string) error {
-	if outputFormat != "text" && outputFormat != "json" {
-		return fmt.Errorf("invalid output format %q: must be 'text' or 'json'", outputFormat)
+	if outputFormat != "text" && outputFormat != "json" && outputFormat != "json-detailed" {
+		return fmt.Errorf("invalid output format %q: must be 'text', 'json', or 'json-detailed'", outputFormat)
 	}
 
 	repoPath := "."
@@ -102,9 +102,15 @@ func runCheck(cmd *cobra.Command, args []string) error {
 
 	var result *act.RunResult
 	var grouped *internalerrors.GroupedErrors
+	var cancelled bool
 
 	if useTUI {
-		result, grouped, err = runWithTUIAndExtract(ctx, absRepoPath, tmpDir)
+		result, grouped, cancelled, err = runWithTUIAndExtract(ctx, absRepoPath, tmpDir)
+		// Check for cancellation in TUI mode
+		if cancelled {
+			signal.PrintCancellationMessage("check")
+			return nil
+		}
 	} else {
 		result, err = runWithoutTUI(ctx, absRepoPath, tmpDir)
 	}
@@ -120,7 +126,7 @@ func runCheck(cmd *cobra.Command, args []string) error {
 	// Extract errors if not already done (TUI mode extracts early)
 	if grouped == nil {
 		combinedOutput := result.Stdout + result.Stderr
-		var extractor internalerrors.Extractor
+		extractor := internalerrors.NewExtractor()
 		extracted := extractor.Extract(combinedOutput)
 		grouped = internalerrors.GroupByFileWithBase(extracted, absRepoPath)
 	}
@@ -131,6 +137,15 @@ func runCheck(cmd *cobra.Command, args []string) error {
 		case "json":
 			if err := output.FormatJSON(os.Stdout, grouped); err != nil {
 				return fmt.Errorf("formatting JSON output: %w", err)
+			}
+		case "json-detailed":
+			// Extract raw errors for GroupForAI (need to re-extract from result)
+			combinedOutput := result.Stdout + result.Stderr
+			extractor := internalerrors.NewExtractor()
+			extracted := extractor.Extract(combinedOutput)
+			groupedV2 := internalerrors.GroupForAI(extracted, absRepoPath)
+			if err := output.FormatJSONV2(os.Stdout, groupedV2); err != nil {
+				return fmt.Errorf("formatting JSON detailed output: %w", err)
 			}
 		default:
 			output.FormatText(os.Stdout, grouped)
@@ -172,13 +187,14 @@ func runCheck(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runWithTUIAndExtract(ctx context.Context, repoPath, tmpDir string) (*act.RunResult, *internalerrors.GroupedErrors, error) {
+func runWithTUIAndExtract(ctx context.Context, repoPath, tmpDir string) (*act.RunResult, *internalerrors.GroupedErrors, bool, error) {
 	model := tui.NewCheckModel()
 	program := tea.NewProgram(&model) // Inline mode - no AltScreen
 
 	logChan := make(chan string, 100)
 	resultChan := make(chan *act.RunResult, 1)
 	errChan := make(chan error, 1)
+	groupedChan := make(chan *internalerrors.GroupedErrors, 1) // Store extracted errors
 
 	// Start act in a goroutine
 	go func() {
@@ -216,39 +232,50 @@ func runWithTUIAndExtract(ctx context.Context, repoPath, tmpDir string) (*act.Ru
 		// Wait for result or error
 		select {
 		case result := <-resultChan:
-			// Extract errors before sending done message
+			// Extract errors once before sending done message
 			combinedOutput := result.Stdout + result.Stderr
-			var extractor internalerrors.Extractor
+			extractor := internalerrors.NewExtractor()
 			extracted := extractor.Extract(combinedOutput)
 			grouped := internalerrors.GroupByFileWithBase(extracted, repoPath)
 
+			// Store grouped errors for return
+			groupedChan <- grouped
+
+			// Check if context was cancelled
+			cancelled := ctx.Err() == context.Canceled
+
 			program.Send(tui.DoneMsg{
-				Duration: result.Duration,
-				ExitCode: result.ExitCode,
-				Errors:   grouped,
+				Duration:  result.Duration,
+				ExitCode:  result.ExitCode,
+				Errors:    grouped,
+				Cancelled: cancelled,
 			})
 		case err := <-errChan:
 			program.Send(tui.ErrMsg(err))
 		}
 	}()
 
-	if _, err := program.Run(); err != nil {
-		return nil, nil, err
+	finalModel, err := program.Run()
+	if err != nil {
+		return nil, nil, false, err
 	}
 
-	// Get the result
+	// Extract cancellation status from the model
+	checkModel, ok := finalModel.(*tui.CheckModel)
+	var wasCancelled bool
+	if ok {
+		wasCancelled = checkModel.Cancelled()
+	}
+
+	// Get the result and grouped errors
 	select {
 	case result := <-resultChan:
-		// Extract errors for return
-		combinedOutput := result.Stdout + result.Stderr
-		var extractor internalerrors.Extractor
-		extracted := extractor.Extract(combinedOutput)
-		grouped := internalerrors.GroupByFileWithBase(extracted, repoPath)
-		return result, grouped, nil
+		grouped := <-groupedChan // Get the already-extracted errors
+		return result, grouped, wasCancelled, nil
 	case err := <-errChan:
-		return nil, nil, err
+		return nil, nil, false, err
 	default:
-		return nil, nil, fmt.Errorf("no result received")
+		return nil, nil, false, fmt.Errorf("no result received")
 	}
 }
 

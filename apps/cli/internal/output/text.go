@@ -34,7 +34,14 @@ func FormatText(w io.Writer, grouped *errors.GroupedErrors) {
 		detailText := fmt.Sprintf("(%s%d error%s, %d warning%s)%s",
 			colorRed, errorCount, plural(errorCount), warningCount, plural(warningCount), colorReset)
 
-		_, _ = fmt.Fprintf(w, "%s> %s✖ %s %s%s\n", colorBold, colorRed, problemText, detailText, colorReset)
+		// Show aggregate stats: file count
+		fileCount := len(grouped.ByFile)
+		if fileCount > 0 {
+			_, _ = fmt.Fprintf(w, "%s> %s✖ %s %s across %d file%s%s\n",
+				colorBold, colorRed, problemText, detailText, fileCount, plural(fileCount), colorReset)
+		} else {
+			_, _ = fmt.Fprintf(w, "%s> %s✖ %s %s%s\n", colorBold, colorRed, problemText, detailText, colorReset)
+		}
 		_, _ = fmt.Fprintf(w, "%s  Run 'detent fix' to auto-fix or fix manually and re-run%s\n\n", colorGray, colorReset)
 	}
 

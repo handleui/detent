@@ -49,14 +49,8 @@ var (
 	// Group 1: line number
 	// Group 2: column number
 	// Group 3: severity ("error" or "warning")
-	// Group 4: message + rule name (need to split with eslintRulePattern)
+	// Group 4: message + rule name (parsed later by ESLintMessageBuilder)
 	eslintPattern = regexp.MustCompile(`^\s*(\d+):(\d+)\s+(error|warning)\s+(.+)$`)
-
-	// ESLint rule name pattern: splits "Message text rule-name" into message and rule
-	// Group 1: message text
-	// Group 2: rule name (e.g., "no-var", "@typescript-eslint/no-unused-vars")
-	// Optimized: uses possessive quantifier to prevent backtracking on rule name portion
-	eslintRulePattern = regexp.MustCompile(`^(.+?)\s+([a-z0-9]+(?:[/@-][a-z0-9]+)*)$`)
 
 	// Generic file:line pattern (fallback)
 	// Optimized: anchored to line start or whitespace to prevent mid-line matches

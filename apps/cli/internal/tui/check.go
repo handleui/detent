@@ -32,9 +32,10 @@ type ProgressMsg struct {
 
 // DoneMsg signals completion
 type DoneMsg struct {
-	Duration time.Duration
-	ExitCode int
-	Errors   *errors.GroupedErrors
+	Duration  time.Duration
+	ExitCode  int
+	Errors    *errors.GroupedErrors
+	Cancelled bool // True if workflow was cancelled via Ctrl+C
 }
 
 // ErrMsg signals an error
@@ -61,6 +62,7 @@ type CheckModel struct {
 	startTime    time.Time             // Track when workflow started
 	logsDirty    bool                  // Track if logs need viewport update
 	errors       *errors.GroupedErrors // Extracted errors from workflow run
+	cancelled    bool                  // Track if workflow was cancelled via Ctrl+C
 }
 
 // NewCheckModel creates a new TUI model for the check command
@@ -78,6 +80,11 @@ func NewCheckModel() CheckModel {
 		logsExpanded: false,
 		startTime:    time.Now(),
 	}
+}
+
+// Cancelled returns whether the workflow was cancelled via Ctrl+C
+func (m *CheckModel) Cancelled() bool {
+	return m.cancelled
 }
 
 func (m *CheckModel) Init() tea.Cmd {
@@ -163,6 +170,7 @@ func (m *CheckModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.duration = msg.Duration
 		m.exitCode = msg.ExitCode
 		m.errors = msg.Errors
+		m.cancelled = msg.Cancelled
 		m.logsExpanded = false // Auto-collapse on completion
 		return m, tea.Quit
 
