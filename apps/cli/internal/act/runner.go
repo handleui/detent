@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"time"
@@ -18,6 +19,7 @@ type RunConfig struct {
 	Verbose      bool
 	WorkDir      string
 	ActBinary    string
+	StreamOutput bool // If true, stream act output to stderr in real-time
 }
 
 // RunResult contains the result of an act execution
@@ -42,8 +44,15 @@ func Run(ctx context.Context, cfg *RunConfig) (*RunResult, error) {
 	cmd.Dir = cfg.WorkDir
 
 	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+
+	if cfg.StreamOutput {
+		// Stream output to stderr in real-time while capturing it
+		cmd.Stdout = io.MultiWriter(&stdout, os.Stderr)
+		cmd.Stderr = io.MultiWriter(&stderr, os.Stderr)
+	} else {
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+	}
 
 	cmd.Env = os.Environ()
 
@@ -83,6 +92,12 @@ func buildArgs(cfg *RunConfig) []string {
 	if cfg.Verbose {
 		args = append(args, "-v")
 	}
+
+	// Use medium-sized images to avoid interactive prompt on first run
+	args = append(args,
+		"-P", "ubuntu-latest=catthehacker/ubuntu:act-latest",
+		"-P", "ubuntu-22.04=catthehacker/ubuntu:act-22.04",
+		"-P", "ubuntu-20.04=catthehacker/ubuntu:act-20.04")
 
 	return args
 }

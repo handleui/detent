@@ -28,8 +28,8 @@ var (
 	// Uses lazy quantifier for the function part
 	nodeStackPattern = regexp.MustCompile(`at\s+.+?\(([^:]+):(\d+):(\d+)\)`)
 
-	// ESLint pattern: 10:5 error Message rule-name
-	eslintPattern = regexp.MustCompile(`^\s*(\d+):(\d+)\s+error\s+(.+?)\s+\S+$`)
+	// ESLint pattern: 10:5 error/warning Message rule-name
+	eslintPattern = regexp.MustCompile(`^\s*(\d+):(\d+)\s+(error|warning)\s+(.+?)\s+\S+$`)
 
 	// Generic file:line pattern (fallback)
 	genericFileLinePattern = regexp.MustCompile(`([^\s:]+\.[a-zA-Z0-9]+):(\d+)(?::(\d+))?`)
@@ -39,4 +39,7 @@ var (
 
 	// Exit code pattern
 	exitCodePattern = regexp.MustCompile(`(?i)exit(?:ed)?\s+(?:with\s+)?(?:code\s+)?(\d+)`)
+
+	// File path pattern: matches standalone file paths (for ESLint multi-line format)
+	filePathPattern = regexp.MustCompile(`^([^\s:]+\.(ts|tsx|js|jsx|go|py|rs|java|c|cpp|h|hpp))$`)
 )

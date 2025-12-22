@@ -7,8 +7,9 @@ import (
 )
 
 // Extractor processes act output and extracts structured errors.
-// It is stateless and can be reused across multiple Extract calls.
-type Extractor struct{}
+type Extractor struct {
+	lastFile string // Tracks the last file path seen (for multi-line error formats)
+}
 
 // errKey is used for deduplication
 type errKey struct {
@@ -60,7 +61,13 @@ func parseLineCol(lineStr, colStr string) (line, col int) {
 	return line, col
 }
 
-func (e Extractor) extractFromLine(line string) *ExtractedError {
+func (e *Extractor) extractFromLine(line string) *ExtractedError {
+	// Check if this is a standalone file path line (for multi-line error formats)
+	if match := filePathPattern.FindStringSubmatch(line); match != nil {
+		e.lastFile = match[1]
+		return nil
+	}
+
 	if match := goErrorPattern.FindStringSubmatch(line); match != nil {
 		lineNum, colNum := parseLineCol(match[2], match[3])
 		return &ExtractedError{
@@ -125,10 +132,12 @@ func (e Extractor) extractFromLine(line string) *ExtractedError {
 	if match := eslintPattern.FindStringSubmatch(line); match != nil {
 		lineNum, colNum := parseLineCol(match[1], match[2])
 		return &ExtractedError{
-			Message: strings.TrimSpace(match[3]),
-			Line:    lineNum,
-			Column:  colNum,
-			Raw:     line,
+			Message:  strings.TrimSpace(match[4]),
+			File:     e.lastFile, // Use the last seen file path
+			Line:     lineNum,
+			Column:   colNum,
+			Severity: match[3], // "error" or "warning"
+			Raw:      line,
 		}
 	}
 

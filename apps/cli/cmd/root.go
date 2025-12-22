@@ -18,6 +18,6 @@ func Execute() error {
 }
 
 func init() {
-	rootCmd.AddCommand(parseCmd)
+	rootCmd.AddCommand(checkCmd)
 	rootCmd.AddCommand(validateCmd)
 }
