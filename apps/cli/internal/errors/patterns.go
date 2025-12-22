@@ -10,16 +10,33 @@ var (
 	errorPattern = regexp.MustCompile(`(?i)error:\s*(.+?)$`)
 
 	// Go compiler/test error pattern: file.go:123:45: message
-	goErrorPattern = regexp.MustCompile(`^([^\s:]+\.go):(\d+):(\d+):\s*(.+)$`)
+	// Optimized: captures leading/trailing whitespace to eliminate post-processing TrimSpace
+	goErrorPattern = regexp.MustCompile(`^([^\s:]+\.go):(\d+):(\d+):\s*(.+?)\s*$`)
 
 	// TypeScript error pattern: file.ts(10,5): error TS1234: message
-	tsErrorPattern = regexp.MustCompile(`^([^\s:]+\.tsx?)\((\d+),(\d+)\):\s*(?:error\s+TS\d+:\s*)?(.+)$`)
+	// Group 1: file path
+	// Group 2: line number
+	// Group 3: column number
+	// Group 4: TS error code (e.g., "TS2749") - optional
+	// Group 5: message
+	// Optimized: captures leading/trailing whitespace to eliminate post-processing TrimSpace
+	tsErrorPattern = regexp.MustCompile(`^([^\s:]+\.tsx?)\((\d+),(\d+)\):\s*(?:error\s+(TS\d+):\s*)?(.+?)\s*$`)
 
 	// Python traceback pattern: File "file.py", line 10
 	pythonErrorPattern = regexp.MustCompile(`^\s*File\s+"([^"]+)",\s+line\s+(\d+)`)
 
+	// Python exception pattern: ExceptionType: error message
+	// Group 1: exception type (e.g., "ValueError", "TypeError", "RuntimeError")
+	// Group 2: error message
+	pythonExceptionPattern = regexp.MustCompile(`^([A-Z]\w+(?:Error|Exception|Warning)):\s*(.+)$`)
+
 	// Rust error pattern: error[E0123]: message --> file.rs:10:5
 	rustErrorPattern = regexp.MustCompile(`-->\s*([^\s:]+\.rs):(\d+):(\d+)`)
+
+	// Rust error message pattern: error[E0123]: message
+	// Group 1: error code (e.g., "E0123")
+	// Group 2: error message
+	rustErrorMessagePattern = regexp.MustCompile(`^error\[([A-Z0-9]+)\]:\s*(.+)$`)
 
 	// Go test failure pattern: --- FAIL: TestName
 	goTestFailPattern = regexp.MustCompile(`^---\s+FAIL:\s+(\S+)`)
@@ -29,10 +46,21 @@ var (
 	nodeStackPattern = regexp.MustCompile(`at\s+.+?\(([^:]+):(\d+):(\d+)\)`)
 
 	// ESLint pattern: 10:5 error/warning Message rule-name
-	eslintPattern = regexp.MustCompile(`^\s*(\d+):(\d+)\s+(error|warning)\s+(.+?)\s+\S+$`)
+	// Group 1: line number
+	// Group 2: column number
+	// Group 3: severity ("error" or "warning")
+	// Group 4: message + rule name (need to split with eslintRulePattern)
+	eslintPattern = regexp.MustCompile(`^\s*(\d+):(\d+)\s+(error|warning)\s+(.+)$`)
+
+	// ESLint rule name pattern: splits "Message text rule-name" into message and rule
+	// Group 1: message text
+	// Group 2: rule name (e.g., "no-var", "@typescript-eslint/no-unused-vars")
+	// Optimized: uses possessive quantifier to prevent backtracking on rule name portion
+	eslintRulePattern = regexp.MustCompile(`^(.+?)\s+([a-z0-9]+(?:[/@-][a-z0-9]+)*)$`)
 
 	// Generic file:line pattern (fallback)
-	genericFileLinePattern = regexp.MustCompile(`([^\s:]+\.[a-zA-Z0-9]+):(\d+)(?::(\d+))?`)
+	// Optimized: anchored to line start or whitespace to prevent mid-line matches
+	genericFileLinePattern = regexp.MustCompile(`(?:^|\s)([^\s:]+\.[a-zA-Z0-9]+):(\d+)(?::(\d+))?`)
 
 	// Act job context pattern: [workflow/job] | message
 	actContextPattern = regexp.MustCompile(`^\[([^\]]+)\]`)

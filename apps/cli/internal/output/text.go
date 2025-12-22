@@ -40,8 +40,8 @@ func FormatText(w io.Writer, grouped *errors.GroupedErrors) {
 
 		for _, file := range files {
 			errs := grouped.ByFile[file]
-			fileErrors := countErrorsInList(errs)
-			fileWarnings := countWarningsInList(errs)
+			fileErrors := countBySeverity(errs, "error")
+			fileWarnings := countBySeverity(errs, "warning")
 
 			_, _ = fmt.Fprintf(w, "%s%s%s%s ", colorBold, colorCyan, file, colorReset)
 			_, _ = fmt.Fprintf(w, "%s(%d error%s, %d warning%s)%s\n",
@@ -73,10 +73,15 @@ func formatError(w io.Writer, file string, err *errors.ExtractedError) {
 	severity := getSeverityColor(err.Severity)
 	location := formatLocation(err)
 
+	message := err.Message
+	if err.RuleID != "" {
+		message = fmt.Sprintf("%s [%s]", err.Message, err.RuleID)
+	}
+
 	_, _ = fmt.Fprintf(w, "  %s%s:%s%s %s%s%s %s\n",
 		colorGray, location, colorReset,
 		severity, getSeveritySymbol(err.Severity), colorReset,
-		colorGray, err.Message)
+		colorGray, message)
 }
 
 // formatLocation formats the line:column part
@@ -126,30 +131,21 @@ func plural(count int) string {
 // countSeverities counts errors and warnings in grouped errors
 func countSeverities(grouped *errors.GroupedErrors) (errorCount, warningCount int) {
 	for _, errs := range grouped.ByFile {
-		errorCount += countErrorsInList(errs)
-		warningCount += countWarningsInList(errs)
+		errorCount += countBySeverity(errs, "error")
+		warningCount += countBySeverity(errs, "warning")
 	}
-	errorCount += countErrorsInList(grouped.NoFile)
-	warningCount += countWarningsInList(grouped.NoFile)
+	errorCount += countBySeverity(grouped.NoFile, "error")
+	warningCount += countBySeverity(grouped.NoFile, "warning")
 	return errorCount, warningCount
 }
 
-// countErrorsInList counts errors in a list
-func countErrorsInList(errs []*errors.ExtractedError) int {
+// countBySeverity counts errors by severity level in a list
+func countBySeverity(errs []*errors.ExtractedError, severity string) int {
 	count := 0
 	for _, err := range errs {
-		if err.Severity == "error" || err.Severity == "" {
+		if severity == "error" && (err.Severity == "error" || err.Severity == "") {
 			count++
-		}
-	}
-	return count
-}
-
-// countWarningsInList counts warnings in a list
-func countWarningsInList(errs []*errors.ExtractedError) int {
-	count := 0
-	for _, err := range errs {
-		if err.Severity == "warning" {
+		} else if err.Severity == severity {
 			count++
 		}
 	}
