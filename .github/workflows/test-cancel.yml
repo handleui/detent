@@ -1,0 +1,22 @@
+name: Test Cancellation
+
+on: [push]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Step 1 - Quick step
+        run: echo "Starting test workflow"
+
+      - name: Step 2 - Long running step
+        run: |
+          echo "This will run for 60 seconds - press Ctrl+C to cancel"
+          for i in {1..60}; do
+            echo "Second $i..."
+            sleep 1
+          done
+          echo "Completed!"
+
+      - name: Step 3 - Should not reach if cancelled
+        run: echo "This step should not run if cancelled"

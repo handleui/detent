@@ -14,8 +14,11 @@ var validateCmd = &cobra.Command{
 	RunE:  runValidate,
 }
 
-func runValidate(_ *cobra.Command, _ []string) error {
+func runValidate(cmd *cobra.Command, args []string) error {
 	// TODO: Implement in v0.0.2
+	// When implementing, use cmd.Context() to get signal-aware context:
+	// ctx := cmd.Context()
+	// And check for cancellation: errors.Is(ctx.Err(), context.Canceled)
 	fmt.Println("validate command not yet implemented (v0.0.2)")
 	return nil
 }

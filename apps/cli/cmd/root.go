@@ -1,9 +1,11 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/detent/cli/internal/signal"
 	"github.com/spf13/cobra"
 )
 
@@ -23,7 +25,8 @@ var rootCmd = &cobra.Command{
 }
 
 func Execute() error {
-	return rootCmd.Execute()
+	ctx := signal.SetupSignalHandler(context.Background())
+	return rootCmd.ExecuteContext(ctx)
 }
 
 func init() {

@@ -24,11 +24,17 @@ func FormatText(w io.Writer, grouped *errors.GroupedErrors) {
 	// Count errors and warnings
 	errorCount, warningCount := countSeverities(grouped)
 
-	_, _ = fmt.Fprintf(w, "\n%s%s=== Detent Error Report ===%s\n\n", colorBold, colorCyan, colorReset)
+	_, _ = fmt.Fprintln(w)
 
 	if errorCount > 0 || warningCount > 0 {
-		_, _ = fmt.Fprintf(w, "  %s%d error%s%s", colorRed, errorCount, plural(errorCount), colorReset)
-		_, _ = fmt.Fprintf(w, "  %s%d warning%s%s\n\n", colorYellow, warningCount, plural(warningCount), colorReset)
+		totalProblems := errorCount + warningCount
+		problemText := fmt.Sprintf("%d problem%s", totalProblems, plural(totalProblems))
+		detailText := fmt.Sprintf("(%s%d error%s%s, %s%d warning%s%s)",
+			colorRed, errorCount, plural(errorCount), colorReset,
+			colorYellow, warningCount, plural(warningCount), colorReset)
+
+		_, _ = fmt.Fprintf(w, "%s✖ %s %s%s\n", colorRed, problemText, detailText, colorReset)
+		_, _ = fmt.Fprintf(w, "%s  Run 'detent fix' to automatically fix some of these issues%s\n\n", colorGray, colorReset)
 	}
 
 	if len(grouped.ByFile) > 0 {

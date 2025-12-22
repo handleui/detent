@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"syscall"
 	"time"
 )
 
@@ -43,6 +44,9 @@ func Run(ctx context.Context, cfg *RunConfig) (*RunResult, error) {
 	cmd := exec.CommandContext(ctx, actBinary, args...) //nolint:gosec // ActBinary is trusted; defaults to "act"
 	cmd.Dir = cfg.WorkDir
 
+	// Set up process group to ensure graceful shutdown
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
 	var stdout, stderr bytes.Buffer
 
 	if cfg.StreamOutput {
@@ -57,8 +61,49 @@ func Run(ctx context.Context, cfg *RunConfig) (*RunResult, error) {
 	cmd.Env = os.Environ()
 
 	start := time.Now()
-	err := cmd.Run()
+
+	// Start the process instead of using Run() for better control
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("starting act: %w", err)
+	}
+
+	// Monitor context and handle graceful shutdown
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+
+	var err error
+	select {
+	case err = <-done:
+		// Process finished normally
+	case <-ctx.Done():
+		// Context cancelled - attempt graceful shutdown
+		if cmd.Process != nil {
+			// Try SIGTERM first for graceful shutdown
+			_ = cmd.Process.Signal(syscall.SIGTERM)
+
+			// Wait 5 seconds for graceful shutdown
+			gracefulTimeout := time.After(5 * time.Second)
+			select {
+			case err = <-done:
+				// Gracefully exited
+			case <-gracefulTimeout:
+				// Force kill if still running
+				_ = cmd.Process.Kill()
+				err = <-done
+			}
+		} else {
+			err = <-done
+		}
+	}
+
 	duration := time.Since(start)
+
+	// Check if context was cancelled
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 
 	exitCode := 0
 	if err != nil {

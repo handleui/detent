@@ -2,14 +2,16 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/detent/cli/internal/act"
-	"github.com/detent/cli/internal/errors"
+	internalerrors "github.com/detent/cli/internal/errors"
 	"github.com/detent/cli/internal/output"
+	"github.com/detent/cli/internal/signal"
 	"github.com/detent/cli/internal/workflow"
 	"github.com/spf13/cobra"
 )
@@ -39,7 +41,7 @@ func init() {
 	checkCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Show act logs in real-time")
 }
 
-func runCheck(_ *cobra.Command, args []string) error {
+func runCheck(cmd *cobra.Command, args []string) error {
 	if outputFormat != "text" && outputFormat != "json" {
 		return fmt.Errorf("invalid output format %q: must be 'text' or 'json'", outputFormat)
 	}
@@ -69,7 +71,7 @@ func runCheck(_ *cobra.Command, args []string) error {
 
 	if verbose {
 		_, _ = fmt.Fprintf(os.Stderr, "Modified workflows in: %s\n", tmpDir)
-		_, _ = fmt.Fprintf(os.Stderr, "\n=== Running workflows with act ===\n\n")
+		_, _ = fmt.Fprintf(os.Stderr, "\n> Running workflows with act\n\n")
 	} else {
 		_, _ = fmt.Fprintf(os.Stderr, "Running workflows... ")
 	}
@@ -82,24 +84,29 @@ func runCheck(_ *cobra.Command, args []string) error {
 		StreamOutput: verbose,
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), actTimeout)
+	baseCtx := cmd.Context()
+	ctx, cancel := context.WithTimeout(baseCtx, actTimeout)
 	defer cancel()
 
 	result, err := act.Run(ctx, cfg)
 	if err != nil {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			signal.PrintCancellationMessage("check")
+			return nil
+		}
 		return fmt.Errorf("running act: %w", err)
 	}
 
 	if verbose {
-		_, _ = fmt.Fprintf(os.Stderr, "\n=== Act completed in %s with exit code %d ===\n\n", result.Duration, result.ExitCode)
+		_, _ = fmt.Fprintf(os.Stderr, "\n> Completed in %s (exit code %d)\n", result.Duration, result.ExitCode)
 	} else {
 		_, _ = fmt.Fprintf(os.Stderr, "done (%s)\n", result.Duration)
 	}
 
 	combinedOutput := result.Stdout + result.Stderr
-	var extractor errors.Extractor
+	var extractor internalerrors.Extractor
 	extracted := extractor.Extract(combinedOutput)
-	grouped := errors.GroupByFileWithBase(extracted, absRepoPath)
+	grouped := internalerrors.GroupByFileWithBase(extracted, absRepoPath)
 
 	switch outputFormat {
 	case "json":
