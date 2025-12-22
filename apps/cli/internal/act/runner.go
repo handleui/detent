@@ -1,7 +1,6 @@
 package act
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -9,9 +8,13 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"regexp"
+	"strings"
 	"syscall"
 	"time"
 )
+
+const gracefulShutdownTimeout = 5 * time.Second
 
 // RunConfig configures the act execution.
 // ActBinary should only be set by trusted code paths (defaults to "act").
@@ -33,10 +36,38 @@ type RunResult struct {
 	Duration time.Duration
 }
 
-// Run executes act with the given configuration.
-// The act binary path is controlled internally and defaults to "act" from PATH.
+var validEventPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
+// filterEnvironment returns a filtered list of environment variables
+// that only includes safe variables to prevent secret leakage to act containers
+func filterEnvironment(env []string) []string {
+	// Whitelist of safe environment variables
+	safePrefixes := []string{
+		"PATH=", "HOME=", "USER=", "SHELL=", "LANG=", "LC_",
+		"TERM=", "TMPDIR=", "TZ=",
+	}
+
+	var filtered []string
+	for _, e := range env {
+		for _, prefix := range safePrefixes {
+			if strings.HasPrefix(e, prefix) {
+				filtered = append(filtered, e)
+				break
+			}
+		}
+	}
+	return filtered
+}
+
+// Run executes the act tool with the given configuration.
+// It handles context cancellation, graceful shutdown (SIGTERM then SIGKILL),
+// and returns the captured output along with exit code and duration.
+// The ActBinary path defaults to "act" from PATH if not specified.
 func Run(ctx context.Context, cfg *RunConfig) (*RunResult, error) {
-	args := buildArgs(cfg)
+	args, argsErr := buildArgs(cfg)
+	if argsErr != nil {
+		return nil, argsErr
+	}
 
 	actBinary := cfg.ActBinary
 	if actBinary == "" {
@@ -72,12 +103,13 @@ func Run(ctx context.Context, cfg *RunConfig) (*RunResult, error) {
 	cmd.Stdout = io.MultiWriter(stdoutWriters...)
 	cmd.Stderr = io.MultiWriter(stderrWriters...)
 
-	cmd.Env = os.Environ()
+	cmd.Env = filterEnvironment(os.Environ())
 
 	start := time.Now()
 
 	// Start the process instead of using Run() for better control
-	if err := cmd.Start(); err != nil {
+	var err error
+	if err = cmd.Start(); err != nil {
 		return nil, fmt.Errorf("starting act: %w", err)
 	}
 
@@ -87,7 +119,6 @@ func Run(ctx context.Context, cfg *RunConfig) (*RunResult, error) {
 		done <- cmd.Wait()
 	}()
 
-	var err error
 	select {
 	case err = <-done:
 		// Process finished normally
@@ -97,8 +128,8 @@ func Run(ctx context.Context, cfg *RunConfig) (*RunResult, error) {
 			// Try SIGTERM first for graceful shutdown
 			_ = cmd.Process.Signal(syscall.SIGTERM)
 
-			// Wait 5 seconds for graceful shutdown
-			gracefulTimeout := time.After(5 * time.Second)
+			// Wait for graceful shutdown
+			gracefulTimeout := time.After(gracefulShutdownTimeout)
 			select {
 			case err = <-done:
 				// Gracefully exited
@@ -137,7 +168,7 @@ func Run(ctx context.Context, cfg *RunConfig) (*RunResult, error) {
 	}, nil
 }
 
-func buildArgs(cfg *RunConfig) []string {
+func buildArgs(cfg *RunConfig) ([]string, error) {
 	var args []string
 
 	if cfg.WorkflowPath != "" {
@@ -145,6 +176,9 @@ func buildArgs(cfg *RunConfig) []string {
 	}
 
 	if cfg.Event != "" {
+		if !validEventPattern.MatchString(cfg.Event) {
+			return nil, fmt.Errorf("invalid event name %q: must contain only alphanumeric, underscore, or hyphen", cfg.Event)
+		}
 		args = append(args, cfg.Event)
 	}
 
@@ -160,7 +194,7 @@ func buildArgs(cfg *RunConfig) []string {
 		"--no-cache-server", // Disable cache server (can cause hangs/failures)
 	)
 
-	return args
+	return args, nil
 }
 
 // chanWriter is an io.Writer that sends each line to a channel
@@ -177,12 +211,17 @@ func (w *chanWriter) Write(p []byte) (n int, err error) {
 	n = len(p)
 	w.buffer.Write(p)
 
-	// Send complete lines to the channel
-	scanner := bufio.NewScanner(&w.buffer)
-	var remaining bytes.Buffer
+	// Incremental line splitting - O(n) instead of O(n²)
+	data := w.buffer.Bytes()
+	for {
+		idx := bytes.IndexByte(data, '\n')
+		if idx < 0 {
+			break
+		}
 
-	for scanner.Scan() {
-		line := scanner.Text()
+		line := string(bytes.TrimSpace(data[:idx]))
+		data = data[idx+1:]
+
 		select {
 		case w.ch <- line:
 		default:
@@ -190,11 +229,9 @@ func (w *chanWriter) Write(p []byte) (n int, err error) {
 		}
 	}
 
-	// Keep incomplete line in buffer
-	if w.buffer.Len() > 0 {
-		remaining.Write(w.buffer.Bytes())
-	}
-	w.buffer = remaining
+	// Keep remaining data in buffer
+	w.buffer.Reset()
+	w.buffer.Write(data)
 
 	return n, nil
 }

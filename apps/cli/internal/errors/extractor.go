@@ -21,8 +21,10 @@ type errKey struct {
 	line    int
 }
 
-// Extract parses act output and extracts errors.
-// Duplicate errors (same message, file, line) are filtered out.
+// Extract parses act output and extracts structured error information.
+// It uses pattern matching to identify errors from various tools (ESLint,
+// TypeScript, Python, Rust, etc.) and returns deduplicated errors with
+// file locations and severity levels.
 func (e *Extractor) Extract(output string) []*ExtractedError {
 	var extracted []*ExtractedError
 	seen := make(map[errKey]struct{})

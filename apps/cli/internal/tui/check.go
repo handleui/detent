@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 	"time"
@@ -9,6 +10,14 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/detent/cli/internal/errors"
+	"github.com/detent/cli/internal/output"
+)
+
+const (
+	viewportMinHeight     = 15
+	viewportMaxHeight     = 30
+	viewportReservedLines = 4 // status + borders + hint
 )
 
 // LogMsg is sent when new log content arrives
@@ -25,6 +34,7 @@ type ProgressMsg struct {
 type DoneMsg struct {
 	Duration time.Duration
 	ExitCode int
+	Errors   *errors.GroupedErrors
 }
 
 // ErrMsg signals an error
@@ -47,8 +57,10 @@ type CheckModel struct {
 	duration     time.Duration
 	exitCode     int
 	ready        bool
-	logsExpanded bool            // Track expanded/collapsed state
-	startTime    time.Time       // Track when workflow started
+	logsExpanded bool                  // Track expanded/collapsed state
+	startTime    time.Time             // Track when workflow started
+	logsDirty    bool                  // Track if logs need viewport update
+	errors       *errors.GroupedErrors // Extracted errors from workflow run
 }
 
 // NewCheckModel creates a new TUI model for the check command
@@ -106,16 +118,15 @@ func (m *CheckModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 
 		// Calculate viewport height for expanded mode
-		// Leave space for: status line (1) + borders (2) + hint (1) = 4 lines
-		availableHeight := msg.Height - 4
+		availableHeight := msg.Height - viewportReservedLines
 
-		// Clamp viewport height between 15 and 30 lines
+		// Clamp viewport height between min and max
 		viewportHeight := availableHeight
-		if viewportHeight < 15 {
-			viewportHeight = 15
+		if viewportHeight < viewportMinHeight {
+			viewportHeight = viewportMinHeight
 		}
-		if viewportHeight > 30 {
-			viewportHeight = 30
+		if viewportHeight > viewportMaxHeight {
+			viewportHeight = viewportMaxHeight
 		}
 
 		if !m.ready {
@@ -137,11 +148,8 @@ func (m *CheckModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.tailLines = m.allLogs
 		}
 
-		// Only update viewport if expanded
-		if m.logsExpanded && m.ready {
-			m.viewport.SetContent(strings.Join(m.allLogs, "\n"))
-			m.viewport.GotoBottom()
-		}
+		// Mark logs as dirty instead of immediate update
+		m.logsDirty = true
 
 		return m, waitForActivity
 
@@ -154,6 +162,7 @@ func (m *CheckModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.done = true
 		m.duration = msg.Duration
 		m.exitCode = msg.ExitCode
+		m.errors = msg.Errors
 		m.logsExpanded = false // Auto-collapse on completion
 		return m, tea.Quit
 
@@ -225,6 +234,13 @@ func (m *CheckModel) renderExpandedView() string {
 	statusLine := fmt.Sprintf("%s %s (%s)", m.spinner.View(), m.status, elapsed)
 	b.WriteString(statusLine + "\n")
 
+	// Update viewport only if logs changed
+	if m.logsDirty {
+		m.viewport.SetContent(strings.Join(m.allLogs, "\n"))
+		m.viewport.GotoBottom()
+		m.logsDirty = false
+	}
+
 	// Bordered viewport with logs
 	logBoxStyle := lipgloss.NewStyle().
 		BorderStyle(lipgloss.RoundedBorder()).
@@ -240,19 +256,35 @@ func (m *CheckModel) renderExpandedView() string {
 	return b.String()
 }
 
-// renderCompletionView renders the final completion summary
+// renderCompletionView renders the final completion summary with error report
 func (m *CheckModel) renderCompletionView() string {
+	var b strings.Builder
+
+	// Determine status message
 	statusIcon := "✓"
 	statusColor := lipgloss.Color("42")
+	statusText := "Check passed"
+
 	if m.exitCode != 0 {
 		statusIcon = "✗"
 		statusColor = lipgloss.Color("196")
+		statusText = "Check failed"
 	}
 
-	completionStyle := lipgloss.NewStyle().
+	headerStyle := lipgloss.NewStyle().
 		Foreground(statusColor).
 		Bold(true)
 
-	return completionStyle.Render(fmt.Sprintf("%s Completed in %s (exit code %d)\n", statusIcon, m.duration, m.exitCode))
+	// Print status header
+	b.WriteString(headerStyle.Render(fmt.Sprintf("%s %s in %s\n", statusIcon, statusText, m.duration)))
+
+	// If we have errors, format and display them
+	if m.errors != nil {
+		var errBuf bytes.Buffer
+		output.FormatText(&errBuf, m.errors)
+		b.WriteString(errBuf.String())
+	}
+
+	return b.String()
 }
 

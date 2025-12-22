@@ -19,7 +19,9 @@ const (
 	colorBold   = "\033[1m"
 )
 
-// FormatText writes human-readable error output to w.
+// FormatText formats error groups as human-readable text output.
+// It displays errors grouped by file with colored severity indicators
+// and summary statistics at the end.
 func FormatText(w io.Writer, grouped *errors.GroupedErrors) {
 	// Count errors and warnings
 	errorCount, warningCount := countSeverities(grouped)

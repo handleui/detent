@@ -22,13 +22,21 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const actTimeout = 30 * time.Minute
+const (
+	actTimeout               = 30 * time.Minute
+	preflightVisualDelay     = 200 * time.Millisecond
+	preflightTransitionDelay = 100 * time.Millisecond
+	preflightCompletionPause = 300 * time.Millisecond
+)
 
 var (
 	workflowsDir string
 	outputFormat string
 	event        string
 	verbose      bool
+
+	// Pre-compiled regex for parseActProgress
+	jobStepPattern = regexp.MustCompile(`^\[([^\]]+)\]\s+(.+)`)
 )
 
 var checkCmd = &cobra.Command{
@@ -93,9 +101,10 @@ func runCheck(cmd *cobra.Command, args []string) error {
 	}
 
 	var result *act.RunResult
+	var grouped *internalerrors.GroupedErrors
 
 	if useTUI {
-		result, err = runWithTUI(ctx, absRepoPath, tmpDir)
+		result, grouped, err = runWithTUIAndExtract(ctx, absRepoPath, tmpDir)
 	} else {
 		result, err = runWithoutTUI(ctx, absRepoPath, tmpDir)
 	}
@@ -108,24 +117,62 @@ func runCheck(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("running act: %w", err)
 	}
 
-	combinedOutput := result.Stdout + result.Stderr
-	var extractor internalerrors.Extractor
-	extracted := extractor.Extract(combinedOutput)
-	grouped := internalerrors.GroupByFileWithBase(extracted, absRepoPath)
+	// Extract errors if not already done (TUI mode extracts early)
+	if grouped == nil {
+		combinedOutput := result.Stdout + result.Stderr
+		var extractor internalerrors.Extractor
+		extracted := extractor.Extract(combinedOutput)
+		grouped = internalerrors.GroupByFileWithBase(extracted, absRepoPath)
+	}
 
-	switch outputFormat {
-	case "json":
-		if err := output.FormatJSON(os.Stdout, grouped); err != nil {
-			return fmt.Errorf("formatting JSON output: %w", err)
+	// Only print error report in non-TUI mode (TUI shows it in completion view)
+	if !useTUI {
+		switch outputFormat {
+		case "json":
+			if err := output.FormatJSON(os.Stdout, grouped); err != nil {
+				return fmt.Errorf("formatting JSON output: %w", err)
+			}
+		default:
+			output.FormatText(os.Stdout, grouped)
 		}
-	default:
-		output.FormatText(os.Stdout, grouped)
+	}
+
+	// Return error if act failed or if there are actual errors (not just warnings)
+	if result.ExitCode != 0 {
+		return fmt.Errorf("workflow execution failed with exit code %d", result.ExitCode)
+	}
+
+	// Check if there are any actual errors (not warnings)
+	hasErrors := false
+	for _, issues := range grouped.ByFile {
+		for _, issue := range issues {
+			if issue.Severity == "error" {
+				hasErrors = true
+				break
+			}
+		}
+		if hasErrors {
+			break
+		}
+	}
+
+	if !hasErrors {
+		for _, issue := range grouped.NoFile {
+			if issue.Severity == "error" {
+				hasErrors = true
+				break
+			}
+		}
+	}
+
+	if hasErrors {
+		return fmt.Errorf("found errors in workflow execution")
 	}
 
 	return nil
 }
 
-func runWithTUI(ctx context.Context, repoPath, tmpDir string) (*act.RunResult, error) {
+func runWithTUIAndExtract(ctx context.Context, repoPath, tmpDir string) (*act.RunResult, *internalerrors.GroupedErrors, error) {
 	model := tui.NewCheckModel()
 	program := tea.NewProgram(&model) // Inline mode - no AltScreen
 
@@ -169,9 +216,16 @@ func runWithTUI(ctx context.Context, repoPath, tmpDir string) (*act.RunResult, e
 		// Wait for result or error
 		select {
 		case result := <-resultChan:
+			// Extract errors before sending done message
+			combinedOutput := result.Stdout + result.Stderr
+			var extractor internalerrors.Extractor
+			extracted := extractor.Extract(combinedOutput)
+			grouped := internalerrors.GroupByFileWithBase(extracted, repoPath)
+
 			program.Send(tui.DoneMsg{
 				Duration: result.Duration,
 				ExitCode: result.ExitCode,
+				Errors:   grouped,
 			})
 		case err := <-errChan:
 			program.Send(tui.ErrMsg(err))
@@ -179,17 +233,22 @@ func runWithTUI(ctx context.Context, repoPath, tmpDir string) (*act.RunResult, e
 	}()
 
 	if _, err := program.Run(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Get the result
 	select {
 	case result := <-resultChan:
-		return result, nil
+		// Extract errors for return
+		combinedOutput := result.Stdout + result.Stderr
+		var extractor internalerrors.Extractor
+		extracted := extractor.Extract(combinedOutput)
+		grouped := internalerrors.GroupByFileWithBase(extracted, repoPath)
+		return result, grouped, nil
 	case err := <-errChan:
-		return nil, err
+		return nil, nil, err
 	default:
-		return nil, fmt.Errorf("no result received")
+		return nil, nil, fmt.Errorf("no result received")
 	}
 }
 
@@ -231,8 +290,7 @@ func parseActProgress(line string) *tui.ProgressMsg {
 	// "[job-name]   ✅  Success - Step Name"
 	// We'll parse these to extract current step info
 
-	// Match job/step patterns
-	jobStepPattern := regexp.MustCompile(`^\[([^\]]+)\]\s+(.+)`)
+	// Match job/step patterns using pre-compiled regex
 	matches := jobStepPattern.FindStringSubmatch(line)
 
 	if len(matches) >= 3 {
@@ -268,7 +326,7 @@ func runPreflightChecks(ctx context.Context, workflowPath string) (tmpDir string
 	display.Render()
 
 	// Check 1: Docker availability
-	time.Sleep(200 * time.Millisecond) // Small delay for visual effect
+	time.Sleep(preflightVisualDelay)
 	display.UpdateCheck("Checking Docker availability", "running", nil)
 	display.Render()
 
@@ -283,7 +341,7 @@ func runPreflightChecks(ctx context.Context, workflowPath string) (tmpDir string
 	display.Render()
 
 	// Check 2: Prepare workflows
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(preflightTransitionDelay)
 	display.UpdateCheck("Preparing workflows (injecting continue-on-error)", "running", nil)
 	display.Render()
 
@@ -299,7 +357,7 @@ func runPreflightChecks(ctx context.Context, workflowPath string) (tmpDir string
 	display.Render()
 
 	// Small pause to show all checks passed
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(preflightCompletionPause)
 
 	// Add a blank line before TUI starts
 	fmt.Fprintln(os.Stderr)
