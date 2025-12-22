@@ -36,8 +36,10 @@ var checkCmd = &cobra.Command{
 	Short: "Check workflows for errors by running them locally",
 	Long: `Runs GitHub Actions locally using act, injecting continue-on-error
 to ensure all steps run. Extracts and groups errors by file for debugging.`,
-	Args: cobra.MaximumNArgs(1),
-	RunE: runCheck,
+	Args:          cobra.MaximumNArgs(1),
+	RunE:          runCheck,
+	SilenceUsage:  true, // Don't show usage on runtime errors
+	SilenceErrors: true, // We handle errors ourselves
 }
 
 func init() {
@@ -125,7 +127,7 @@ func runCheck(cmd *cobra.Command, args []string) error {
 
 func runWithTUI(ctx context.Context, repoPath, tmpDir string) (*act.RunResult, error) {
 	model := tui.NewCheckModel()
-	program := tea.NewProgram(&model, tea.WithAltScreen())
+	program := tea.NewProgram(&model) // Inline mode - no AltScreen
 
 	logChan := make(chan string, 100)
 	resultChan := make(chan *act.RunResult, 1)

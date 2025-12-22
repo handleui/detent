@@ -34,7 +34,9 @@ type ErrMsg error
 type CheckModel struct {
 	viewport     viewport.Model
 	spinner      spinner.Model
-	logs         []string
+	logs         []string        // Deprecated: use allLogs instead
+	allLogs      []string        // Full log history
+	tailLines    []string        // Last 3 lines for compact display
 	status       string
 	currentStep  int
 	totalSteps   int
@@ -45,6 +47,8 @@ type CheckModel struct {
 	duration     time.Duration
 	exitCode     int
 	ready        bool
+	logsExpanded bool            // Track expanded/collapsed state
+	startTime    time.Time       // Track when workflow started
 }
 
 // NewCheckModel creates a new TUI model for the check command
@@ -54,9 +58,13 @@ func NewCheckModel() CheckModel {
 	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
 
 	return CheckModel{
-		spinner: s,
-		status:  "Initializing...",
-		logs:    []string{},
+		spinner:      s,
+		status:       "Initializing...",
+		logs:         []string{},
+		allLogs:      []string{},
+		tailLines:    []string{},
+		logsExpanded: false,
+		startTime:    time.Now(),
 	}
 }
 
@@ -82,29 +90,59 @@ func (m *CheckModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "ctrl+c", "q":
 			return m, tea.Quit
+		case "o":
+			// Toggle logs expanded/collapsed
+			m.logsExpanded = !m.logsExpanded
+			if m.logsExpanded && m.ready {
+				// Populate viewport with all logs when expanding
+				m.viewport.SetContent(strings.Join(m.allLogs, "\n"))
+				m.viewport.GotoBottom()
+			}
+			return m, nil
 		}
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
 
-		headerHeight := 4 // Space for status and progress
-		footerHeight := 1 // Space for quit instruction when done
-		verticalMargin := headerHeight + footerHeight
+		// Calculate viewport height for expanded mode
+		// Leave space for: status line (1) + borders (2) + hint (1) = 4 lines
+		availableHeight := msg.Height - 4
+
+		// Clamp viewport height between 15 and 30 lines
+		viewportHeight := availableHeight
+		if viewportHeight < 15 {
+			viewportHeight = 15
+		}
+		if viewportHeight > 30 {
+			viewportHeight = 30
+		}
 
 		if !m.ready {
-			m.viewport = viewport.New(msg.Width, msg.Height-verticalMargin)
-			m.viewport.YPosition = headerHeight
+			m.viewport = viewport.New(msg.Width-4, viewportHeight) // -4 for borders and padding
 			m.ready = true
 		} else {
-			m.viewport.Width = msg.Width
-			m.viewport.Height = msg.Height - verticalMargin
+			m.viewport.Width = msg.Width - 4
+			m.viewport.Height = viewportHeight
 		}
 
 	case LogMsg:
-		m.logs = append(m.logs, string(msg))
-		m.viewport.SetContent(strings.Join(m.logs, "\n"))
-		m.viewport.GotoBottom()
+		// Append to full log history
+		m.allLogs = append(m.allLogs, string(msg))
+
+		// Update tail lines (last 3 lines)
+		if len(m.allLogs) > 3 {
+			m.tailLines = m.allLogs[len(m.allLogs)-3:]
+		} else {
+			m.tailLines = m.allLogs
+		}
+
+		// Only update viewport if expanded
+		if m.logsExpanded && m.ready {
+			m.viewport.SetContent(strings.Join(m.allLogs, "\n"))
+			m.viewport.GotoBottom()
+		}
+
 		return m, waitForActivity
 
 	case ProgressMsg:
@@ -116,10 +154,12 @@ func (m *CheckModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.done = true
 		m.duration = msg.Duration
 		m.exitCode = msg.ExitCode
+		m.logsExpanded = false // Auto-collapse on completion
 		return m, tea.Quit
 
 	case ErrMsg:
 		m.err = msg
+		m.logsExpanded = false // Auto-collapse on error
 		return m, tea.Quit
 
 	case spinner.TickMsg:
@@ -134,78 +174,85 @@ func (m *CheckModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *CheckModel) View() string {
-	if !m.ready {
-		return "Initializing..."
+	// If done, show completion summary (auto-collapsed)
+	if m.done {
+		return m.renderCompletionView()
 	}
 
+	// If not ready yet (no WindowSizeMsg), show minimal status
+	if !m.ready {
+		return m.status + "\n"
+	}
+
+	// Render based on expanded state
+	if m.logsExpanded {
+		return m.renderExpandedView()
+	}
+
+	return m.renderCompactView()
+}
+
+// renderCompactView renders the compact (collapsed) view with tail lines
+func (m *CheckModel) renderCompactView() string {
 	var b strings.Builder
 
-	// Header section (no box)
-	headerStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("205"))
+	// Status line with spinner and elapsed time
+	elapsed := time.Since(m.startTime).Round(time.Second)
+	statusLine := fmt.Sprintf("%s %s (%s)", m.spinner.View(), m.status, elapsed)
+	b.WriteString(statusLine + "\n")
 
-	statusStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("241"))
-
-	if m.done {
-		// Show completion status
-		statusIcon := "✓"
-		statusColor := lipgloss.Color("42")
-		if m.exitCode != 0 {
-			statusIcon = "✗"
-			statusColor = lipgloss.Color("196")
+	// Show last 3 log lines indented
+	if len(m.tailLines) > 0 {
+		for _, line := range m.tailLines {
+			b.WriteString("  " + line + "\n")
 		}
-
-		completionStyle := lipgloss.NewStyle().
-			Foreground(statusColor).
-			Bold(true)
-
-		b.WriteString(completionStyle.Render(fmt.Sprintf("%s Completed in %s (exit code %d)\n\n", statusIcon, m.duration, m.exitCode)))
-	} else {
-		// Show running status with spinner
-		if m.totalSteps > 0 {
-			progress := float64(m.currentStep) / float64(m.totalSteps)
-			progressBar := renderProgressBar(progress, 40)
-			b.WriteString(headerStyle.Render(fmt.Sprintf("Running: %s (step %d/%d)\n", m.status, m.currentStep, m.totalSteps)))
-			b.WriteString(progressBar + "\n\n")
-		} else {
-			b.WriteString(fmt.Sprintf("%s %s\n\n", m.spinner.View(), statusStyle.Render(m.status)))
-		}
+		b.WriteString("\n")
 	}
 
-	// Logs viewport with border
+	// Toggle hint
+	hintStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	b.WriteString(hintStyle.Render("⊕ Full logs (press 'o' to expand, 'q' to quit)\n"))
+
+	return b.String()
+}
+
+// renderExpandedView renders the expanded view with full logs in viewport
+func (m *CheckModel) renderExpandedView() string {
+	var b strings.Builder
+
+	// Status line with spinner and elapsed time
+	elapsed := time.Since(m.startTime).Round(time.Second)
+	statusLine := fmt.Sprintf("%s %s (%s)", m.spinner.View(), m.status, elapsed)
+	b.WriteString(statusLine + "\n")
+
+	// Bordered viewport with logs
 	logBoxStyle := lipgloss.NewStyle().
 		BorderStyle(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("63")).
 		Padding(0, 1)
 
-	b.WriteString(logBoxStyle.Render(m.viewport.View()))
+	b.WriteString(logBoxStyle.Render(m.viewport.View()) + "\n")
 
-	// Footer
-	if m.done {
-		b.WriteString("\n")
-		helpStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-		b.WriteString(helpStyle.Render("(press q to quit)"))
-	}
+	// Toggle hint
+	hintStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	b.WriteString(hintStyle.Render("⊖ Full logs (press 'o' to collapse, 'q' to quit)\n"))
 
 	return b.String()
 }
 
-// renderProgressBar creates a text-based progress bar
-func renderProgressBar(progress float64, width int) string {
-	filled := int(progress * float64(width))
-	if filled > width {
-		filled = width
+// renderCompletionView renders the final completion summary
+func (m *CheckModel) renderCompletionView() string {
+	statusIcon := "✓"
+	statusColor := lipgloss.Color("42")
+	if m.exitCode != 0 {
+		statusIcon = "✗"
+		statusColor = lipgloss.Color("196")
 	}
 
-	bar := strings.Repeat("━", filled) + strings.Repeat("─", width-filled)
-	percentage := int(progress * 100)
+	completionStyle := lipgloss.NewStyle().
+		Foreground(statusColor).
+		Bold(true)
 
-	barStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
-	emptyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-
-	styledBar := barStyle.Render(bar[:filled]) + emptyStyle.Render(bar[filled:])
-
-	return fmt.Sprintf("%s %3d%%", styledBar, percentage)
+	return completionStyle.Render(fmt.Sprintf("%s Completed in %s (exit code %d)\n", statusIcon, m.duration, m.exitCode))
 }
+

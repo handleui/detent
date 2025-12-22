@@ -54,7 +54,9 @@ func RenderPreflightCheck(check PreflightCheck) string {
 
 // PreflightDisplay manages the display of pre-flight checks
 type PreflightDisplay struct {
-	checks []PreflightCheck
+	checks       []PreflightCheck
+	rendered     bool // Track if we've rendered before
+	numLines     int  // Track how many lines we've rendered
 }
 
 // NewPreflightDisplay creates a new pre-flight display
@@ -82,15 +84,25 @@ func (p *PreflightDisplay) UpdateCheck(name, status string, err error) {
 
 // Render renders all checks to stderr
 func (p *PreflightDisplay) Render() {
-	// Clear previous output
-	fmt.Fprint(os.Stderr, "\033[2J\033[H")
-
 	var lines []string
 	for _, check := range p.checks {
 		lines = append(lines, RenderPreflightCheck(check))
 	}
 
-	fmt.Fprintln(os.Stderr, strings.Join(lines, "\n"))
+	if p.rendered {
+		// Move cursor up to overwrite previous output
+		fmt.Fprintf(os.Stderr, "\033[%dA", p.numLines)
+		// Clear from cursor to end of screen
+		fmt.Fprint(os.Stderr, "\033[J")
+	}
+
+	// Print all check lines
+	output := strings.Join(lines, "\n")
+	fmt.Fprintln(os.Stderr, output)
+
+	// Track that we've rendered and how many lines
+	p.rendered = true
+	p.numLines = len(lines)
 }
 
 // RenderFinal renders the final state and waits for user
