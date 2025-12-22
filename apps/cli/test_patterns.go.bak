@@ -1,0 +1,63 @@
+package main
+
+import (
+	"fmt"
+	"regexp"
+	"strings"
+)
+
+func main() {
+	// Test file path pattern
+	filePathPattern := regexp.MustCompile(`^([^\s:]+\.(ts|tsx|js|jsx|go|py|rs|java|c|cpp|h|hpp))$`)
+	eslintPattern := regexp.MustCompile(`^\s*(\d+):(\d+)\s+(error|warning)\s+(.+)$`)
+	actContextPattern := regexp.MustCompile(`^\[([^\]]+)\]`)
+
+	// Simulate parseActContext
+	parseActContext := func(line string) (job string, cleanedLine string) {
+		if match := actContextPattern.FindStringSubmatchIndex(line); match != nil {
+			job = line[match[2]:match[3]]
+			if match[1] < len(line) {
+				rest := line[match[1]:]
+				rest = strings.TrimLeft(rest, " \t")
+				if rest != "" && rest[0] == '|' {
+					rest = rest[1:]
+				}
+				cleanedLine = strings.TrimSpace(rest)
+				return
+			}
+		}
+		cleanedLine = line
+		return
+	}
+
+	// Test cases from actual act output
+	testLines := []string{
+		"[CI/build]   | /Users/rodrigo/Desktop/everything/code/detent/tmp/million/packages/compiler/block.ts",
+		"[CI/build]   |   412:33  error  This assertion is unnecessary since it does not change the type of the expression  @typescript-eslint/no-unnecessary-type-assertion",
+	}
+
+	for i, line := range testLines {
+		job, cleaned := parseActContext(line)
+		fmt.Printf("\nTest %d:\n", i+1)
+		fmt.Printf("  Input: %q\n", line)
+		fmt.Printf("  Job: %q\n", job)
+		fmt.Printf("  Cleaned: %q\n", cleaned)
+
+		if filePathPattern.MatchString(cleaned) {
+			fmt.Printf("  ✓ Matches filePathPattern\n")
+			match := filePathPattern.FindStringSubmatch(cleaned)
+			fmt.Printf("    File: %s\n", match[1])
+		} else {
+			fmt.Printf("  ✗ Does NOT match filePathPattern\n")
+		}
+
+		if eslintPattern.MatchString(cleaned) {
+			fmt.Printf("  ✓ Matches eslintPattern\n")
+			match := eslintPattern.FindStringSubmatch(cleaned)
+			fmt.Printf("    Line: %s, Col: %s, Severity: %s, Message: %s\n",
+				match[1], match[2], match[3], match[4])
+		} else {
+			fmt.Printf("  ✗ Does NOT match eslintPattern\n")
+		}
+	}
+}

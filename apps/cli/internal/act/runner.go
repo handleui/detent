@@ -134,15 +134,17 @@ func buildArgs(cfg *RunConfig) []string {
 		args = append(args, cfg.Event)
 	}
 
-	if cfg.Verbose {
-		args = append(args, "-v")
-	}
-
+	// ALWAYS use verbose mode to capture step output for error extraction
 	// Use medium-sized images to avoid interactive prompt on first run
+	// Docker-resilient flags to prevent container buildup and failures
 	args = append(args,
+		"-v", // Always verbose (regardless of whether user wants to see it)
 		"-P", "ubuntu-latest=catthehacker/ubuntu:act-latest",
 		"-P", "ubuntu-22.04=catthehacker/ubuntu:act-22.04",
-		"-P", "ubuntu-20.04=catthehacker/ubuntu:act-20.04")
+		"-P", "ubuntu-20.04=catthehacker/ubuntu:act-20.04",
+		"--rm",              // Remove containers after execution
+		"--no-cache-server", // Disable cache server (can cause hangs/failures)
+	)
 
 	return args
 }

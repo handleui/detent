@@ -29,12 +29,12 @@ func FormatText(w io.Writer, grouped *errors.GroupedErrors) {
 	if errorCount > 0 || warningCount > 0 {
 		totalProblems := errorCount + warningCount
 		problemText := fmt.Sprintf("%d problem%s", totalProblems, plural(totalProblems))
-		detailText := fmt.Sprintf("(%s%d error%s%s, %s%d warning%s%s)",
-			colorRed, errorCount, plural(errorCount), colorReset,
-			colorYellow, warningCount, plural(warningCount), colorReset)
+		// Make error count all red, warnings in yellow
+		detailText := fmt.Sprintf("(%s%d error%s, %d warning%s%s)",
+			colorRed, errorCount, plural(errorCount), warningCount, plural(warningCount), colorReset)
 
 		_, _ = fmt.Fprintf(w, "%s✖ %s %s%s\n", colorRed, problemText, detailText, colorReset)
-		_, _ = fmt.Fprintf(w, "%s  Run 'detent fix' to automatically fix some of these issues%s\n\n", colorGray, colorReset)
+		_, _ = fmt.Fprintf(w, "%s  Errors logged for AI fix. Run 'detent fix' or re-run after manual changes%s\n\n", colorGray, colorReset)
 	}
 
 	if len(grouped.ByFile) > 0 {

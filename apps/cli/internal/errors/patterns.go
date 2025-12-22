@@ -70,4 +70,8 @@ var (
 
 	// File path pattern: matches standalone file paths (for ESLint multi-line format)
 	filePathPattern = regexp.MustCompile(`^([^\s:]+\.(ts|tsx|js|jsx|go|py|rs|java|c|cpp|h|hpp))$`)
+
+	// Docker error patterns: infrastructure failures
+	// Matches: "No such container: abc123", "Cannot connect to the Docker daemon", etc.
+	dockerErrorPattern = regexp.MustCompile(`(?i)(no such container|cannot connect to.*docker|image pull failed|docker.*error response from daemon|container.*is not running|failed to.*docker|docker.*permission denied)`)
 )

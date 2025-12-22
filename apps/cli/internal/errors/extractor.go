@@ -60,6 +60,8 @@ func parseActContext(line string) (ctx *WorkflowContext, cleanedLine string) {
 		}
 		if match[1] < len(line) {
 			rest := line[match[1]:]
+			// Skip whitespace before pipe: "[CI/build]   | message" -> "message"
+			rest = strings.TrimLeft(rest, " \t")
 			if rest != "" && rest[0] == '|' {
 				rest = rest[1:]
 			}
@@ -84,6 +86,17 @@ func (e *Extractor) extractFromLine(line string) *ExtractedError {
 	if match := filePathPattern.FindStringSubmatch(line); match != nil {
 		e.lastFile = match[1]
 		return nil
+	}
+
+	// Docker infrastructure errors (high priority - prevents workflow execution)
+	if match := dockerErrorPattern.FindStringSubmatch(line); match != nil {
+		return &ExtractedError{
+			Message:  strings.TrimSpace(match[0]),
+			Category: CategoryRuntime,
+			Source:   "docker",
+			Severity: "error",
+			Raw:      line,
+		}
 	}
 
 	if match := goErrorPattern.FindStringSubmatch(line); match != nil {
