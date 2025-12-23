@@ -16,11 +16,11 @@ func FormatJSON(w io.Writer, grouped *errors.GroupedErrors) error {
 	return encoder.Encode(grouped)
 }
 
-// FormatJSONV2 formats error groups as JSON output using the comprehensive GroupedErrorsV2 structure.
+// FormatJSONDetailed formats error groups as JSON output using the comprehensive ComprehensiveErrorGroup structure.
 // This includes multi-dimensional grouping (by file, category, workflow) and detailed statistics.
 // Use this for AI consumption or advanced error analysis.
 // Returns error if JSON marshaling or writing fails.
-func FormatJSONV2(w io.Writer, grouped *errors.GroupedErrorsV2) error {
+func FormatJSONDetailed(w io.Writer, grouped *errors.ComprehensiveErrorGroup) error {
 	encoder := json.NewEncoder(w)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(grouped)

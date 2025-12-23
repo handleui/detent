@@ -1,0 +1,8 @@
+# Build output
+dist/detent
+dist/dt
+*.exe
+
+# Coverage
+coverage.txt
+*.out

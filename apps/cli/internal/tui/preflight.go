@@ -8,6 +8,19 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+const (
+	// ANSI escape sequence values
+	cursorUpEscapePrefix = "\033["
+	cursorUpEscapeSuffix = "A"
+	clearToEndOfScreen   = "\033[J"
+
+	// Preflight check color codes
+	colorPending = "241"
+	colorRunning = "226"
+	colorSuccess = "42"
+	colorError   = "196"
+)
+
 // PreflightCheck represents a single pre-flight check
 type PreflightCheck struct {
 	Name   string
@@ -16,10 +29,10 @@ type PreflightCheck struct {
 }
 
 var (
-	checkPendingStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	checkRunningStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("226"))
-	checkSuccessStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
-	checkErrorStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+	checkPendingStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(colorPending))
+	checkRunningStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(colorRunning))
+	checkSuccessStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(colorSuccess))
+	checkErrorStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color(colorError))
 )
 
 // RenderPreflightCheck renders a single check line
@@ -91,9 +104,9 @@ func (p *PreflightDisplay) Render() {
 
 	if p.rendered {
 		// Move cursor up to overwrite previous output
-		fmt.Fprintf(os.Stderr, "\033[%dA", p.numLines)
+		fmt.Fprintf(os.Stderr, "%s%d%s", cursorUpEscapePrefix, p.numLines, cursorUpEscapeSuffix)
 		// Clear from cursor to end of screen
-		fmt.Fprint(os.Stderr, "\033[J")
+		fmt.Fprint(os.Stderr, clearToEndOfScreen)
 	}
 
 	// Print all check lines

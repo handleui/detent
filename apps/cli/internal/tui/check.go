@@ -15,9 +15,21 @@ import (
 )
 
 const (
+	// Viewport display dimensions
 	viewportMinHeight     = 15
 	viewportMaxHeight     = 30
-	viewportReservedLines = 4 // status + borders + hint
+	viewportReservedLines = 4  // status + borders + hint
+	viewportBorderPadding = 4  // borders and padding
+
+	// Log tail display settings
+	tailLinesToShow = 3
+
+	// Color codes for spinner and status
+	spinnerColor        = "205"
+	checkStatusGreen    = "42"
+	checkStatusRed      = "196"
+	hintTextGray        = "241"
+	logBoxBorderColor   = "63"
 )
 
 // LogMsg is sent when new log content arrives
@@ -45,7 +57,6 @@ type ErrMsg error
 type CheckModel struct {
 	viewport     viewport.Model
 	spinner      spinner.Model
-	logs         []string        // Deprecated: use allLogs instead
 	allLogs      []string        // Full log history
 	tailLines    []string        // Last 3 lines for compact display
 	status       string
@@ -72,12 +83,11 @@ type CheckModel struct {
 func NewCheckModel(cancelFunc func()) CheckModel {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
-	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
+	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color(spinnerColor))
 
 	return CheckModel{
 		spinner:      s,
 		status:       "Initializing...",
-		logs:         []string{},
 		allLogs:      []string{},
 		tailLines:    []string{},
 		logsExpanded: false,
@@ -147,10 +157,10 @@ func (m *CheckModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		if !m.ready {
-			m.viewport = viewport.New(msg.Width-4, viewportHeight) // -4 for borders and padding
+			m.viewport = viewport.New(msg.Width-viewportBorderPadding, viewportHeight)
 			m.ready = true
 		} else {
-			m.viewport.Width = msg.Width - 4
+			m.viewport.Width = msg.Width - viewportBorderPadding
 			m.viewport.Height = viewportHeight
 		}
 
@@ -158,9 +168,9 @@ func (m *CheckModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Append to full log history
 		m.allLogs = append(m.allLogs, string(msg))
 
-		// Update tail lines (last 3 lines)
-		if len(m.allLogs) > 3 {
-			m.tailLines = m.allLogs[len(m.allLogs)-3:]
+		// Update tail lines (last N lines)
+		if len(m.allLogs) > tailLinesToShow {
+			m.tailLines = m.allLogs[len(m.allLogs)-tailLinesToShow:]
 		} else {
 			m.tailLines = m.allLogs
 		}
@@ -237,7 +247,7 @@ func (m *CheckModel) renderCompactView() string {
 	}
 
 	// Toggle hint
-	hintStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	hintStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(hintTextGray))
 	b.WriteString(hintStyle.Render("⊕ Full logs (press 'o' to expand, 'q' to quit)\n"))
 
 	return b.String()
@@ -262,13 +272,13 @@ func (m *CheckModel) renderExpandedView() string {
 	// Bordered viewport with logs
 	logBoxStyle := lipgloss.NewStyle().
 		BorderStyle(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("63")).
+		BorderForeground(lipgloss.Color(logBoxBorderColor)).
 		Padding(0, 1)
 
 	b.WriteString(logBoxStyle.Render(m.viewport.View()) + "\n")
 
 	// Toggle hint
-	hintStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	hintStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(hintTextGray))
 	b.WriteString(hintStyle.Render("⊖ Full logs (press 'o' to collapse, 'q' to quit)\n"))
 
 	return b.String()
@@ -280,12 +290,12 @@ func (m *CheckModel) renderCompletionView() string {
 
 	// Determine status message
 	statusIcon := "✓"
-	statusColor := lipgloss.Color("42")
+	statusColor := lipgloss.Color(checkStatusGreen)
 	statusText := "Check passed"
 
 	if m.exitCode != 0 {
 		statusIcon = "✗"
-		statusColor = lipgloss.Color("196")
+		statusColor = lipgloss.Color(checkStatusRed)
 		statusText = "Check failed"
 	}
 

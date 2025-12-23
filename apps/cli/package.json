@@ -1,4 +1,9 @@
 {
   "name": "@detent/cli",
-  "version": "0.0.1"
+  "version": "0.0.1",
+  "scripts": {
+    "build": "sh -c 'VERSION=$(node -p \"require(\\\"./package.json\\\").version\") && go build -ldflags \"-X github.com/detent/cli/cmd.Version=$VERSION\" -o dist/dt'",
+    "dev": "go build -o dist/detent",
+    "clean": "rm -rf dist"
+  }
 }

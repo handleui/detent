@@ -21,6 +21,7 @@ ValueError: invalid literal for int() with base 10: 'abc'`,
 					Message:  "ValueError: invalid literal for int() with base 10: 'abc'",
 					File:     "/app/main.py",
 					Line:     42,
+					Severity: "error",
 					Category: CategoryRuntime,
 					Source:   "python",
 				},
@@ -32,6 +33,7 @@ ValueError: invalid literal for int() with base 10: 'abc'`,
 			expected: []*ExtractedError{
 				{
 					Message:  "TypeError: unsupported operand type(s) for +: 'int' and 'str'",
+					Severity: "error",
 					Category: CategoryRuntime,
 					Source:   "python",
 				},
@@ -97,6 +99,7 @@ ValueError: invalid literal for int() with base 10: 'abc'`,
 					File:     "main.go",
 					Line:     25,
 					Column:   10,
+					Severity: "error",
 					Category: CategoryCompile,
 					Source:   "go",
 				},
@@ -111,6 +114,7 @@ ValueError: invalid literal for int() with base 10: 'abc'`,
 					File:     "src/index.ts",
 					Line:     42,
 					Column:   10,
+					Severity: "error",
 					RuleID:   "TS2749",
 					Category: CategoryTypeCheck,
 					Source:   "typescript",
@@ -127,6 +131,7 @@ ValueError: invalid literal for int() with base 10: 'abc'`,
 					File:     "src/main.rs",
 					Line:     10,
 					Column:   5,
+					Severity: "error",
 					RuleID:   "E0308",
 					Category: CategoryCompile,
 					Source:   "rust",
@@ -139,6 +144,7 @@ ValueError: invalid literal for int() with base 10: 'abc'`,
 			expected: []*ExtractedError{
 				{
 					Message:  "Test failed: TestFoo",
+					Severity: "error",
 					Category: CategoryTest,
 					Source:   "go-test",
 				},
@@ -153,6 +159,7 @@ ValueError: invalid literal for int() with base 10: 'abc'`,
 					File:     "internal/modules/cjs/loader.js",
 					Line:     892,
 					Column:   14,
+					Severity: "error",
 					Category: CategoryRuntime,
 					Source:   "nodejs",
 				},
@@ -176,6 +183,7 @@ ValueError: invalid literal for int() with base 10: 'abc'`,
 			expected: []*ExtractedError{
 				{
 					Message:  "Exit code 1",
+					Severity: "error",
 					Category: CategoryRuntime,
 				},
 			},
@@ -186,6 +194,10 @@ ValueError: invalid literal for int() with base 10: 'abc'`,
 		t.Run(tt.name, func(t *testing.T) {
 			extractor := NewExtractor()
 			result := extractor.Extract(tt.input)
+			// Apply severity inference as post-processing (mimics cmd/check.go behavior)
+			for _, err := range result {
+				err.Severity = InferSeverity(err)
+			}
 
 			if len(result) != len(tt.expected) {
 				t.Fatalf("Expected %d errors, got %d", len(tt.expected), len(result))

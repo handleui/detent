@@ -9,8 +9,16 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const brandingColor = "#808080"
+
+var (
+	// Global flags shared across commands
+	workflowsDir string
+	workflowFile string
+)
+
 var brandingStyle = lipgloss.NewStyle().
-	Foreground(lipgloss.Color("#808080"))
+	Foreground(lipgloss.Color(brandingColor))
 
 var rootCmd = &cobra.Command{
 	Use:     "detent",
@@ -31,6 +39,10 @@ func init() {
 	rootCmd.AddCommand(checkCmd)
 	rootCmd.AddCommand(validateCmd)
 	rootCmd.AddCommand(injectCmd)
+
+	// Persistent flags available to all commands
+	rootCmd.PersistentFlags().StringVarP(&workflowsDir, "workflows", "w", ".github/workflows", "Path to workflows directory")
+	rootCmd.PersistentFlags().StringVar(&workflowFile, "workflow", "", "Specific workflow file to run (e.g., ci.yml)")
 
 	rootCmd.SetHelpTemplate(fmt.Sprintf(`%s
 {{with (or .Long .Short)}}{{. | trimTrailingWhitespaces}}

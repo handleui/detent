@@ -117,8 +117,8 @@ type ErrorStats struct {
 	UniqueRules  int                   `json:"unique_rules"`
 }
 
-// GroupedErrorsV2 supports multiple grouping strategies for AI consumption
-type GroupedErrorsV2 struct {
+// ComprehensiveErrorGroup supports multiple grouping strategies for AI consumption
+type ComprehensiveErrorGroup struct {
 	ByFile     map[string][]*ExtractedError        `json:"by_file"`
 	ByCategory map[ErrorCategory][]*ExtractedError `json:"by_category"`
 	ByWorkflow map[string][]*ExtractedError        `json:"by_workflow"`
@@ -156,8 +156,8 @@ func GroupByWorkflow(errs []*ExtractedError) map[string][]*ExtractedError {
 // GroupComprehensive creates comprehensive grouping with all strategies and statistics.
 // It provides multi-dimensional error organization (by file, category, workflow) with
 // detailed statistics, making it ideal for detailed reporting and analysis.
-func GroupComprehensive(errs []*ExtractedError, basePath string) *GroupedErrorsV2 {
-	grouped := &GroupedErrorsV2{
+func GroupComprehensive(errs []*ExtractedError, basePath string) *ComprehensiveErrorGroup {
+	grouped := &ComprehensiveErrorGroup{
 		ByFile:     make(map[string][]*ExtractedError),
 		ByCategory: GroupByCategory(errs),
 		ByWorkflow: GroupByWorkflow(errs),
@@ -185,10 +185,12 @@ func GroupComprehensive(errs []*ExtractedError, basePath string) *GroupedErrorsV
 		}
 
 		// Collect statistics
-		if err.Severity == "warning" {
-			grouped.Stats.WarningCount++
-		} else {
+		// Note: All errors should have severity set by the extractor via InferSeverity
+		switch err.Severity {
+		case "error":
 			grouped.Stats.ErrorCount++
+		case "warning":
+			grouped.Stats.WarningCount++
 		}
 
 		category := err.Category

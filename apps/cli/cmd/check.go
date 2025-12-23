@@ -24,14 +24,17 @@ import (
 )
 
 const (
-	actTimeout               = 30 * time.Minute
+	actTimeout               = 35 * time.Minute
 	preflightVisualDelay     = 200 * time.Millisecond
 	preflightTransitionDelay = 100 * time.Millisecond
 	preflightCompletionPause = 300 * time.Millisecond
+
+	// Channel buffer sizes
+	logChannelBufferSize = 100 // Buffer size for streaming act logs to TUI
 )
 
 var (
-	workflowsDir string
+	// Command-specific flags
 	outputFormat string
 	event        string
 	verbose      bool
@@ -52,10 +55,18 @@ to ensure all steps run. Extracts and groups errors by file for debugging.`,
 }
 
 func init() {
-	checkCmd.Flags().StringVarP(&workflowsDir, "workflows", "w", ".github/workflows", "Path to workflows directory")
 	checkCmd.Flags().StringVarP(&outputFormat, "output", "o", "text", "Output format: text, json, json-detailed")
 	checkCmd.Flags().StringVarP(&event, "event", "e", "push", "Event to trigger")
 	checkCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Show act logs in real-time")
+}
+
+// applySeverity infers severity for all extracted errors based on their category.
+// This is done as explicit post-processing after extraction to maintain separation
+// of concerns: extraction is pure parsing, severity is business logic.
+func applySeverity(extractedErrors []*internalerrors.ExtractedError) {
+	for _, err := range extractedErrors {
+		err.Severity = internalerrors.InferSeverity(err)
+	}
 }
 
 func runCheck(cmd *cobra.Command, args []string) error {
@@ -80,7 +91,7 @@ func runCheck(cmd *cobra.Command, args []string) error {
 	defer cancel()
 
 	// Check if we're in a TTY and not in verbose mode (use TUI)
-	useTUI := !verbose && isatty.IsTerminal(os.Stdout.Fd())
+	useTUI := !verbose && isatty.IsTerminal(os.Stderr.Fd())
 
 	var tmpDir string
 	var cleanup func()
@@ -94,7 +105,7 @@ func runCheck(cmd *cobra.Command, args []string) error {
 		defer cleanup()
 	} else {
 		// Traditional flow without pre-flight display
-		tmpDir, cleanup, err = workflow.PrepareWorkflows(workflowPath)
+		tmpDir, cleanup, err = workflow.PrepareWorkflows(workflowPath, workflowFile)
 		if err != nil {
 			return fmt.Errorf("preparing workflows: %w", err)
 		}
@@ -117,10 +128,6 @@ func runCheck(cmd *cobra.Command, args []string) error {
 	}
 
 	if err != nil {
-		if errors.Is(ctx.Err(), context.Canceled) {
-			signal.PrintCancellationMessage("check")
-			return nil
-		}
 		return fmt.Errorf("running act: %w", err)
 	}
 
@@ -130,6 +137,7 @@ func runCheck(cmd *cobra.Command, args []string) error {
 		combinedOutput := result.Stdout + result.Stderr
 		extractor := internalerrors.NewExtractor()
 		extracted = extractor.Extract(combinedOutput)
+		applySeverity(extracted)
 		grouped = internalerrors.GroupByFileWithBase(extracted, absRepoPath)
 	} else {
 		// If grouped exists, flatten it to get extracted errors for persistence
@@ -168,9 +176,9 @@ func runCheck(cmd *cobra.Command, args []string) error {
 				return fmt.Errorf("formatting JSON output: %w", err)
 			}
 		case "json-detailed":
-			// Use already-extracted errors to create comprehensive V2 grouping
-			groupedV2 := internalerrors.GroupComprehensive(extracted, absRepoPath)
-			if err := output.FormatJSONV2(os.Stdout, groupedV2); err != nil {
+			// Use already-extracted errors to create comprehensive grouping
+			groupedDetailed := internalerrors.GroupComprehensive(extracted, absRepoPath)
+			if err := output.FormatJSONDetailed(os.Stdout, groupedDetailed); err != nil {
 				return fmt.Errorf("formatting JSON detailed output: %w", err)
 			}
 		default:
@@ -224,7 +232,7 @@ func runWithTUIAndExtract(ctx context.Context, repoPath, tmpDir string) (*act.Ru
 		tea.WithContext(ctx), // Integrate context with Bubble Tea
 	)
 
-	logChan := make(chan string, 100)
+	logChan := make(chan string, logChannelBufferSize)
 
 	// Result structure to pass data from log processor to main thread
 	type tuiResult struct {
@@ -236,8 +244,14 @@ func runWithTUIAndExtract(ctx context.Context, repoPath, tmpDir string) (*act.Ru
 
 	// Start act in a goroutine
 	go func() {
+		// Determine workflow path: if specific workflow is requested, use it; otherwise use directory
+		workflowPath := tmpDir
+		if workflowFile != "" {
+			workflowPath = filepath.Join(tmpDir, workflowFile)
+		}
+
 		cfg := &act.RunConfig{
-			WorkflowPath: tmpDir,
+			WorkflowPath: workflowPath,
 			Event:        event,
 			Verbose:      false,
 			WorkDir:      repoPath,
@@ -259,6 +273,7 @@ func runWithTUIAndExtract(ctx context.Context, repoPath, tmpDir string) (*act.Ru
 		combinedOutput := result.Stdout + result.Stderr
 		extractor := internalerrors.NewExtractor()
 		extracted := extractor.Extract(combinedOutput)
+		applySeverity(extracted)
 		grouped := internalerrors.GroupByFileWithBase(extracted, repoPath)
 
 		// Check if context was cancelled
@@ -322,8 +337,14 @@ func runWithoutTUI(ctx context.Context, repoPath, tmpDir string) (*act.RunResult
 		_, _ = fmt.Fprintf(os.Stderr, "Running workflows... ")
 	}
 
+	// Determine workflow path: if specific workflow is requested, use it; otherwise use directory
+	workflowPath := tmpDir
+	if workflowFile != "" {
+		workflowPath = filepath.Join(tmpDir, workflowFile)
+	}
+
 	cfg := &act.RunConfig{
-		WorkflowPath: tmpDir,
+		WorkflowPath: workflowPath,
 		Event:        event,
 		Verbose:      verbose,
 		WorkDir:      repoPath,
@@ -406,7 +427,7 @@ func runPreflightChecks(ctx context.Context, workflowPath string) (tmpDir string
 	display.UpdateCheck("Preparing workflows (injecting continue-on-error)", "running", nil)
 	display.Render()
 
-	tmpDir, cleanup, err = workflow.PrepareWorkflows(workflowPath)
+	tmpDir, cleanup, err = workflow.PrepareWorkflows(workflowPath, workflowFile)
 	if err != nil {
 		display.UpdateCheck("Preparing workflows (injecting continue-on-error)", "error", err)
 		display.RenderFinal()

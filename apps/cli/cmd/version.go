@@ -1,5 +1,5 @@
 package cmd
 
-// Version is the current version of the CLI
-// This should match the version in package.json
-const Version = "0.0.1"
+// Version is injected at build time via ldflags from package.json
+// For development builds, defaults to "dev"
+var Version = "dev"

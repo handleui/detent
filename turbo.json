@@ -5,7 +5,11 @@
     "build": {
       "dependsOn": ["^build"],
       "inputs": ["$TURBO_DEFAULT$", ".env*"],
-      "outputs": [".next/**", "!.next/cache/**"]
+      "outputs": [".next/**", "!.next/cache/**", "dist/**"]
+    },
+    "@detent/cli#build": {
+      "inputs": ["**/*.go", "go.mod", "go.sum", "package.json"],
+      "outputs": ["dist/**"]
     },
     "lint": {
       "dependsOn": ["^lint"]

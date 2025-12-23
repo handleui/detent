@@ -157,9 +157,7 @@ func countSeverities(grouped *errors.GroupedErrors) (errorCount, warningCount in
 func countBySeverity(errs []*errors.ExtractedError, severity string) int {
 	count := 0
 	for _, err := range errs {
-		if severity == "error" && (err.Severity == "error" || err.Severity == "") {
-			count++
-		} else if err.Severity == severity {
+		if err.Severity == severity {
 			count++
 		}
 	}

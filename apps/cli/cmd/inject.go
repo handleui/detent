@@ -9,8 +9,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var injectWorkflow string
-
 var injectCmd = &cobra.Command{
 	Use:   "inject [repo-path]",
 	Short: "Preview workflow injections (dry-run)",
@@ -25,10 +23,6 @@ Outputs modified YAML to stdout for inspection.`,
 	RunE: runInject,
 }
 
-func init() {
-	injectCmd.Flags().StringVarP(&injectWorkflow, "workflows", "w", ".github/workflows", "Path to workflows directory")
-}
-
 func runInject(cmd *cobra.Command, args []string) error {
 	repoPath := "."
 	if len(args) > 0 {
@@ -40,7 +34,7 @@ func runInject(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("resolving repo path: %w", err)
 	}
 
-	workflowPath := filepath.Join(absRepoPath, injectWorkflow)
+	workflowPath := filepath.Join(absRepoPath, workflowsDir)
 
 	workflows, err := workflow.DiscoverWorkflows(workflowPath)
 	if err != nil {
