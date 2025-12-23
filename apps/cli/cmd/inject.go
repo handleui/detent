@@ -11,14 +11,32 @@ import (
 
 var injectCmd = &cobra.Command{
 	Use:   "inject [repo-path]",
-	Short: "Preview workflow injections (dry-run)",
-	Long: `Preview the continue-on-error and timeout injections that the check command applies.
+	Short: "Preview workflow modifications (dry-run)",
+	Long: `Preview the continue-on-error and timeout injections that check command applies
+to your workflow files. This is a dry-run command that shows modifications without
+changing any files.
 
-This is a dry-run command that shows what modifications would be made to your workflow
-files without actually changing them. The actual injection happens automatically when
-you run the check command.
+The check command automatically performs these injections:
+  - continue-on-error: true (ensures all steps run)
+  - timeout-minutes: 30 (prevents infinite hangs)
+
+This command is useful for:
+  - Understanding what detent does to your workflows
+  - Debugging workflow modification issues
+  - Verifying injection behavior before running check
 
 Outputs modified YAML to stdout for inspection.`,
+	Example: `  # Preview injections for all workflows
+  detent inject
+
+  # Preview specific workflow
+  detent inject --workflow ci.yml
+
+  # Preview workflows in custom directory
+  detent inject --workflows .github/custom-workflows
+
+  # Save preview to file
+  detent inject > modified-workflows.yml`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runInject,
 }

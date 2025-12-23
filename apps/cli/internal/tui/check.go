@@ -97,6 +97,7 @@ func NewCheckModel(cancelFunc func()) CheckModel {
 	}
 }
 
+// Init initializes the model and starts the spinner
 func (m *CheckModel) Init() tea.Cmd {
 	return tea.Batch(
 		m.spinner.Tick,
@@ -108,6 +109,7 @@ func waitForActivity() tea.Msg {
 	return nil
 }
 
+// Update handles messages and updates the model state
 func (m *CheckModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var (
 		cmd  tea.Cmd
@@ -210,6 +212,7 @@ func (m *CheckModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
+// View renders the current model state as a string
 func (m *CheckModel) View() string {
 	// If done, show completion summary (auto-collapsed)
 	if m.done {

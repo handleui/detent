@@ -8,6 +8,7 @@ import (
 // ErrorCategory represents the type of error for categorization and AI prompt generation
 type ErrorCategory string
 
+// Error categories for workflow execution errors
 const (
 	CategoryLint      ErrorCategory = "lint"
 	CategoryTypeCheck ErrorCategory = "type-check"

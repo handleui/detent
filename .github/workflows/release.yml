@@ -1,0 +1,235 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Ensure only one release workflow runs at a time
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and Release
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            output: dt-linux-amd64
+          - goos: linux
+            goarch: arm64
+            output: dt-linux-arm64
+          - goos: darwin
+            goarch: amd64
+            output: dt-darwin-amd64
+          - goos: darwin
+            goarch: arm64
+            output: dt-darwin-arm64
+          - goos: windows
+            goarch: amd64
+            output: dt-windows-amd64.exe
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.0'
+          cache: true
+          cache-dependency-path: apps/cli/go.sum
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          # Remove 'v' prefix from tag (e.g., v1.0.0 -> 1.0.0)
+          VERSION=${GITHUB_REF_NAME#v}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Building version: $VERSION"
+
+      - name: Download dependencies
+        working-directory: apps/cli
+        run: go mod download
+
+      - name: Build binary for ${{ matrix.goos }}/${{ matrix.goarch }}
+        working-directory: apps/cli
+        env:
+          CGO_ENABLED: 0
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          go build \
+            -trimpath \
+            -ldflags "-s -w -X github.com/detent/cli/cmd.Version=${{ steps.version.outputs.version }}" \
+            -o dist/${{ matrix.output }}
+
+          # Verify the binary was created
+          ls -lh dist/${{ matrix.output }}
+
+      - name: Create archive
+        working-directory: apps/cli/dist
+        run: |
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            zip ${{ matrix.output }}.zip ${{ matrix.output }}
+            echo "archive=${{ matrix.output }}.zip" >> $GITHUB_ENV
+          else
+            tar -czf ${{ matrix.output }}.tar.gz ${{ matrix.output }}
+            echo "archive=${{ matrix.output }}.tar.gz" >> $GITHUB_ENV
+          fi
+
+      - name: Generate checksum
+        working-directory: apps/cli/dist
+        run: |
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            sha256sum ${{ matrix.output }}.zip > ${{ matrix.output }}.zip.sha256
+          else
+            sha256sum ${{ matrix.output }}.tar.gz > ${{ matrix.output }}.tar.gz.sha256
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.output }}
+          path: |
+            apps/cli/dist/${{ env.archive }}
+            apps/cli/dist/${{ env.archive }}.sha256
+          retention-days: 7
+
+  create-release:
+    name: Create GitHub Release
+    needs: release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Generate release notes
+        id: release_notes
+        run: |
+          # Get the previous tag
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+
+          if [ -z "$PREV_TAG" ]; then
+            # First release - get all commits
+            COMMITS=$(git log --pretty=format:"- %s (%h)" --no-merges)
+          else
+            # Get commits since previous tag
+            COMMITS=$(git log ${PREV_TAG}..HEAD --pretty=format:"- %s (%h)" --no-merges)
+          fi
+
+          # Create release notes
+          cat > release_notes.md << EOF
+          ## Detent CLI ${{ steps.version.outputs.version }}
+
+          ### Installation
+
+          Download the appropriate binary for your platform from the assets below.
+
+          **Linux (amd64):**
+          \`\`\`bash
+          curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/dt-linux-amd64.tar.gz | tar xz
+          chmod +x dt-linux-amd64
+          sudo mv dt-linux-amd64 /usr/local/bin/dt
+          \`\`\`
+
+          **macOS (Apple Silicon):**
+          \`\`\`bash
+          curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/dt-darwin-arm64.tar.gz | tar xz
+          chmod +x dt-darwin-arm64
+          sudo mv dt-darwin-arm64 /usr/local/bin/dt
+          \`\`\`
+
+          **macOS (Intel):**
+          \`\`\`bash
+          curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/dt-darwin-amd64.tar.gz | tar xz
+          chmod +x dt-darwin-amd64
+          sudo mv dt-darwin-amd64 /usr/local/bin/dt
+          \`\`\`
+
+          **Windows (PowerShell):**
+          \`\`\`powershell
+          Invoke-WebRequest -Uri "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/dt-windows-amd64.exe.zip" -OutFile "dt.zip"
+          Expand-Archive -Path "dt.zip" -DestinationPath .
+          \`\`\`
+
+          ### Verify Installation
+
+          After installation, verify the binary:
+          \`\`\`bash
+          dt --version
+          \`\`\`
+
+          ### Changes
+
+          $COMMITS
+
+          ### Checksums
+
+          SHA256 checksums are provided for all binaries. Verify your download:
+          \`\`\`bash
+          sha256sum -c dt-<platform>-<arch>.tar.gz.sha256
+          \`\`\`
+          EOF
+
+          echo "Release notes generated"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Detent CLI ${{ steps.version.outputs.version }}
+          body_path: release_notes.md
+          draft: false
+          prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}
+          files: |
+            artifacts/dt-linux-amd64.tar.gz
+            artifacts/dt-linux-amd64.tar.gz.sha256
+            artifacts/dt-linux-arm64.tar.gz
+            artifacts/dt-linux-arm64.tar.gz.sha256
+            artifacts/dt-darwin-amd64.tar.gz
+            artifacts/dt-darwin-amd64.tar.gz.sha256
+            artifacts/dt-darwin-arm64.tar.gz
+            artifacts/dt-darwin-arm64.tar.gz.sha256
+            artifacts/dt-windows-amd64.exe.zip
+            artifacts/dt-windows-amd64.exe.zip.sha256
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Summary
+        run: |
+          echo "## Release Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Successfully created release: **${{ github.ref_name }}**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Built Artifacts:" >> $GITHUB_STEP_SUMMARY
+          echo "- Linux (amd64, arm64)" >> $GITHUB_STEP_SUMMARY
+          echo "- macOS (amd64, arm64)" >> $GITHUB_STEP_SUMMARY
+          echo "- Windows (amd64)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Release URL: https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY

@@ -138,9 +138,7 @@ func (r *Recorder) Finalize(exitCode int) error {
 	duration := time.Since(r.startTime)
 
 	// Compute file hashes and metadata for all scanned files
-	if err := r.computeFileMetadata(); err != nil {
-		return fmt.Errorf("failed to compute file metadata: %w", err)
-	}
+	r.computeFileMetadata()
 
 	// Build scanned files list
 	scannedFiles := make([]ScannedFile, 0, len(r.fileMetadata))
@@ -194,7 +192,7 @@ func (r *Recorder) Finalize(exitCode int) error {
 }
 
 // computeFileMetadata computes hashes and metadata for all files with errors
-func (r *Recorder) computeFileMetadata() error {
+func (r *Recorder) computeFileMetadata() {
 	for filePath := range r.errorCounts {
 		if filePath == "" {
 			continue // Skip errors without file paths
@@ -218,8 +216,6 @@ func (r *Recorder) computeFileMetadata() error {
 
 		r.fileMetadata[filePath] = scannedFile
 	}
-
-	return nil
 }
 
 // countUniqueRules counts the number of unique rule IDs in errors

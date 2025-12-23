@@ -12,6 +12,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/detent/cli/internal/act"
+	"github.com/detent/cli/internal/commands"
 	"github.com/detent/cli/internal/docker"
 	internalerrors "github.com/detent/cli/internal/errors"
 	"github.com/detent/cli/internal/output"
@@ -45,9 +46,41 @@ var (
 
 var checkCmd = &cobra.Command{
 	Use:   "check [repo-path]",
-	Short: "Check workflows for errors by running them locally",
-	Long: `Runs GitHub Actions locally using act, injecting continue-on-error
-to ensure all steps run. Extracts and groups errors by file for debugging.`,
+	Short: "Run workflows locally and extract errors",
+	Long: `Run GitHub Actions workflows locally using act (nektos/act) with enhanced
+error reporting. Automatically injects continue-on-error to ensure all steps
+execute, then extracts and groups errors by file for efficient debugging.
+
+The command performs these steps:
+  1. Checks act installation and Docker availability
+  2. Prepares workflows (injects continue-on-error and timeouts)
+  3. Runs workflows using act
+  4. Extracts and groups errors from output
+  5. Saves results to .detent/ directory
+
+Requirements:
+  - Docker must be running
+  - act (nektos/act) must be installed
+  - Workflows in .github/workflows/ (or custom path via --workflows)
+
+Results are persisted to .detent/ for future analysis and comparison.`,
+	Example: `  # Run all workflows in current directory
+  detent check
+
+  # Run specific workflow
+  detent check --workflow ci.yml
+
+  # Trigger with pull_request event
+  detent check --event pull_request
+
+  # Run workflows in custom directory
+  detent check --workflows .github/custom-workflows
+
+  # Use JSON output for CI integration
+  detent check --output json
+
+  # Show act logs in real-time
+  detent check --verbose`,
 	Args:          cobra.MaximumNArgs(1),
 	RunE:          runCheck,
 	SilenceUsage:  true, // Don't show usage on runtime errors
@@ -55,9 +88,9 @@ to ensure all steps run. Extracts and groups errors by file for debugging.`,
 }
 
 func init() {
-	checkCmd.Flags().StringVarP(&outputFormat, "output", "o", "text", "Output format: text, json, json-detailed")
-	checkCmd.Flags().StringVarP(&event, "event", "e", "push", "Event to trigger")
-	checkCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Show act logs in real-time")
+	checkCmd.Flags().StringVarP(&outputFormat, "output", "o", "text", "output format (text, json, json-detailed)")
+	checkCmd.Flags().StringVarP(&event, "event", "e", "push", "GitHub event type (push, pull_request, etc.)")
+	checkCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "show act logs in real-time")
 }
 
 // applySeverity infers severity for all extracted errors based on their category.
@@ -399,6 +432,7 @@ func parseActProgress(line string) *tui.ProgressMsg {
 // runPreflightChecks performs and displays pre-flight checks before running act
 func runPreflightChecks(ctx context.Context, workflowPath string) (tmpDir string, cleanup func(), err error) {
 	checks := []string{
+		"Checking act installation",
 		"Checking Docker availability",
 		"Preparing workflows (injecting continue-on-error)",
 		"Creating temporary workspace",
@@ -407,8 +441,23 @@ func runPreflightChecks(ctx context.Context, workflowPath string) (tmpDir string
 	display := tui.NewPreflightDisplay(checks)
 	display.Render()
 
-	// Check 1: Docker availability
+	// Check 1: Act installation
 	time.Sleep(preflightVisualDelay)
+	display.UpdateCheck("Checking act installation", "running", nil)
+	display.Render()
+
+	err = commands.CheckAct()
+	if err != nil {
+		display.UpdateCheck("Checking act installation", "error", err)
+		display.RenderFinal()
+		return "", nil, err
+	}
+
+	display.UpdateCheck("Checking act installation", "success", nil)
+	display.Render()
+
+	// Check 2: Docker availability
+	time.Sleep(preflightTransitionDelay)
 	display.UpdateCheck("Checking Docker availability", "running", nil)
 	display.Render()
 
@@ -422,7 +471,7 @@ func runPreflightChecks(ctx context.Context, workflowPath string) (tmpDir string
 	display.UpdateCheck("Checking Docker availability", "success", nil)
 	display.Render()
 
-	// Check 2: Prepare workflows
+	// Check 3: Prepare workflows
 	time.Sleep(preflightTransitionDelay)
 	display.UpdateCheck("Preparing workflows (injecting continue-on-error)", "running", nil)
 	display.Render()

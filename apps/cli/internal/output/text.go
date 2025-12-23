@@ -62,7 +62,7 @@ func FormatText(w io.Writer, grouped *errors.GroupedErrors) {
 				colorGray, fileErrors, plural(fileErrors), fileWarnings, plural(fileWarnings), colorReset)
 
 			for _, err := range errs {
-				formatError(w, file, err)
+				formatError(w, err)
 			}
 			_, _ = fmt.Fprintln(w)
 		}
@@ -83,7 +83,7 @@ func FormatText(w io.Writer, grouped *errors.GroupedErrors) {
 }
 
 // formatError writes a single error with location to w.
-func formatError(w io.Writer, file string, err *errors.ExtractedError) {
+func formatError(w io.Writer, err *errors.ExtractedError) {
 	severity := getSeverityColor(err.Severity)
 	location := formatLocation(err)
 
