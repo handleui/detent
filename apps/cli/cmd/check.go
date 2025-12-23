@@ -169,7 +169,7 @@ func runCheck(cmd *cobra.Command, args []string) error {
 			}
 		case "json-detailed":
 			// Use already-extracted errors to create comprehensive V2 grouping
-			groupedV2 := internalerrors.GroupForAI(extracted, absRepoPath)
+			groupedV2 := internalerrors.GroupComprehensive(extracted, absRepoPath)
 			if err := output.FormatJSONV2(os.Stdout, groupedV2); err != nil {
 				return fmt.Errorf("formatting JSON detailed output: %w", err)
 			}

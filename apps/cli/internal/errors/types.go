@@ -153,8 +153,10 @@ func GroupByWorkflow(errs []*ExtractedError) map[string][]*ExtractedError {
 	return grouped
 }
 
-// GroupForAI creates comprehensive grouping with all strategies and statistics
-func GroupForAI(errs []*ExtractedError, basePath string) *GroupedErrorsV2 {
+// GroupComprehensive creates comprehensive grouping with all strategies and statistics.
+// It provides multi-dimensional error organization (by file, category, workflow) with
+// detailed statistics, making it ideal for detailed reporting and analysis.
+func GroupComprehensive(errs []*ExtractedError, basePath string) *GroupedErrorsV2 {
 	grouped := &GroupedErrorsV2{
 		ByFile:     make(map[string][]*ExtractedError),
 		ByCategory: GroupByCategory(errs),
