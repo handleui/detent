@@ -301,8 +301,6 @@ jobs:
 
       - name: Publish to npm with provenance
         working-directory: apps/cli
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --provenance --access public
 
       - name: Verify published package

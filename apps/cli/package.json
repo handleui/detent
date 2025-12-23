@@ -5,7 +5,7 @@
   "author": "handleui",
   "repository": {
     "type": "git",
-    "url": "https://github.com/handleui/detent.git",
+    "url": "git+https://github.com/handleui/detent.git",
     "directory": "apps/cli"
   },
   "bugs": {
@@ -26,7 +26,7 @@
     "node": ">=20.0.0"
   },
   "bin": {
-    "dt": "./bin.js"
+    "dt": "bin.js"
   },
   "files": [
     "bin.js",
