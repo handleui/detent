@@ -214,8 +214,15 @@ func runCheck(cmd *cobra.Command, args []string) error {
 }
 
 func runWithTUIAndExtract(ctx context.Context, repoPath, tmpDir string) (*act.RunResult, *internalerrors.GroupedErrors, bool, error) {
-	model := tui.NewCheckModel()
-	program := tea.NewProgram(&model) // Inline mode - no AltScreen
+	// Create a cancellable context to allow TUI to cancel on 'q'
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	model := tui.NewCheckModel(cancel)
+	program := tea.NewProgram(
+		&model,
+		tea.WithContext(ctx), // Integrate context with Bubble Tea
+	)
 
 	logChan := make(chan string, 100)
 

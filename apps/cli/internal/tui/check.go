@@ -63,10 +63,13 @@ type CheckModel struct {
 	logsDirty    bool                  // Track if logs need viewport update
 	errors       *errors.GroupedErrors // Extracted errors from workflow run
 	Cancelled    bool                  // Track if workflow was cancelled via Ctrl+C
+	cancelFunc   func()                // Context cancel function for 'q' key handling
+	quitting     bool                  // Track if we're in the process of quitting
 }
 
 // NewCheckModel creates a new TUI model for the check command
-func NewCheckModel() CheckModel {
+// cancelFunc is the context cancellation function to call when 'q' is pressed
+func NewCheckModel(cancelFunc func()) CheckModel {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
@@ -79,6 +82,8 @@ func NewCheckModel() CheckModel {
 		tailLines:    []string{},
 		logsExpanded: false,
 		startTime:    time.Now(),
+		cancelFunc:   cancelFunc,
+		quitting:     false,
 	}
 }
 
@@ -103,7 +108,17 @@ func (m *CheckModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "q":
-			return m, tea.Quit
+			// Don't handle quit if already done or quitting
+			if m.done || m.quitting {
+				return m, tea.Quit
+			}
+			// Cancel the context and wait for DoneMsg
+			m.quitting = true
+			m.status = "Stopping workflow gracefully..."
+			if m.cancelFunc != nil {
+				m.cancelFunc()
+			}
+			return m, nil
 		case "o":
 			// Toggle logs expanded/collapsed
 			m.logsExpanded = !m.logsExpanded
