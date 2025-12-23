@@ -1,20 +1,31 @@
 {
   "name": "@detent/cli",
-  "version": "0.0.1",
+  "version": "0.0.0",
   "description": "Detent CLI - Task management and time tracking",
+  "author": "handleui",
   "repository": {
     "type": "git",
     "url": "https://github.com/handleui/detent.git",
     "directory": "apps/cli"
   },
+  "bugs": {
+    "url": "https://github.com/handleui/detent/issues"
+  },
+  "homepage": "https://github.com/handleui/detent#readme",
   "keywords": [
     "cli",
     "task",
     "management",
     "time-tracking",
-    "productivity"
+    "productivity",
+    "task-manager",
+    "detent"
   ],
   "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.5.0"
+  },
   "bin": {
     "dt": "./bin.js"
   },
@@ -22,19 +33,24 @@
     "bin.js",
     "install.js",
     "uninstall.js",
-    "README_NPM.md",
-    "NPM_DISTRIBUTION.md"
+    "bin/",
+    "README.md"
   ],
   "scripts": {
     "build": "sh -c 'VERSION=$(node -p \"require(\\\"./package.json\\\").version\") && go build -ldflags \"-X github.com/detent/cli/cmd.Version=$VERSION\" -o dist/dt'",
-    "dev": "go build -o dist/detent",
-    "clean": "rm -rf dist",
+    "clean": "rm -rf dist bin",
+    "prepare-release": "npm run clean && mkdir -p bin",
     "postinstall": "node ./install.js",
     "preuninstall": "node ./uninstall.js"
   },
   "dependencies": {
     "tar-fs": "^3.0.6",
     "adm-zip": "^0.5.16"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true,
+    "registry": "https://registry.npmjs.org/"
   },
   "goBinary": {
     "name": "dt",

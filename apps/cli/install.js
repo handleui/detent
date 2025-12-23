@@ -1,11 +1,6 @@
 #!/usr/bin/env node
 
-const {
-  existsSync,
-  mkdirSync,
-  chmodSync,
-  createWriteStream,
-} = require("node:fs");
+const { existsSync, mkdirSync, chmodSync } = require("node:fs");
 const { join } = require("node:path");
 const { pipeline } = require("node:stream");
 const { promisify } = require("node:util");
@@ -19,16 +14,26 @@ const PACKAGE_JSON = require("./package.json");
 
 const getPlatform = () => {
   const platform = process.platform;
-  if (platform === "win32") return "windows";
-  if (platform === "darwin") return "darwin";
-  if (platform === "linux") return "linux";
+  if (platform === "win32") {
+    return "windows";
+  }
+  if (platform === "darwin") {
+    return "darwin";
+  }
+  if (platform === "linux") {
+    return "linux";
+  }
   throw new Error(`Unsupported platform: ${platform}`);
 };
 
 const getArch = () => {
   const arch = process.arch;
-  if (arch === "x64") return "amd64";
-  if (arch === "arm64") return "arm64";
+  if (arch === "x64") {
+    return "amd64";
+  }
+  if (arch === "arm64") {
+    return "arm64";
+  }
   throw new Error(`Unsupported architecture: ${arch}`);
 };
 

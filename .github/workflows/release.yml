@@ -226,6 +226,9 @@ jobs:
     name: Publish to npm
     needs: create-release
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
 
     steps:
       - name: Checkout code
@@ -248,15 +251,64 @@ jobs:
         run: |
           npm version ${{ steps.version.outputs.version }} --no-git-tag-version
 
+      - name: Ensure npm 11.5.1 or later for trusted publishing
+        run: npm install -g npm@latest
+
       - name: Install dependencies
         working-directory: apps/cli
-        run: npm install
+        run: npm ci
 
-      - name: Publish to npm
+      - name: Prepare release directory
+        working-directory: apps/cli
+        run: npm run prepare-release
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: temp-artifacts
+          merge-multiple: true
+
+      - name: Extract binaries to package
+        working-directory: apps/cli
+        run: |
+          mkdir -p bin
+
+          # Extract Linux binary
+          if [ -f "../temp-artifacts/dt-linux-amd64.tar.gz" ]; then
+            tar -xzf ../temp-artifacts/dt-linux-amd64.tar.gz -C bin/
+            echo "Extracted Linux binary"
+          fi
+
+          # Extract macOS binary
+          if [ -f "../temp-artifacts/dt-darwin-arm64.tar.gz" ]; then
+            tar -xzf ../temp-artifacts/dt-darwin-arm64.tar.gz -C bin/
+            echo "Extracted macOS binary"
+          fi
+
+          # Extract Windows binary
+          if [ -f "../temp-artifacts/dt-windows-amd64.exe.zip" ]; then
+            unzip -q ../temp-artifacts/dt-windows-amd64.exe.zip -d bin/
+            echo "Extracted Windows binary"
+          fi
+
+          ls -lh bin/
+
+      - name: Verify package contents
+        working-directory: apps/cli
+        run: |
+          echo "Package contents:"
+          npm pack --dry-run
+
+      - name: Publish to npm with provenance
         working-directory: apps/cli
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --access public
+        run: npm publish --provenance --access public
+
+      - name: Verify published package
+        run: |
+          sleep 10
+          npm view @detent/cli@${{ steps.version.outputs.version }}
 
       - name: Summary
         run: |
@@ -264,4 +316,14 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Successfully published to npm: **@detent/cli@${{ steps.version.outputs.version }}**" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Install with: \`npm install -g @detent/cli\`" >> $GITHUB_STEP_SUMMARY
+          echo "### Installation" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "npm install -g @detent/cli" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Features" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Published with provenance attestation" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Cryptographically signed" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Supply chain transparency" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "View package: https://www.npmjs.com/package/@detent/cli" >> $GITHUB_STEP_SUMMARY

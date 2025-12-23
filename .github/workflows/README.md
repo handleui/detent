@@ -29,6 +29,30 @@ This directory contains the CI/CD workflows for the Detent CLI project.
 
 **Concurrency:** Workflows for the same ref are cancelled when a new run starts to save resources.
 
+### Changesets Workflow (`changesets.yml`)
+
+**Triggers:**
+- Push to `main` branch
+
+**Process:**
+
+1. **Version Management:**
+   - When changesets are present, creates or updates a "Version Packages" PR
+   - The PR bumps package versions, updates CHANGELOGs, and removes consumed changesets
+   - Uses conventional commit format: `chore: version packages`
+
+2. **Tag Creation:**
+   - When the "Version Packages" PR is merged (and no changesets remain)
+   - Automatically creates git tags for new versions (e.g., `v1.0.0`)
+   - Only tags `@detent/cli` package (the main publishable package)
+   - Checks for existing tags to prevent duplicates
+
+3. **Release Trigger:**
+   - Tags automatically trigger the Release workflow
+   - Integrates seamlessly with existing release process
+
+**Permissions:** Requires `contents: write` and `pull-requests: write`.
+
 ### Release Workflow (`release.yml`)
 
 **Triggers:**
@@ -62,7 +86,37 @@ This directory contains the CI/CD workflows for the Detent CLI project.
 
 ## Creating a Release
 
-To create a new release:
+### Using Changesets (Recommended)
+
+The project uses Changesets for automated version management:
+
+1. **Add a changeset** when you make changes:
+   ```bash
+   bun run changeset
+   ```
+   - Select affected packages
+   - Choose bump type (major/minor/patch)
+   - Write a description
+
+2. **Push to main** with your changeset:
+   ```bash
+   git add .
+   git commit -m "feat: add new feature"
+   git push origin main
+   ```
+
+3. **Review the Version Packages PR:**
+   - Changesets workflow creates/updates a "Version Packages" PR
+   - Review the version bumps and CHANGELOG updates
+
+4. **Merge the PR:**
+   - When merged, tags are created automatically
+   - Release workflow triggers automatically
+   - Binaries are built and published
+
+### Manual Release (Not Recommended)
+
+For manual releases (only if needed):
 
 1. Update the version in `apps/cli/package.json`
 2. Commit the change:
@@ -80,6 +134,7 @@ The release workflow will automatically:
 - Build binaries for all platforms
 - Create a GitHub release
 - Upload all artifacts with checksums
+- Publish to npm with provenance
 
 ## Local Testing
 

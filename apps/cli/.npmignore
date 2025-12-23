@@ -1,25 +1,38 @@
-# Source files
-cmd/
-internal/
-main.go
-go.mod
-go.sum
-*.go
-
 # Build artifacts
 dist/
+*.test
+coverage.out
+
+# Go files
+*.go
+go.mod
+go.sum
+cmd/
+internal/
+pkg/
 
 # Development files
 .golangci.yml
-.DS_Store
+.air.toml
 
-# Documentation (except NPM_DISTRIBUTION.md)
-*.md
-!NPM_DISTRIBUTION.md
+# Documentation (except README.md)
+docs/
 
 # Git
-.git/
+.git
 .gitignore
+.github/
 
-# Downloaded binaries (will be downloaded on install)
-bin/
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test files
+*_test.go
+testdata/
+
+# Misc
+.DS_Store
+*.log
