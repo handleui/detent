@@ -110,6 +110,13 @@ const install = async () => {
     console.error(
       `https://github.com/handleui/detent/releases/tag/v${PACKAGE_JSON.version}`
     );
+
+    // Exit gracefully in CI or during development (version 0.0.0)
+    if (process.env.CI || PACKAGE_JSON.version === "0.0.0") {
+      console.log("Skipping binary installation in CI/development mode");
+      process.exit(0);
+    }
+
     process.exit(1);
   }
 };

@@ -1,7 +1,7 @@
 {
   "name": "@detent/cli",
   "version": "0.0.0",
-  "description": "Detent CLI - Task management and time tracking",
+  "description": "Run GitHub Actions locally, intelligently parse errors, and troubleshoot with parallel Claude iterations",
   "author": "handleui",
   "repository": {
     "type": "git",
@@ -14,17 +14,16 @@
   "homepage": "https://github.com/handleui/detent#readme",
   "keywords": [
     "cli",
-    "task",
-    "management",
-    "time-tracking",
-    "productivity",
-    "task-manager",
+    "github-actions",
+    "local-runner",
+    "error-parsing",
+    "ai-troubleshooting",
+    "claude",
     "detent"
   ],
   "license": "MIT",
   "engines": {
-    "node": ">=18.0.0",
-    "npm": ">=9.5.0"
+    "node": ">=20.0.0"
   },
   "bin": {
     "dt": "./bin.js"
