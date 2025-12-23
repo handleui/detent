@@ -72,6 +72,23 @@ ValueError: invalid literal for int() with base 10: 'abc'`,
 			},
 		},
 		{
+			name: "ESLint with @ scoped rule",
+			input: `/app/src/component.tsx
+  22:10  error  'foo' is assigned a value but never used  @typescript-eslint/no-unused-vars`,
+			expected: []*ExtractedError{
+				{
+					Message:  "'foo' is assigned a value but never used",
+					File:     "/app/src/component.tsx",
+					Line:     22,
+					Column:   10,
+					Severity: "error",
+					RuleID:   "@typescript-eslint/no-unused-vars",
+					Category: CategoryLint,
+					Source:   "eslint",
+				},
+			},
+		},
+		{
 			name:  "Go compiler error",
 			input: "main.go:25:10: undefined: foo",
 			expected: []*ExtractedError{

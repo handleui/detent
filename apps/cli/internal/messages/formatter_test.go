@@ -155,6 +155,12 @@ func TestESLintMessageBuilder_ParseRuleID(t *testing.T) {
 			expectedRuleID:  "padding-line-between-statements",
 		},
 		{
+			name:            "scoped rule with @",
+			input:           "'foo' is assigned a value but never used @typescript-eslint/no-unused-vars",
+			expectedMessage: "'foo' is assigned a value but never used",
+			expectedRuleID:  "@typescript-eslint/no-unused-vars",
+		},
+		{
 			name:            "message ending with punctuation (no rule match)",
 			input:           "Parsing error.",
 			expectedMessage: "Parsing error.",
@@ -164,6 +170,12 @@ func TestESLintMessageBuilder_ParseRuleID(t *testing.T) {
 			name:            "message ending with uppercase (no rule match)",
 			input:           "Cannot find module FOO",
 			expectedMessage: "Cannot find module FOO",
+			expectedRuleID:  "",
+		},
+		{
+			name:            "message ending with single word (no rule match)",
+			input:           "Parsing error: Unexpected token",
+			expectedMessage: "Parsing error: Unexpected token",
 			expectedRuleID:  "",
 		},
 		{

@@ -49,9 +49,10 @@ type ESLintMessageBuilder struct {
 func NewESLintMessageBuilder() *ESLintMessageBuilder {
 	// ESLint rule name pattern: splits "Message text rule-name" into message and rule
 	// Group 1: message text
-	// Group 2: rule name (e.g., "no-var", "react/no-unsafe")
-	// This matches the pattern from errors/patterns.go exactly
-	rulePattern := regexp.MustCompile(`^(.+?)\s+([a-z0-9]+(?:[/@-][a-z0-9]+)*)$`)
+	// Group 2: rule name (e.g., "no-var", "react/no-unsafe", "@typescript-eslint/no-unused-vars")
+	// Rule names must contain at least one hyphen, slash, or @ to avoid matching regular words
+	// This prevents "Parsing error: Unexpected token" from being parsed as having a rule "token"
+	rulePattern := regexp.MustCompile(`^(.+?)\s+([@a-z0-9]+(?:[/@-][a-z0-9]+)+)$`)
 	return &ESLintMessageBuilder{
 		rulePattern: rulePattern,
 	}

@@ -15,6 +15,7 @@ import (
 	"github.com/detent/cli/internal/docker"
 	internalerrors "github.com/detent/cli/internal/errors"
 	"github.com/detent/cli/internal/output"
+	"github.com/detent/cli/internal/persistence"
 	"github.com/detent/cli/internal/signal"
 	"github.com/detent/cli/internal/tui"
 	"github.com/detent/cli/internal/workflow"
@@ -124,11 +125,39 @@ func runCheck(cmd *cobra.Command, args []string) error {
 	}
 
 	// Extract errors if not already done (TUI mode extracts early)
+	var extracted []*internalerrors.ExtractedError
 	if grouped == nil {
 		combinedOutput := result.Stdout + result.Stderr
 		extractor := internalerrors.NewExtractor()
-		extracted := extractor.Extract(combinedOutput)
+		extracted = extractor.Extract(combinedOutput)
 		grouped = internalerrors.GroupByFileWithBase(extracted, absRepoPath)
+	} else {
+		// If grouped exists, flatten it to get extracted errors for persistence
+		for _, errs := range grouped.ByFile {
+			extracted = append(extracted, errs...)
+		}
+		extracted = append(extracted, grouped.NoFile...)
+	}
+
+	// Persist results to .detent/ directory
+	recorder, err := persistence.NewRecorder(absRepoPath, workflowPath, event)
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "Warning: failed to initialize persistence: %v\n", err)
+	} else {
+		// Record all findings
+		for _, finding := range extracted {
+			if err := recorder.RecordFinding(finding); err != nil {
+				_, _ = fmt.Fprintf(os.Stderr, "Warning: failed to record finding: %v\n", err)
+			}
+		}
+
+		// Finalize the run with exit code
+		if err := recorder.Finalize(result.ExitCode); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "Warning: failed to finalize persistence: %v\n", err)
+		} else if !useTUI && outputFormat == "text" {
+			// Inform user of the output location
+			_, _ = fmt.Fprintf(os.Stderr, "\nResults saved to: %s\n", recorder.GetOutputPath())
+		}
 	}
 
 	// Only print error report in non-TUI mode (TUI shows it in completion view)
@@ -139,10 +168,7 @@ func runCheck(cmd *cobra.Command, args []string) error {
 				return fmt.Errorf("formatting JSON output: %w", err)
 			}
 		case "json-detailed":
-			// Extract raw errors for GroupForAI (need to re-extract from result)
-			combinedOutput := result.Stdout + result.Stderr
-			extractor := internalerrors.NewExtractor()
-			extracted := extractor.Extract(combinedOutput)
+			// Use already-extracted errors to create comprehensive V2 grouping
 			groupedV2 := internalerrors.GroupForAI(extracted, absRepoPath)
 			if err := output.FormatJSONV2(os.Stdout, groupedV2); err != nil {
 				return fmt.Errorf("formatting JSON detailed output: %w", err)
@@ -192,9 +218,14 @@ func runWithTUIAndExtract(ctx context.Context, repoPath, tmpDir string) (*act.Ru
 	program := tea.NewProgram(&model) // Inline mode - no AltScreen
 
 	logChan := make(chan string, 100)
-	resultChan := make(chan *act.RunResult, 1)
-	errChan := make(chan error, 1)
-	groupedChan := make(chan *internalerrors.GroupedErrors, 1) // Store extracted errors
+
+	// Result structure to pass data from log processor to main thread
+	type tuiResult struct {
+		result  *act.RunResult
+		grouped *internalerrors.GroupedErrors
+		err     error
+	}
+	tuiResultChan := make(chan tuiResult, 1)
 
 	// Start act in a goroutine
 	go func() {
@@ -210,15 +241,38 @@ func runWithTUIAndExtract(ctx context.Context, repoPath, tmpDir string) (*act.Ru
 		result, err := act.Run(ctx, cfg)
 		close(logChan)
 
+		// Send result through tuiResultChan after processing
 		if err != nil {
-			errChan <- err
+			tuiResultChan <- tuiResult{err: err}
+			program.Send(tui.ErrMsg(err))
 			return
 		}
 
-		resultChan <- result
+		// Extract errors once before sending to TUI
+		combinedOutput := result.Stdout + result.Stderr
+		extractor := internalerrors.NewExtractor()
+		extracted := extractor.Extract(combinedOutput)
+		grouped := internalerrors.GroupByFileWithBase(extracted, repoPath)
+
+		// Check if context was cancelled
+		cancelled := errors.Is(ctx.Err(), context.Canceled)
+
+		// Send to TUI for display
+		program.Send(tui.DoneMsg{
+			Duration:  result.Duration,
+			ExitCode:  result.ExitCode,
+			Errors:    grouped,
+			Cancelled: cancelled,
+		})
+
+		// Send to result channel for return value
+		tuiResultChan <- tuiResult{
+			result:  result,
+			grouped: grouped,
+		}
 	}()
 
-	// Start log processor in a goroutine
+	// Log processor forwards logs to TUI
 	go func() {
 		for line := range logChan {
 			program.Send(tui.LogMsg(line))
@@ -228,33 +282,9 @@ func runWithTUIAndExtract(ctx context.Context, repoPath, tmpDir string) (*act.Ru
 				program.Send(*progress)
 			}
 		}
-
-		// Wait for result or error
-		select {
-		case result := <-resultChan:
-			// Extract errors once before sending done message
-			combinedOutput := result.Stdout + result.Stderr
-			extractor := internalerrors.NewExtractor()
-			extracted := extractor.Extract(combinedOutput)
-			grouped := internalerrors.GroupByFileWithBase(extracted, repoPath)
-
-			// Store grouped errors for return
-			groupedChan <- grouped
-
-			// Check if context was cancelled
-			cancelled := ctx.Err() == context.Canceled
-
-			program.Send(tui.DoneMsg{
-				Duration:  result.Duration,
-				ExitCode:  result.ExitCode,
-				Errors:    grouped,
-				Cancelled: cancelled,
-			})
-		case err := <-errChan:
-			program.Send(tui.ErrMsg(err))
-		}
 	}()
 
+	// Wait for TUI to finish
 	finalModel, err := program.Run()
 	if err != nil {
 		return nil, nil, false, err
@@ -264,19 +294,16 @@ func runWithTUIAndExtract(ctx context.Context, repoPath, tmpDir string) (*act.Ru
 	checkModel, ok := finalModel.(*tui.CheckModel)
 	var wasCancelled bool
 	if ok {
-		wasCancelled = checkModel.Cancelled()
+		wasCancelled = checkModel.Cancelled
 	}
 
-	// Get the result and grouped errors
-	select {
-	case result := <-resultChan:
-		grouped := <-groupedChan // Get the already-extracted errors
-		return result, grouped, wasCancelled, nil
-	case err := <-errChan:
-		return nil, nil, false, err
-	default:
-		return nil, nil, false, fmt.Errorf("no result received")
+	// Get the result from the channel (already extracted and processed)
+	result := <-tuiResultChan
+	if result.err != nil {
+		return nil, nil, false, result.err
 	}
+
+	return result.result, result.grouped, wasCancelled, nil
 }
 
 func runWithoutTUI(ctx context.Context, repoPath, tmpDir string) (*act.RunResult, error) {
