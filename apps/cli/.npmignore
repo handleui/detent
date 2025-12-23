@@ -1,0 +1,25 @@
+# Source files
+cmd/
+internal/
+main.go
+go.mod
+go.sum
+*.go
+
+# Build artifacts
+dist/
+
+# Development files
+.golangci.yml
+.DS_Store
+
+# Documentation (except NPM_DISTRIBUTION.md)
+*.md
+!NPM_DISTRIBUTION.md
+
+# Git
+.git/
+.gitignore
+
+# Downloaded binaries (will be downloaded on install)
+bin/

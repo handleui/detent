@@ -38,14 +38,13 @@ var (
 	// Command-specific flags
 	outputFormat string
 	event        string
-	verbose      bool
 
 	// Pre-compiled regex for parseActProgress
 	jobStepPattern = regexp.MustCompile(`^\[([^\]]+)\]\s+(.+)`)
 )
 
 var checkCmd = &cobra.Command{
-	Use:   "check [repo-path]",
+	Use:   "check",
 	Short: "Run workflows locally and extract errors",
 	Long: `Run GitHub Actions workflows locally using act (nektos/act) with enhanced
 error reporting. Automatically injects continue-on-error to ensure all steps
@@ -73,15 +72,9 @@ Results are persisted to .detent/ for future analysis and comparison.`,
   # Trigger with pull_request event
   detent check --event pull_request
 
-  # Run workflows in custom directory
-  detent check --workflows .github/custom-workflows
-
   # Use JSON output for CI integration
-  detent check --output json
-
-  # Show act logs in real-time
-  detent check --verbose`,
-	Args:          cobra.MaximumNArgs(1),
+  detent check --output json`,
+	Args:          cobra.NoArgs,
 	RunE:          runCheck,
 	SilenceUsage:  true, // Don't show usage on runtime errors
 	SilenceErrors: true, // We handle errors ourselves
@@ -90,7 +83,6 @@ Results are persisted to .detent/ for future analysis and comparison.`,
 func init() {
 	checkCmd.Flags().StringVarP(&outputFormat, "output", "o", "text", "output format (text, json, json-detailed)")
 	checkCmd.Flags().StringVarP(&event, "event", "e", "push", "GitHub event type (push, pull_request, etc.)")
-	checkCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "show act logs in real-time")
 }
 
 // applySeverity infers severity for all extracted errors based on their category.
@@ -107,14 +99,9 @@ func runCheck(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid output format %q: must be 'text', 'json', or 'json-detailed'", outputFormat)
 	}
 
-	repoPath := "."
-	if len(args) > 0 {
-		repoPath = args[0]
-	}
-
-	absRepoPath, err := filepath.Abs(repoPath)
+	absRepoPath, err := filepath.Abs(".")
 	if err != nil {
-		return fmt.Errorf("resolving repo path: %w", err)
+		return fmt.Errorf("resolving current directory: %w", err)
 	}
 
 	workflowPath := filepath.Join(absRepoPath, workflowsDir)
@@ -123,8 +110,8 @@ func runCheck(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(baseCtx, actTimeout)
 	defer cancel()
 
-	// Check if we're in a TTY and not in verbose mode (use TUI)
-	useTUI := !verbose && isatty.IsTerminal(os.Stderr.Fd())
+	// Check if we're in a TTY (use TUI)
+	useTUI := isatty.IsTerminal(os.Stderr.Fd())
 
 	var tmpDir string
 	var cleanup func()
@@ -362,13 +349,7 @@ func runWithTUIAndExtract(ctx context.Context, repoPath, tmpDir string) (*act.Ru
 }
 
 func runWithoutTUI(ctx context.Context, repoPath, tmpDir string) (*act.RunResult, error) {
-	if verbose {
-		_, _ = fmt.Fprintf(os.Stderr, "Repo path: %s\n", repoPath)
-		_, _ = fmt.Fprintf(os.Stderr, "Modified workflows in: %s\n", tmpDir)
-		_, _ = fmt.Fprintf(os.Stderr, "\n> Running workflows with act\n\n")
-	} else {
-		_, _ = fmt.Fprintf(os.Stderr, "Running workflows... ")
-	}
+	_, _ = fmt.Fprintf(os.Stderr, "Running workflows... ")
 
 	// Determine workflow path: if specific workflow is requested, use it; otherwise use directory
 	workflowPath := tmpDir
@@ -379,9 +360,9 @@ func runWithoutTUI(ctx context.Context, repoPath, tmpDir string) (*act.RunResult
 	cfg := &act.RunConfig{
 		WorkflowPath: workflowPath,
 		Event:        event,
-		Verbose:      verbose,
+		Verbose:      false,
 		WorkDir:      repoPath,
-		StreamOutput: verbose,
+		StreamOutput: false,
 	}
 
 	result, err := act.Run(ctx, cfg)
@@ -389,11 +370,7 @@ func runWithoutTUI(ctx context.Context, repoPath, tmpDir string) (*act.RunResult
 		return nil, err
 	}
 
-	if verbose {
-		_, _ = fmt.Fprintf(os.Stderr, "\n> Completed in %s (exit code %d)\n", result.Duration, result.ExitCode)
-	} else {
-		_, _ = fmt.Fprintf(os.Stderr, "done (%s)\n", result.Duration)
-	}
+	_, _ = fmt.Fprintf(os.Stderr, "done (%s)\n", result.Duration)
 
 	return result, nil
 }

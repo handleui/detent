@@ -7,7 +7,7 @@ import (
 )
 
 var validateCmd = &cobra.Command{
-	Use:   "validate [repo-path]",
+	Use:   "validate",
 	Short: "Validate workflow syntax and best practices",
 	Long: `Validate GitHub Actions workflow files for syntax errors and best practices.
 Performs static analysis without running the workflows.
@@ -23,11 +23,8 @@ Note: This command is planned for v0.0.2 and is not yet implemented.`,
   detent validate
 
   # Validate specific workflow
-  detent validate --workflow ci.yml
-
-  # Validate workflows in custom directory
-  detent validate --workflows .github/custom-workflows`,
-	Args: cobra.MaximumNArgs(1),
+  detent validate --workflow ci.yml`,
+	Args: cobra.NoArgs,
 	RunE: runValidate,
 }
 

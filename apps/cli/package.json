@@ -1,9 +1,44 @@
 {
   "name": "@detent/cli",
   "version": "0.0.1",
+  "description": "Detent CLI - Task management and time tracking",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/handleui/detent.git",
+    "directory": "apps/cli"
+  },
+  "keywords": [
+    "cli",
+    "task",
+    "management",
+    "time-tracking",
+    "productivity"
+  ],
+  "license": "MIT",
+  "bin": {
+    "dt": "./bin.js"
+  },
+  "files": [
+    "bin.js",
+    "install.js",
+    "uninstall.js",
+    "README_NPM.md",
+    "NPM_DISTRIBUTION.md"
+  ],
   "scripts": {
     "build": "sh -c 'VERSION=$(node -p \"require(\\\"./package.json\\\").version\") && go build -ldflags \"-X github.com/detent/cli/cmd.Version=$VERSION\" -o dist/dt'",
     "dev": "go build -o dist/detent",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "postinstall": "node ./install.js",
+    "preuninstall": "node ./uninstall.js"
+  },
+  "dependencies": {
+    "tar-fs": "^3.0.6",
+    "adm-zip": "^0.5.16"
+  },
+  "goBinary": {
+    "name": "dt",
+    "path": "./bin",
+    "url": "https://github.com/handleui/detent/releases/download/v{{version}}/dt-{{platform}}-{{arch}}.{{ext}}"
   }
 }

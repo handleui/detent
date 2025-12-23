@@ -3,6 +3,10 @@ dist/detent
 dist/dt
 *.exe
 
+# NPM distribution
+bin/
+node_modules/
+
 # Coverage
 coverage.txt
 *.out

@@ -24,12 +24,6 @@ jobs:
           - goos: linux
             goarch: amd64
             output: dt-linux-amd64
-          - goos: linux
-            goarch: arm64
-            output: dt-linux-arm64
-          - goos: darwin
-            goarch: amd64
-            output: dt-darwin-amd64
           - goos: darwin
             goarch: arm64
             output: dt-darwin-arm64
@@ -149,7 +143,12 @@ jobs:
 
           ### Installation
 
-          Download the appropriate binary for your platform from the assets below.
+          **Via npm (recommended):**
+          \`\`\`bash
+          npm install -g @detent/cli
+          \`\`\`
+
+          **Or download the appropriate binary for your platform from the assets below:**
 
           **Linux (amd64):**
           \`\`\`bash
@@ -163,13 +162,6 @@ jobs:
           curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/dt-darwin-arm64.tar.gz | tar xz
           chmod +x dt-darwin-arm64
           sudo mv dt-darwin-arm64 /usr/local/bin/dt
-          \`\`\`
-
-          **macOS (Intel):**
-          \`\`\`bash
-          curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/dt-darwin-amd64.tar.gz | tar xz
-          chmod +x dt-darwin-amd64
-          sudo mv dt-darwin-amd64 /usr/local/bin/dt
           \`\`\`
 
           **Windows (PowerShell):**
@@ -209,10 +201,6 @@ jobs:
           files: |
             artifacts/dt-linux-amd64.tar.gz
             artifacts/dt-linux-amd64.tar.gz.sha256
-            artifacts/dt-linux-arm64.tar.gz
-            artifacts/dt-linux-arm64.tar.gz.sha256
-            artifacts/dt-darwin-amd64.tar.gz
-            artifacts/dt-darwin-amd64.tar.gz.sha256
             artifacts/dt-darwin-arm64.tar.gz
             artifacts/dt-darwin-arm64.tar.gz.sha256
             artifacts/dt-windows-amd64.exe.zip
@@ -228,8 +216,52 @@ jobs:
           echo "Successfully created release: **${{ github.ref_name }}**" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Built Artifacts:" >> $GITHUB_STEP_SUMMARY
-          echo "- Linux (amd64, arm64)" >> $GITHUB_STEP_SUMMARY
-          echo "- macOS (amd64, arm64)" >> $GITHUB_STEP_SUMMARY
+          echo "- Linux (amd64)" >> $GITHUB_STEP_SUMMARY
+          echo "- macOS (arm64 / Apple Silicon)" >> $GITHUB_STEP_SUMMARY
           echo "- Windows (amd64)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Release URL: https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+
+  publish-npm:
+    name: Publish to npm
+    needs: create-release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Update package.json version
+        working-directory: apps/cli
+        run: |
+          npm version ${{ steps.version.outputs.version }} --no-git-tag-version
+
+      - name: Install dependencies
+        working-directory: apps/cli
+        run: npm install
+
+      - name: Publish to npm
+        working-directory: apps/cli
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public
+
+      - name: Summary
+        run: |
+          echo "## npm Publishing Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Successfully published to npm: **@detent/cli@${{ steps.version.outputs.version }}**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Install with: \`npm install -g @detent/cli\`" >> $GITHUB_STEP_SUMMARY

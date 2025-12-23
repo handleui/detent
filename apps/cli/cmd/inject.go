@@ -10,7 +10,7 @@ import (
 )
 
 var injectCmd = &cobra.Command{
-	Use:   "inject [repo-path]",
+	Use:   "inject",
 	Short: "Preview workflow modifications (dry-run)",
 	Long: `Preview the continue-on-error and timeout injections that check command applies
 to your workflow files. This is a dry-run command that shows modifications without
@@ -32,24 +32,16 @@ Outputs modified YAML to stdout for inspection.`,
   # Preview specific workflow
   detent inject --workflow ci.yml
 
-  # Preview workflows in custom directory
-  detent inject --workflows .github/custom-workflows
-
   # Save preview to file
   detent inject > modified-workflows.yml`,
-	Args: cobra.MaximumNArgs(1),
+	Args: cobra.NoArgs,
 	RunE: runInject,
 }
 
 func runInject(cmd *cobra.Command, args []string) error {
-	repoPath := "."
-	if len(args) > 0 {
-		repoPath = args[0]
-	}
-
-	absRepoPath, err := filepath.Abs(repoPath)
+	absRepoPath, err := filepath.Abs(".")
 	if err != nil {
-		return fmt.Errorf("resolving repo path: %w", err)
+		return fmt.Errorf("resolving current directory: %w", err)
 	}
 
 	workflowPath := filepath.Join(absRepoPath, workflowsDir)

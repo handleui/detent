@@ -5,7 +5,7 @@
 - Build: `bun run build` | Test: (none configured) | Lint: `bun run lint` | Fix: `bun run fix`
 - Type check: `bun run check-types` | Dev: `bun run dev`
 - Go lint: `cd apps/cli && golangci-lint run ./...` | Go fix: `cd apps/cli && golangci-lint run --fix ./...`
-- Git commits shoukd have header only, no description, and follow conventional commit
+- Git commits should have header only, no description, and follow conventional commit
 
 ## TypeScript Style
 
