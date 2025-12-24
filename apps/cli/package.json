@@ -1,6 +1,6 @@
 {
   "name": "@detent/cli",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Run GitHub Actions locally, intelligently parse errors, and troubleshoot with parallel Claude iterations",
   "author": "handleui",
   "repository": {
