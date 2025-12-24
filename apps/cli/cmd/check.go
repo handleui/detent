@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"os"
@@ -33,6 +34,27 @@ const (
 
 	// Channel buffer sizes
 	logChannelBufferSize = 100 // Buffer size for streaming act logs to TUI
+
+	// UUID v4 bit manipulation constants
+	uuidVersionMask = 0x0f
+	uuidVersion4    = 0x40
+	uuidVariantMask = 0x3f
+	uuidVariantRFC  = 0x80
+
+	// UUID byte positions for version and variant
+	uuidVersionByteIndex = 6
+	uuidVariantByteIndex = 8
+
+	// UUID byte slice sizes for formatting
+	uuidBytesTotal  = 16
+	uuidSlice1End   = 4
+	uuidSlice2Start = 4
+	uuidSlice2End   = 6
+	uuidSlice3Start = 6
+	uuidSlice3End   = 8
+	uuidSlice4Start = 8
+	uuidSlice4End   = 10
+	uuidSlice5Start = 10
 )
 
 var (
@@ -86,6 +108,23 @@ func init() {
 	checkCmd.Flags().StringVarP(&event, "event", "e", "push", "GitHub event type (push, pull_request, etc.)")
 }
 
+// generateUUID creates a simple UUID v4 without external dependencies
+func generateUUID() (string, error) {
+	b := make([]byte, uuidBytesTotal)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("failed to generate random bytes for UUID: %w", err)
+	}
+	// Set version (4) and variant bits
+	b[uuidVersionByteIndex] = (b[uuidVersionByteIndex] & uuidVersionMask) | uuidVersion4
+	b[uuidVariantByteIndex] = (b[uuidVariantByteIndex] & uuidVariantMask) | uuidVariantRFC
+	return fmt.Sprintf("%x-%x-%x-%x-%x",
+		b[0:uuidSlice1End],
+		b[uuidSlice2Start:uuidSlice2End],
+		b[uuidSlice3Start:uuidSlice3End],
+		b[uuidSlice4Start:uuidSlice4End],
+		b[uuidSlice5Start:]), nil
+}
+
 // applySeverity infers severity for all extracted errors based on their category.
 // This is done as explicit post-processing after extraction to maintain separation
 // of concerns: extraction is pure parsing, severity is business logic.
@@ -107,6 +146,12 @@ func runCheck(cmd *cobra.Command, args []string) error {
 
 	workflowPath := filepath.Join(absRepoPath, workflowsDir)
 
+	// Generate run ID early for worktree creation
+	runID, err := generateUUID()
+	if err != nil {
+		return fmt.Errorf("generating run ID: %w", err)
+	}
+
 	baseCtx := cmd.Context()
 	ctx, cancel := context.WithTimeout(baseCtx, actTimeout)
 	defer cancel()
@@ -115,22 +160,32 @@ func runCheck(cmd *cobra.Command, args []string) error {
 	useTUI := isatty.IsTerminal(os.Stderr.Fd())
 
 	var tmpDir string
-	var cleanup func()
+	var worktreeInfo *git.WorktreeInfo
+	var cleanupWorkflows func()
+	var cleanupWorktree func()
 
 	if useTUI {
 		// Run pre-flight checks with visual feedback
-		tmpDir, cleanup, err = runPreflightChecks(ctx, workflowPath)
+		tmpDir, worktreeInfo, cleanupWorkflows, cleanupWorktree, err = runPreflightChecks(ctx, workflowPath, absRepoPath, runID)
 		if err != nil {
 			return err
 		}
-		defer cleanup()
+		defer cleanupWorkflows()
+		defer cleanupWorktree()
 	} else {
 		// Traditional flow without pre-flight display
-		tmpDir, cleanup, err = workflow.PrepareWorkflows(workflowPath, workflowFile)
+		tmpDir, cleanupWorkflows, err = workflow.PrepareWorkflows(workflowPath, workflowFile)
 		if err != nil {
 			return fmt.Errorf("preparing workflows: %w", err)
 		}
-		defer cleanup()
+		defer cleanupWorkflows()
+
+		// Create worktree for non-TUI mode
+		worktreeInfo, cleanupWorktree, err = git.PrepareWorktree(ctx, absRepoPath, runID)
+		if err != nil {
+			return fmt.Errorf("creating worktree: %w", err)
+		}
+		defer cleanupWorktree()
 	}
 
 	var result *act.RunResult
@@ -138,14 +193,14 @@ func runCheck(cmd *cobra.Command, args []string) error {
 	var cancelled bool
 
 	if useTUI {
-		result, grouped, cancelled, err = runWithTUIAndExtract(ctx, absRepoPath, tmpDir)
+		result, grouped, cancelled, err = runWithTUIAndExtract(ctx, worktreeInfo.Path, tmpDir)
 		// Check for cancellation in TUI mode
 		if cancelled {
 			signal.PrintCancellationMessage("check")
 			return nil
 		}
 	} else {
-		result, err = runWithoutTUI(ctx, absRepoPath, tmpDir)
+		result, err = runWithoutTUI(ctx, worktreeInfo.Path, tmpDir)
 	}
 
 	if err != nil {
@@ -181,19 +236,11 @@ func runCheck(cmd *cobra.Command, args []string) error {
 		workflowName = workflowFile
 	}
 
-	// Get git commit SHA
-	commitSHA, err := git.GetCurrentCommitSHA()
-	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "Warning: failed to get git commit SHA: %v (using 'unknown')\n", err)
-		commitSHA = "unknown"
-	}
-
 	// Detect execution mode
 	execMode := git.DetectExecutionMode()
 
 	// Persist results to .detent/ directory
-	// TODO: Pass actual worktree isDirty and dirtyFiles from Phase 3 integration
-	recorder, err := persistence.NewRecorder(absRepoPath, workflowName, commitSHA, execMode, false, nil)
+	recorder, err := persistence.NewRecorder(absRepoPath, workflowName, worktreeInfo.BaseCommitSHA, execMode, worktreeInfo.IsDirty, worktreeInfo.DirtyFiles)
 	if err != nil {
 		return fmt.Errorf("failed to initialize persistence storage at %s/.detent: %w", absRepoPath, err)
 	}
@@ -434,12 +481,13 @@ func parseActProgress(line string) *tui.ProgressMsg {
 }
 
 // runPreflightChecks performs and displays pre-flight checks before running act
-func runPreflightChecks(ctx context.Context, workflowPath string) (tmpDir string, cleanup func(), err error) {
+func runPreflightChecks(ctx context.Context, workflowPath, repoRoot, runID string) (tmpDir string, worktreeInfo *git.WorktreeInfo, cleanupWorkflows, cleanupWorktree func(), err error) {
 	checks := []string{
 		"Checking act installation",
 		"Checking Docker availability",
 		"Preparing workflows (injecting continue-on-error)",
 		"Creating temporary workspace",
+		"Creating isolated worktree",
 	}
 
 	display := tui.NewPreflightDisplay(checks)
@@ -454,7 +502,7 @@ func runPreflightChecks(ctx context.Context, workflowPath string) (tmpDir string
 	if err != nil {
 		display.UpdateCheck("Checking act installation", "error", err)
 		display.RenderFinal()
-		return "", nil, err
+		return "", nil, nil, nil, err
 	}
 
 	display.UpdateCheck("Checking act installation", "success", nil)
@@ -469,7 +517,7 @@ func runPreflightChecks(ctx context.Context, workflowPath string) (tmpDir string
 	if err != nil {
 		display.UpdateCheck("Checking Docker availability", "error", err)
 		display.RenderFinal()
-		return "", nil, fmt.Errorf("docker is not available: %w", err)
+		return "", nil, nil, nil, fmt.Errorf("docker is not available: %w", err)
 	}
 
 	display.UpdateCheck("Checking Docker availability", "success", nil)
@@ -480,15 +528,31 @@ func runPreflightChecks(ctx context.Context, workflowPath string) (tmpDir string
 	display.UpdateCheck("Preparing workflows (injecting continue-on-error)", "running", nil)
 	display.Render()
 
-	tmpDir, cleanup, err = workflow.PrepareWorkflows(workflowPath, workflowFile)
+	tmpDir, cleanupWorkflows, err = workflow.PrepareWorkflows(workflowPath, workflowFile)
 	if err != nil {
 		display.UpdateCheck("Preparing workflows (injecting continue-on-error)", "error", err)
 		display.RenderFinal()
-		return "", nil, fmt.Errorf("preparing workflows: %w", err)
+		return "", nil, nil, nil, fmt.Errorf("preparing workflows: %w", err)
 	}
 
 	display.UpdateCheck("Preparing workflows (injecting continue-on-error)", "success", nil)
 	display.UpdateCheck("Creating temporary workspace", "success", nil)
+	display.Render()
+
+	// Check 4: Create worktree
+	time.Sleep(preflightTransitionDelay)
+	display.UpdateCheck("Creating isolated worktree", "running", nil)
+	display.Render()
+
+	worktreeInfo, cleanupWorktree, err = git.PrepareWorktree(ctx, repoRoot, runID)
+	if err != nil {
+		display.UpdateCheck("Creating isolated worktree", "error", err)
+		display.RenderFinal()
+		cleanupWorkflows()
+		return "", nil, nil, nil, fmt.Errorf("creating worktree: %w", err)
+	}
+
+	display.UpdateCheck("Creating isolated worktree", "success", nil)
 	display.Render()
 
 	// Small pause to show all checks passed
@@ -497,5 +561,5 @@ func runPreflightChecks(ctx context.Context, workflowPath string) (tmpDir string
 	// Add a blank line before TUI starts
 	fmt.Fprintln(os.Stderr)
 
-	return tmpDir, cleanup, nil
+	return tmpDir, worktreeInfo, cleanupWorkflows, cleanupWorktree, nil
 }
