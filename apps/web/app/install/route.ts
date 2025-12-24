@@ -15,8 +15,7 @@ case "$OS" in
   *) echo "Unsupported OS: $OS" && exit 1 ;;
 esac
 
-# TODO: Replace with actual GitHub releases URL
-URL="https://github.com/TODO/detent/releases/latest/download/detent-\${OS}-\${ARCH}"
+URL="https://github.com/handleui/detent/releases/latest/download/detent-\${OS}-\${ARCH}"
 
 INSTALL_DIR="/usr/local/bin"
 
