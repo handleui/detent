@@ -2,6 +2,7 @@ package errors
 
 import (
 	"bufio"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -13,6 +14,21 @@ const (
 )
 
 // Extractor processes act output and extracts structured errors.
+//
+// THREAD-SAFETY: This type is NOT thread-safe. Each Extractor instance maintains
+// internal state that tracks multi-line error formats (Python tracebacks, Rust errors,
+// stack traces) across successive calls to Extract(). This stateful design assumes
+// sequential processing of log lines.
+//
+// STATE MANAGEMENT: The extractor maintains several pieces of mutable state:
+//   - lastFile: Remembers the most recent file path for errors without explicit paths
+//   - currentWorkflowCtx: Tracks the current workflow/job context from act output
+//   - lastPythonError/lastRustError: Hold partially-parsed errors awaiting completion
+//   - inStackTrace/stackTraceLines/stackTraceOwner: Accumulate multi-line stack traces
+//
+// USAGE: Create one Extractor instance per extraction session (per workflow run).
+// Do NOT share an Extractor across goroutines. Do NOT reuse an Extractor for
+// multiple unrelated extraction sessions, as residual state may cause incorrect parsing.
 type Extractor struct {
 	lastFile           string           // Tracks the last file path seen (for multi-line error formats)
 	currentWorkflowCtx *WorkflowContext // Tracks the current workflow/job context from act output
@@ -113,11 +129,17 @@ func parseActContext(line string) (ctx *WorkflowContext, cleanedLine string) {
 }
 
 // parseLineCol parses line and column numbers from regex match groups.
-// Returns 0 for invalid input (regex guarantees \d+ so this shouldn't happen).
-func parseLineCol(lineStr, colStr string) (line, col int) {
-	line, _ = strconv.Atoi(lineStr)
-	col, _ = strconv.Atoi(colStr)
-	return line, col
+// Returns error if conversion fails.
+func parseLineCol(lineStr, colStr string) (line, col int, err error) {
+	line, err = strconv.Atoi(lineStr)
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to parse line number: %w", err)
+	}
+	col, err = strconv.Atoi(colStr)
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to parse column number: %w", err)
+	}
+	return line, col, nil
 }
 
 // startStackTrace begins accumulating stack trace lines for an error
@@ -134,9 +156,9 @@ func (e *Extractor) addStackTraceLine(line string) {
 	}
 
 	// Check if we've reached the maximum stack trace lines
-	if len(e.stackTraceLines) >= maxStackTraceLines {
-		// Add truncation message only once (when exactly at limit)
-		if len(e.stackTraceLines) == maxStackTraceLines {
+	if len(e.stackTraceLines) > maxStackTraceLines {
+		// Add truncation message only once (when just exceeded limit)
+		if len(e.stackTraceLines) == maxStackTraceLines+1 {
 			e.stackTraceLines = append(e.stackTraceLines, "... (stack trace truncated)")
 		}
 		return
@@ -247,7 +269,11 @@ func (e *Extractor) extractFromLine(line string) *ExtractedError {
 	}
 
 	if match := goErrorPattern.FindStringSubmatch(line); match != nil {
-		lineNum, colNum := parseLineCol(match[2], match[3])
+		lineNum, colNum, err := parseLineCol(match[2], match[3])
+		if err != nil {
+			// Log error but continue extraction with 0 values
+			lineNum, colNum = 0, 0
+		}
 		return &ExtractedError{
 			Message:  strings.TrimSpace(match[4]),
 			File:     match[1],
@@ -260,7 +286,11 @@ func (e *Extractor) extractFromLine(line string) *ExtractedError {
 	}
 
 	if match := tsErrorPattern.FindStringSubmatch(line); match != nil {
-		lineNum, colNum := parseLineCol(match[2], match[3])
+		lineNum, colNum, err := parseLineCol(match[2], match[3])
+		if err != nil {
+			// Log error but continue extraction with 0 values
+			lineNum, colNum = 0, 0
+		}
 		return &ExtractedError{
 			Message:  strings.TrimSpace(match[5]), // Group 5 is message (group 4 is TS code)
 			File:     match[1],
@@ -329,7 +359,11 @@ func (e *Extractor) extractFromLine(line string) *ExtractedError {
 
 	// Rust location: --> file.rs:10:5
 	if match := rustErrorPattern.FindStringSubmatch(line); match != nil {
-		lineNum, colNum := parseLineCol(match[2], match[3])
+		lineNum, colNum, err := parseLineCol(match[2], match[3])
+		if err != nil {
+			// Log error but continue extraction with 0 values
+			lineNum, colNum = 0, 0
+		}
 		// If we have a pending Rust error, update its location
 		if e.lastRustError != nil {
 			e.lastRustError.File = match[1]
@@ -366,7 +400,11 @@ func (e *Extractor) extractFromLine(line string) *ExtractedError {
 	}
 
 	if match := nodeStackPattern.FindStringSubmatch(line); match != nil {
-		lineNum, colNum := parseLineCol(match[2], match[3])
+		lineNum, colNum, err := parseLineCol(match[2], match[3])
+		if err != nil {
+			// Log error but continue extraction with 0 values
+			lineNum, colNum = 0, 0
+		}
 		nodeErr := &ExtractedError{
 			Message:  "Node.js error",
 			File:     match[1],
@@ -385,13 +423,17 @@ func (e *Extractor) extractFromLine(line string) *ExtractedError {
 	}
 
 	if match := eslintPattern.FindStringSubmatch(line); match != nil {
-		lineNum, colNum := parseLineCol(match[1], match[2])
+		lineNum, colNum, err := parseLineCol(match[1], match[2])
+		if err != nil {
+			// Log error but continue extraction with 0 values
+			lineNum, colNum = 0, 0
+		}
 		rawMessage := strings.TrimSpace(match[4])
 
 		// Parse rule ID from message using the ESLint builder
 		cleanMessage, ruleID := e.eslintBuilder.ParseRuleID(rawMessage)
 
-		err := &ExtractedError{
+		extractedErr := &ExtractedError{
 			Message:  cleanMessage,
 			File:     e.lastFile, // Use the last seen file path
 			Line:     lineNum,
@@ -403,7 +445,7 @@ func (e *Extractor) extractFromLine(line string) *ExtractedError {
 			Raw:      line,
 		}
 
-		return err
+		return extractedErr
 	}
 
 	if match := errorPattern.FindStringSubmatch(line); match != nil {

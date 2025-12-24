@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/goccy/go-yaml"
 )
@@ -65,8 +64,9 @@ func DiscoverWorkflows(dir string) ([]string, error) {
 			continue
 		}
 
-		// Ensure resolved path is within the directory
-		if !strings.HasPrefix(absPath, absDir+string(os.PathSeparator)) && absPath != absDir {
+		// Ensure resolved path is within the directory using filepath.Rel
+		relPath, err := filepath.Rel(absDir, absPath)
+		if err != nil || len(relPath) >= 2 && relPath[:2] == ".." {
 			continue
 		}
 

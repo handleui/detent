@@ -53,9 +53,11 @@ type Recorder struct {
 }
 
 // generateUUID creates a simple UUID v4 without external dependencies
-func generateUUID() string {
+func generateUUID() (string, error) {
 	b := make([]byte, uuidBytesTotal)
-	_, _ = rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("failed to generate random bytes for UUID: %w", err)
+	}
 	// Set version (4) and variant bits
 	b[uuidVersionByteIndex] = (b[uuidVersionByteIndex] & uuidVersionMask) | uuidVersion4
 	b[uuidVariantByteIndex] = (b[uuidVariantByteIndex] & uuidVariantMask) | uuidVariantRFC
@@ -64,12 +66,15 @@ func generateUUID() string {
 		b[uuidSlice2Start:uuidSlice2End],
 		b[uuidSlice3Start:uuidSlice3End],
 		b[uuidSlice4Start:uuidSlice4End],
-		b[uuidSlice5Start:])
+		b[uuidSlice5Start:]), nil
 }
 
 // NewRecorder creates a new persistence recorder
-func NewRecorder(repoRoot, workflowName, commitSHA, execMode string) (*Recorder, error) {
-	runID := generateUUID()
+func NewRecorder(repoRoot, workflowName, commitSHA, execMode string, isDirty bool, dirtyFiles []string) (*Recorder, error) {
+	runID, err := generateUUID()
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate run ID: %w", err)
+	}
 
 	sqlite, err := NewSQLiteWriter(repoRoot)
 	if err != nil {
@@ -77,7 +82,7 @@ func NewRecorder(repoRoot, workflowName, commitSHA, execMode string) (*Recorder,
 	}
 
 	// Record the run in the database
-	if err := sqlite.RecordRun(runID, workflowName, commitSHA, execMode); err != nil {
+	if err := sqlite.RecordRun(runID, workflowName, commitSHA, execMode, isDirty, dirtyFiles); err != nil {
 		if closeErr := sqlite.Close(); closeErr != nil {
 			return nil, fmt.Errorf("failed to record run: %w (additionally, failed to close database: %v)", err, closeErr)
 		}
@@ -101,19 +106,7 @@ func NewRecorder(repoRoot, workflowName, commitSHA, execMode string) (*Recorder,
 
 // RecordFinding logs a single finding to JSONL and tracks it in memory
 func (r *Recorder) RecordFinding(err *errors.ExtractedError) error {
-	// Track in memory for final summary
-	r.errors = append(r.errors, err)
-
-	// Track file-level counts
-	if err.File != "" {
-		if err.Severity == "error" {
-			r.errorCounts[err.File]++
-		} else {
-			r.warningCounts[err.File]++
-		}
-	}
-
-	// Build finding record for JSONL
+	// Build finding record for SQLite database
 	finding := &FindingRecord{
 		Timestamp:  time.Now(),
 		RunID:      r.runID,
@@ -135,9 +128,22 @@ func (r *Recorder) RecordFinding(err *errors.ExtractedError) error {
 		finding.WorkflowStep = err.WorkflowContext.Step
 	}
 
-	// Write to SQLite database
-	if err := r.sqlite.RecordError(finding); err != nil {
-		return fmt.Errorf("failed to record finding: %w", err)
+	// Write to SQLite database first (fail fast if DB write fails)
+	if dbErr := r.sqlite.RecordError(finding); dbErr != nil {
+		return fmt.Errorf("failed to record finding: %w", dbErr)
+	}
+
+	// Only update in-memory tracking after successful DB write
+	// Track in memory for final summary
+	r.errors = append(r.errors, err)
+
+	// Track file-level counts
+	if err.File != "" {
+		if err.Severity == "error" {
+			r.errorCounts[err.File]++
+		} else {
+			r.warningCounts[err.File]++
+		}
 	}
 
 	return nil

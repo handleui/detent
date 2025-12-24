@@ -161,7 +161,14 @@ func runCheck(cmd *cobra.Command, args []string) error {
 		applySeverity(extracted)
 		grouped = internalerrors.GroupByFileWithBase(extracted, absRepoPath)
 	} else {
-		// If grouped exists, flatten it to get extracted errors for persistence
+		// Error flattening: TUI mode already extracted and grouped errors for display.
+		// Now we need to flatten the grouped structure back into a linear list for
+		// persistence. This reconstructs the original extracted errors from the
+		// GroupedErrors structure by iterating through all file groups and combining
+		// them with ungrouped errors (those without file locations).
+		//
+		// grouped.ByFile is a map[string][]*ExtractedError (file path -> errors in that file)
+		// grouped.NoFile is []*ExtractedError (errors without file locations)
 		for _, errs := range grouped.ByFile {
 			extracted = append(extracted, errs...)
 		}
@@ -185,7 +192,8 @@ func runCheck(cmd *cobra.Command, args []string) error {
 	execMode := git.DetectExecutionMode()
 
 	// Persist results to .detent/ directory
-	recorder, err := persistence.NewRecorder(absRepoPath, workflowName, commitSHA, execMode)
+	// TODO: Pass actual worktree isDirty and dirtyFiles from Phase 3 integration
+	recorder, err := persistence.NewRecorder(absRepoPath, workflowName, commitSHA, execMode, false, nil)
 	if err != nil {
 		return fmt.Errorf("failed to initialize persistence storage at %s/.detent: %w", absRepoPath, err)
 	}

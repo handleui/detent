@@ -74,21 +74,45 @@ func PrepareWorkflows(srcDir, specificWorkflow string) (tmpDir string, cleanup f
 	var workflows []string
 
 	if specificWorkflow != "" {
+		// Clean and validate the specific workflow path to prevent path traversal
+		cleanWorkflow := filepath.Clean(specificWorkflow)
+
+		// Reject paths with parent directory references
+		if filepath.IsAbs(cleanWorkflow) || cleanWorkflow != "" && (cleanWorkflow[0] == '.' || cleanWorkflow == ".." || len(cleanWorkflow) >= 3 && cleanWorkflow[:3] == ".."+string(filepath.Separator)) {
+			return "", nil, fmt.Errorf("workflow path must be relative and cannot reference parent directories")
+		}
+
+		// Get absolute paths for validation
+		absSrcDir, absErr := filepath.Abs(srcDir)
+		if absErr != nil {
+			return "", nil, fmt.Errorf("resolving source directory: %w", absErr)
+		}
+
 		// Process specific workflow file
-		workflowPath := filepath.Join(srcDir, specificWorkflow)
-		var absPath string
-		absPath, err = filepath.Abs(workflowPath)
-		if err != nil {
-			return "", nil, fmt.Errorf("resolving workflow path: %w", err)
+		workflowPath := filepath.Join(absSrcDir, cleanWorkflow)
+		absPath, absPathErr := filepath.Abs(workflowPath)
+		if absPathErr != nil {
+			return "", nil, fmt.Errorf("resolving workflow path: %w", absPathErr)
+		}
+
+		// Validate the resolved path is within the source directory using filepath.Rel
+		relPath, relErr := filepath.Rel(absSrcDir, absPath)
+		if relErr != nil || len(relPath) >= 2 && relPath[:2] == ".." {
+			return "", nil, fmt.Errorf("workflow path must be within the workflows directory")
 		}
 
 		// Validate file exists and is a workflow file
-		_, err = os.Stat(absPath)
-		if err != nil {
-			return "", nil, fmt.Errorf("workflow file not found: %w", err)
+		fileInfo, statErr := os.Lstat(absPath)
+		if statErr != nil {
+			return "", nil, fmt.Errorf("workflow file not found: %w", statErr)
 		}
 
-		ext := filepath.Ext(specificWorkflow)
+		// Reject symlinks to prevent path traversal
+		if fileInfo.Mode()&os.ModeSymlink != 0 {
+			return "", nil, fmt.Errorf("workflow file cannot be a symlink")
+		}
+
+		ext := filepath.Ext(cleanWorkflow)
 		if ext != ".yml" && ext != ".yaml" {
 			return "", nil, fmt.Errorf("workflow file must have .yml or .yaml extension")
 		}

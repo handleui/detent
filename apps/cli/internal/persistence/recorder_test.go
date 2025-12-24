@@ -12,7 +12,7 @@ import (
 // TestNewRecorder tests recorder creation
 func TestNewRecorder(t *testing.T) {
 	tmpDir := t.TempDir()
-	recorder, err := NewRecorder(tmpDir, "CI", "abc123", "github")
+	recorder, err := NewRecorder(tmpDir, "CI", "abc123", "github", false, nil)
 
 	if err != nil {
 		t.Fatalf("NewRecorder() error = %v", err)
@@ -58,7 +58,7 @@ func TestNewRecorder(t *testing.T) {
 // TestRecorder_RecordFinding tests finding recording
 func TestRecorder_RecordFinding(t *testing.T) {
 	tmpDir := t.TempDir()
-	recorder, err := NewRecorder(tmpDir, "test", "abc123", "github")
+	recorder, err := NewRecorder(tmpDir, "test", "abc123", "github", false, nil)
 	if err != nil {
 		t.Fatalf("Failed to create recorder: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestRecorder_RecordFinding(t *testing.T) {
 // TestRecorder_RecordFinding_FileCounts tests file-level error/warning counting
 func TestRecorder_RecordFinding_FileCounts(t *testing.T) {
 	tmpDir := t.TempDir()
-	recorder, err := NewRecorder(tmpDir, "test", "abc123", "github")
+	recorder, err := NewRecorder(tmpDir, "test", "abc123", "github", false, nil)
 	if err != nil {
 		t.Fatalf("Failed to create recorder: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestRecorder_RecordFinding_FileCounts(t *testing.T) {
 // TestRecorder_Finalize tests recorder finalization
 func TestRecorder_Finalize(t *testing.T) {
 	tmpDir := t.TempDir()
-	recorder, err := NewRecorder(tmpDir, "test", "abc123", "github")
+	recorder, err := NewRecorder(tmpDir, "test", "abc123", "github", false, nil)
 	if err != nil {
 		t.Fatalf("Failed to create recorder: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestRecorder_Finalize(t *testing.T) {
 // TestRecorder_GetOutputPath tests output path retrieval
 func TestRecorder_GetOutputPath(t *testing.T) {
 	tmpDir := t.TempDir()
-	recorder, err := NewRecorder(tmpDir, "test", "abc123", "github")
+	recorder, err := NewRecorder(tmpDir, "test", "abc123", "github", false, nil)
 	if err != nil {
 		t.Fatalf("Failed to create recorder: %v", err)
 	}
@@ -208,7 +208,10 @@ func TestGenerateUUID(t *testing.T) {
 	uuids := make(map[string]bool)
 
 	for i := 0; i < 100; i++ {
-		uuid := generateUUID()
+		uuid, err := generateUUID()
+		if err != nil {
+			t.Fatalf("generateUUID() failed: %v", err)
+		}
 
 		// Verify format (8-4-4-4-12)
 		if len(uuid) != 36 {
@@ -235,7 +238,7 @@ func TestGenerateUUID(t *testing.T) {
 // TestRecorder_WorkflowContextPersistence tests that workflow context is tracked
 func TestRecorder_WorkflowContextPersistence(t *testing.T) {
 	tmpDir := t.TempDir()
-	recorder, err := NewRecorder(tmpDir, "test-workflow", "abc123def", "github")
+	recorder, err := NewRecorder(tmpDir, "test-workflow", "abc123def", "github", false, nil)
 	if err != nil {
 		t.Fatalf("Failed to create recorder: %v", err)
 	}
@@ -279,7 +282,7 @@ func TestRecorder_StartTime(t *testing.T) {
 	tmpDir := t.TempDir()
 	before := time.Now()
 
-	recorder, err := NewRecorder(tmpDir, "test", "abc123", "github")
+	recorder, err := NewRecorder(tmpDir, "test", "abc123", "github", false, nil)
 	if err != nil {
 		t.Fatalf("Failed to create recorder: %v", err)
 	}
@@ -296,7 +299,7 @@ func TestRecorder_StartTime(t *testing.T) {
 // TestRecorder_ErrorCategoryTracking tests that different error categories are tracked
 func TestRecorder_ErrorCategoryTracking(t *testing.T) {
 	tmpDir := t.TempDir()
-	recorder, err := NewRecorder(tmpDir, "test", "abc123", "github")
+	recorder, err := NewRecorder(tmpDir, "test", "abc123", "github", false, nil)
 	if err != nil {
 		t.Fatalf("Failed to create recorder: %v", err)
 	}
@@ -344,7 +347,7 @@ func TestRecorder_ErrorCategoryTracking(t *testing.T) {
 // TestRecorder_RecordFinding_WithoutFile tests recording errors without file information
 func TestRecorder_RecordFinding_WithoutFile(t *testing.T) {
 	tmpDir := t.TempDir()
-	recorder, err := NewRecorder(tmpDir, "test", "abc123", "github")
+	recorder, err := NewRecorder(tmpDir, "test", "abc123", "github", false, nil)
 	if err != nil {
 		t.Fatalf("Failed to create recorder: %v", err)
 	}
