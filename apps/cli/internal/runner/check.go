@@ -79,7 +79,7 @@ func New(config *RunConfig) *CheckRunner {
 // Returns error if preparation fails. On error, partial resources are cleaned up.
 func (r *CheckRunner) Prepare(ctx context.Context) error {
 	// Prepare workflows with continue-on-error injection
-	tmpDir, cleanupWorkflows, err := workflow.PrepareWorkflows(r.config.WorkflowPath, "")
+	tmpDir, cleanupWorkflows, err := workflow.PrepareWorkflows(r.config.WorkflowPath, r.config.WorkflowFile)
 	if err != nil {
 		return fmt.Errorf("preparing workflows: %w", err)
 	}
@@ -106,7 +106,7 @@ func (r *CheckRunner) Prepare(ctx context.Context) error {
 // Returns error if preparation fails. On error, partial resources are cleaned up.
 func (r *CheckRunner) PrepareWithTUI(ctx context.Context) error {
 	// Run preflight checks with visual feedback
-	result, err := preflight.RunPreflightChecks(ctx, r.config.WorkflowPath, r.config.RepoRoot, r.config.RunID, "")
+	result, err := preflight.RunPreflightChecks(ctx, r.config.WorkflowPath, r.config.RepoRoot, r.config.RunID, r.config.WorkflowFile)
 	if err != nil {
 		return err
 	}
@@ -197,9 +197,10 @@ func (r *CheckRunner) RunWithTUI(ctx context.Context, logChan chan string, progr
 
 	// Start act runner in goroutine (matching startActRunner:376-408)
 	type tuiResult struct {
-		result  *act.RunResult
-		grouped *internalerrors.GroupedErrors
-		err     error
+		result    *act.RunResult
+		extracted []*internalerrors.ExtractedError
+		grouped   *internalerrors.GroupedErrors
+		err       error
 	}
 	resultChan := make(chan tuiResult, 1)
 
@@ -213,8 +214,8 @@ func (r *CheckRunner) RunWithTUI(ctx context.Context, logChan chan string, progr
 			return
 		}
 
-		// Extract errors before sending to TUI
-		_, grouped := r.extractAndProcessErrors(result)
+		// Extract and process errors once (cached for later use)
+		extracted, grouped := r.extractAndProcessErrors(result)
 
 		// Check if context was cancelled
 		cancelled := errors.Is(ctx.Err(), context.Canceled)
@@ -228,8 +229,9 @@ func (r *CheckRunner) RunWithTUI(ctx context.Context, logChan chan string, progr
 		})
 
 		resultChan <- tuiResult{
-			result:  result,
-			grouped: grouped,
+			result:    result,
+			extracted: extracted,
+			grouped:   grouped,
 		}
 	}()
 
@@ -277,14 +279,11 @@ func (r *CheckRunner) RunWithTUI(ctx context.Context, logChan chan string, progr
 		return false, tuiRes.err
 	}
 
-	// Extract errors for full result
-	extracted, grouped := r.extractAndProcessErrors(tuiRes.result)
-
-	// Store result
+	// Store result using cached extracted/grouped errors (already processed in goroutine)
 	r.result = &RunResult{
 		ActResult:    tuiRes.result,
-		Extracted:    extracted,
-		Grouped:      grouped,
+		Extracted:    tuiRes.extracted,
+		Grouped:      tuiRes.grouped,
 		WorktreeInfo: r.worktreeInfo,
 		RunID:        r.config.RunID,
 		StartTime:    r.startTime,
@@ -377,11 +376,11 @@ func (r *CheckRunner) Persist() error {
 // happens even if preparation or execution fails. Cleanup is idempotent and
 // safe to call multiple times.
 func (r *CheckRunner) Cleanup() {
-	if r.cleanupWorkflows != nil {
-		r.cleanupWorkflows()
-	}
 	if r.cleanupWorktree != nil {
 		r.cleanupWorktree()
+	}
+	if r.cleanupWorkflows != nil {
+		r.cleanupWorkflows()
 	}
 }
 

@@ -10,7 +10,8 @@ import (
 )
 
 const (
-	maxStackTraceLines = 5000 // Maximum stack trace lines to prevent memory exhaustion
+	maxStackTraceLines    = 5000 // Maximum stack trace lines to prevent memory exhaustion
+	maxDeduplicationSize = 10000 // Maximum deduplicated errors to prevent unbounded map growth
 )
 
 // Extractor processes act output and extracts structured errors.
@@ -83,6 +84,13 @@ func (e *Extractor) Extract(output string) []*ExtractedError {
 			// Attach workflow context to the error (clone to prevent stale pointer sharing)
 			found.WorkflowContext = e.currentWorkflowCtx.Clone()
 
+			// Check if we've exceeded max deduplication size to prevent unbounded map growth
+			if len(seen) >= maxDeduplicationSize {
+				// Accept duplicates beyond limit to prevent unbounded growth
+				extracted = append(extracted, found)
+				continue
+			}
+
 			key := errKey{found.Message, found.File, found.Line}
 			if _, exists := seen[key]; !exists {
 				seen[key] = struct{}{}
@@ -98,10 +106,17 @@ func (e *Extractor) Extract(output string) []*ExtractedError {
 		if e.currentWorkflowCtx != nil {
 			owner.WorkflowContext = e.currentWorkflowCtx.Clone()
 		}
-		key := errKey{owner.Message, owner.File, owner.Line}
-		if _, exists := seen[key]; !exists {
-			seen[key] = struct{}{}
+
+		// Check if we've exceeded max deduplication size to prevent unbounded map growth
+		if len(seen) >= maxDeduplicationSize {
+			// Accept duplicates beyond limit to prevent unbounded growth
 			extracted = append(extracted, owner)
+		} else {
+			key := errKey{owner.Message, owner.File, owner.Line}
+			if _, exists := seen[key]; !exists {
+				seen[key] = struct{}{}
+				extracted = append(extracted, owner)
+			}
 		}
 	}
 
