@@ -78,3 +78,47 @@ func ComputeContentHash(message string) string {
 	hash := sha256.Sum256([]byte(normalized))
 	return hex.EncodeToString(hash[:])
 }
+
+// ComputeCodebaseStateHash creates a deterministic hash representing the exact state
+// of a codebase. This enables deduplication across cloud agents and runs.
+//
+// For clean repos: just the commit SHA
+// For dirty repos: commit SHA + sorted dirty file paths with their content hashes
+//
+// dirtyFileHashes is a map of relative file paths to their SHA256 content hashes.
+func ComputeCodebaseStateHash(commitSHA string, dirtyFileHashes map[string]string) string {
+	if len(dirtyFileHashes) == 0 {
+		// Clean state: just hash the commit SHA for consistency
+		hash := sha256.Sum256([]byte(commitSHA))
+		return hex.EncodeToString(hash[:])
+	}
+
+	// Sort file paths for deterministic ordering
+	paths := make([]string, 0, len(dirtyFileHashes))
+	for path := range dirtyFileHashes {
+		paths = append(paths, path)
+	}
+	sortStrings(paths)
+
+	// Build deterministic string: commit::path1:hash1::path2:hash2...
+	var buf strings.Builder
+	buf.WriteString(commitSHA)
+	for _, path := range paths {
+		buf.WriteString("::")
+		buf.WriteString(path)
+		buf.WriteString(":")
+		buf.WriteString(dirtyFileHashes[path])
+	}
+
+	hash := sha256.Sum256([]byte(buf.String()))
+	return hex.EncodeToString(hash[:])
+}
+
+// sortStrings sorts a slice of strings in place (simple insertion sort for small slices)
+func sortStrings(s []string) {
+	for i := 1; i < len(s); i++ {
+		for j := i; j > 0 && s[j] < s[j-1]; j-- {
+			s[j], s[j-1] = s[j-1], s[j]
+		}
+	}
+}

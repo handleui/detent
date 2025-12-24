@@ -2,7 +2,6 @@ package persistence
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,7 +19,7 @@ const (
 	detentDBName = "detent.db"
 	batchSize    = 500 // Batch size for error inserts
 
-	currentSchemaVersion = 4 // Current database schema version
+	currentSchemaVersion = 6 // Current database schema version
 )
 
 // createDirIfNotExists creates a directory if it doesn't exist
@@ -251,6 +250,37 @@ func (w *SQLiteWriter) applyMigrations(fromVersion int) error {
 			CREATE INDEX IF NOT EXISTS idx_error_locations_run_id ON error_locations(run_id);
 			`,
 		},
+		{
+			version: 5,
+			name:    "add_sync_and_state_tracking",
+			sql: `
+			-- Codebase state hash for deduplication across cloud agents
+			ALTER TABLE runs ADD COLUMN codebase_state_hash TEXT;
+
+			-- Sync status for future remote sync (pending/synced/failed)
+			ALTER TABLE runs ADD COLUMN sync_status TEXT DEFAULT 'pending';
+			ALTER TABLE errors ADD COLUMN sync_status TEXT DEFAULT 'pending';
+			ALTER TABLE heals ADD COLUMN sync_status TEXT DEFAULT 'pending';
+
+			-- Indices for sync queries
+			CREATE INDEX IF NOT EXISTS idx_runs_codebase_state_hash ON runs(codebase_state_hash);
+			CREATE INDEX IF NOT EXISTS idx_runs_sync_status ON runs(sync_status);
+			CREATE INDEX IF NOT EXISTS idx_errors_sync_status ON errors(sync_status);
+			CREATE INDEX IF NOT EXISTS idx_heals_sync_status ON heals(sync_status);
+			`,
+		},
+		{
+			version: 6,
+			name:    "drop_unused_indices",
+			sql: `
+			-- Drop indices with low selectivity or unused
+			DROP INDEX IF EXISTS idx_errors_run_id;
+			DROP INDEX IF EXISTS idx_errors_status;
+			DROP INDEX IF EXISTS idx_errors_content_hash_time;
+			DROP INDEX IF EXISTS idx_runs_is_dirty;
+			DROP INDEX IF EXISTS idx_errors_sync_status;
+			`,
+		},
 	}
 
 	// Apply each migration in a transaction
@@ -293,35 +323,62 @@ func (w *SQLiteWriter) applyMigrations(fromVersion int) error {
 }
 
 // RecordRun inserts a new run record into the database
-func (w *SQLiteWriter) RecordRun(runID, workflowName, commitSHA, executionMode string, isDirty bool, dirtyFiles []string) error {
-	// Marshal dirty files to JSON
-	var dirtyFilesJSON *string
-	if len(dirtyFiles) > 0 {
-		jsonBytes, err := json.Marshal(dirtyFiles)
-		if err != nil {
-			return fmt.Errorf("failed to marshal dirty files: %w", err)
-		}
-		jsonStr := string(jsonBytes)
-		dirtyFilesJSON = &jsonStr
-	}
-
+func (w *SQLiteWriter) RecordRun(runID, workflowName, commitSHA, executionMode string, isDirty bool) error {
 	// Convert isDirty bool to integer (0 or 1)
 	isDirtyInt := 0
 	if isDirty {
 		isDirtyInt = 1
 	}
 
+	// Note: dirty_files and base_commit_sha are deprecated (redundant with codebase_state_hash)
 	query := `
-		INSERT INTO runs (run_id, workflow_name, commit_sha, execution_mode, started_at, is_dirty, dirty_files, base_commit_sha)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO runs (run_id, workflow_name, commit_sha, execution_mode, started_at, is_dirty)
+		VALUES (?, ?, ?, ?, ?, ?)
 	`
 
-	_, err := w.db.Exec(query, runID, workflowName, commitSHA, executionMode, time.Now().Unix(), isDirtyInt, dirtyFilesJSON, commitSHA)
+	_, err := w.db.Exec(query, runID, workflowName, commitSHA, executionMode, time.Now().Unix(), isDirtyInt)
 	if err != nil {
 		return fmt.Errorf("failed to record run: %w", err)
 	}
 
 	return nil
+}
+
+// SetCodebaseStateHash updates a run with the computed codebase state hash.
+// This should be called after dirty file hashes are computed.
+func (w *SQLiteWriter) SetCodebaseStateHash(runID, stateHash string) error {
+	query := `UPDATE runs SET codebase_state_hash = ? WHERE run_id = ?`
+
+	result, err := w.db.Exec(query, stateHash, runID)
+	if err != nil {
+		return fmt.Errorf("failed to set codebase state hash: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return fmt.Errorf("run not found: %s", runID)
+	}
+
+	return nil
+}
+
+// GetRunByStateHash finds a run by its codebase state hash (for deduplication)
+func (w *SQLiteWriter) GetRunByStateHash(stateHash string) (runID string, found bool, err error) {
+	query := `SELECT run_id FROM runs WHERE codebase_state_hash = ? ORDER BY started_at DESC LIMIT 1`
+
+	err = w.db.QueryRow(query, stateHash).Scan(&runID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("failed to query run by state hash: %w", err)
+	}
+
+	return runID, true, nil
 }
 
 // RecordFindings adds multiple findings in a single batch operation
