@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
+	"strings"
 )
 
 // ComputeFileHash calculates the SHA256 hash of a file
@@ -54,4 +56,18 @@ func BuildScannedFile(path string, errorCount, warningCount int) (*ScannedFile, 
 		ErrorCount:   errorCount,
 		WarningCount: warningCount,
 	}, nil
+}
+
+// lineColPattern matches file:line:col patterns for normalization
+var lineColPattern = regexp.MustCompile(`:\d+:\d+`)
+
+// ComputeContentHash creates a normalized hash of an error message for deduplication.
+// Normalizes by lowercasing, trimming whitespace, and removing file:line:col patterns.
+func ComputeContentHash(message string) string {
+	// Normalize: lowercase, trim whitespace, remove line:col numbers
+	normalized := strings.ToLower(strings.TrimSpace(message))
+	normalized = lineColPattern.ReplaceAllString(normalized, "")
+
+	hash := sha256.Sum256([]byte(normalized))
+	return hex.EncodeToString(hash[:])
 }

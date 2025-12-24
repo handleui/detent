@@ -45,6 +45,7 @@ type ExtractedError struct {
 	Column          int              `json:"column,omitempty"`
 	Severity        string           `json:"severity,omitempty"`         // "error" or "warning"
 	Raw             string           `json:"raw,omitempty"`
+	StackTrace      string           `json:"stack_trace,omitempty"`      // Multi-line stack trace for detailed error context
 	RuleID          string           `json:"rule_id,omitempty"`          // e.g., "no-var", "TS2749"
 	Category        ErrorCategory    `json:"category,omitempty"`         // lint, type-check, test, etc.
 	WorkflowContext *WorkflowContext `json:"workflow_context,omitempty"` // Job/step info

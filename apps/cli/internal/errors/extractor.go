@@ -8,12 +8,21 @@ import (
 	"github.com/detent/cli/internal/messages"
 )
 
+const (
+	maxStackTraceLines = 5000 // Maximum stack trace lines to prevent memory exhaustion
+)
+
 // Extractor processes act output and extracts structured errors.
 type Extractor struct {
 	lastFile           string           // Tracks the last file path seen (for multi-line error formats)
 	currentWorkflowCtx *WorkflowContext // Tracks the current workflow/job context from act output
 	lastPythonError    *ExtractedError  // Tracks the last Python error (for multi-line traceback format)
 	lastRustError      *ExtractedError  // Tracks the last Rust error (for multi-line error format)
+
+	// Stack trace accumulation
+	inStackTrace    bool            // Are we currently reading a stack trace?
+	stackTraceLines []string        // Accumulate stack trace lines
+	stackTraceOwner *ExtractedError // Which error owns this stack trace
 
 	// Message builders for language-specific message construction
 	pythonBuilder *messages.PythonMessageBuilder
@@ -65,6 +74,20 @@ func (e *Extractor) Extract(output string) []*ExtractedError {
 		}
 	}
 
+	// Finalize any pending stack trace at end of extraction
+	if e.inStackTrace && e.stackTraceOwner != nil {
+		owner := e.stackTraceOwner
+		e.finalizeStackTrace()
+		if e.currentWorkflowCtx != nil {
+			owner.WorkflowContext = e.currentWorkflowCtx.Clone()
+		}
+		key := errKey{owner.Message, owner.File, owner.Line}
+		if _, exists := seen[key]; !exists {
+			seen[key] = struct{}{}
+			extracted = append(extracted, owner)
+		}
+	}
+
 	return extracted
 }
 
@@ -97,7 +120,115 @@ func parseLineCol(lineStr, colStr string) (line, col int) {
 	return line, col
 }
 
+// startStackTrace begins accumulating stack trace lines for an error
+func (e *Extractor) startStackTrace(owner *ExtractedError) {
+	e.inStackTrace = true
+	e.stackTraceLines = make([]string, 0, 100)
+	e.stackTraceOwner = owner
+}
+
+// addStackTraceLine adds a line to the current stack trace
+func (e *Extractor) addStackTraceLine(line string) {
+	if !e.inStackTrace {
+		return
+	}
+
+	// Check if we've reached the maximum stack trace lines
+	if len(e.stackTraceLines) >= maxStackTraceLines {
+		// Add truncation message only once (when exactly at limit)
+		if len(e.stackTraceLines) == maxStackTraceLines {
+			e.stackTraceLines = append(e.stackTraceLines, "... (stack trace truncated)")
+		}
+		return
+	}
+
+	e.stackTraceLines = append(e.stackTraceLines, line)
+}
+
+// finalizeStackTrace attaches the accumulated stack trace to the owner and resets state
+func (e *Extractor) finalizeStackTrace() {
+	if e.inStackTrace && e.stackTraceOwner != nil && len(e.stackTraceLines) > 0 {
+		e.stackTraceOwner.StackTrace = strings.Join(e.stackTraceLines, "\n")
+	}
+	e.inStackTrace = false
+	e.stackTraceLines = nil
+	e.stackTraceOwner = nil
+}
+
+// isStackTraceContinuation checks if the line is part of an ongoing stack trace
+func (e *Extractor) isStackTraceContinuation(line string) bool {
+	if !e.inStackTrace {
+		return false
+	}
+
+	// Python: traceback lines or code snippets
+	if pythonTraceLinePattern.MatchString(line) || strings.HasPrefix(line, "    ") {
+		return true
+	}
+
+	// Go: stack frames or file:line references
+	if goStackFramePattern.MatchString(line) {
+		return true
+	}
+
+	// Node.js: at Function(...) lines
+	if nodeAtPattern.MatchString(line) {
+		return true
+	}
+
+	// Test output: indented continuation
+	if testOutputPattern.MatchString(line) {
+		return true
+	}
+
+	return false
+}
+
 func (e *Extractor) extractFromLine(line string) *ExtractedError {
+	// Check if we're continuing a stack trace
+	if e.isStackTraceContinuation(line) {
+		e.addStackTraceLine(line)
+		return nil
+	}
+
+	// If we have an active stack trace but this line doesn't continue it,
+	// finalize and return the error (unless it's Python, which has special handling)
+	if e.inStackTrace && e.stackTraceOwner != nil && e.lastPythonError == nil {
+		// Check if this is not a Python exception (which finalizes in its own handler)
+		if !pythonExceptionPattern.MatchString(line) {
+			e.finalizeStackTrace()
+			err := e.stackTraceOwner
+			e.stackTraceOwner = nil
+			return err
+		}
+	}
+
+	// Check for Python traceback start
+	if pythonTracebackPattern.MatchString(line) {
+		// We'll start accumulating when we get the first File line
+		return nil
+	}
+
+	// Check for Go panic start
+	if goPanicPattern.MatchString(line) {
+		e.finalizeStackTrace() // Finalize any previous trace
+		panicErr := &ExtractedError{
+			Message:  strings.TrimPrefix(line, "panic: "),
+			Category: CategoryRuntime,
+			Source:   "go",
+			Raw:      line,
+		}
+		e.startStackTrace(panicErr)
+		e.addStackTraceLine(line)
+		return nil // Don't return yet, accumulate the stack
+	}
+
+	// Check for Go goroutine (part of panic stack trace)
+	if goGoroutinePattern.MatchString(line) {
+		e.addStackTraceLine(line)
+		return nil
+	}
+
 	// Check if this is a standalone file path line (for multi-line error formats)
 	if match := filePathPattern.FindStringSubmatch(line); match != nil {
 		e.lastFile = match[1]
@@ -150,6 +281,8 @@ func (e *Extractor) extractFromLine(line string) *ExtractedError {
 		// If we have a pending Python error from traceback, update its message
 		if e.lastPythonError != nil {
 			e.lastPythonError.Message = message
+			e.addStackTraceLine(line) // Add exception line to stack trace
+			e.finalizeStackTrace()    // Finalize the Python traceback
 			err := e.lastPythonError
 			e.lastPythonError = nil
 			return err
@@ -175,6 +308,9 @@ func (e *Extractor) extractFromLine(line string) *ExtractedError {
 			Source:   "python",
 			Raw:      line,
 		}
+		// Start accumulating stack trace for Python errors
+		e.startStackTrace(e.lastPythonError)
+		e.addStackTraceLine(line)
 		return nil // Don't return yet, wait for exception message
 	}
 
@@ -216,17 +352,22 @@ func (e *Extractor) extractFromLine(line string) *ExtractedError {
 	}
 
 	if match := goTestFailPattern.FindStringSubmatch(line); match != nil {
-		return &ExtractedError{
+		e.finalizeStackTrace() // Finalize any previous stack trace
+		testErr := &ExtractedError{
 			Message:  "Test failed: " + match[1],
 			Category: CategoryTest,
 			Source:   "go-test",
 			Raw:      line,
 		}
+		// Start accumulating test output as stack trace
+		e.startStackTrace(testErr)
+		e.addStackTraceLine(line)
+		return nil // Don't return yet, accumulate test output
 	}
 
 	if match := nodeStackPattern.FindStringSubmatch(line); match != nil {
 		lineNum, colNum := parseLineCol(match[2], match[3])
-		return &ExtractedError{
+		nodeErr := &ExtractedError{
 			Message:  "Node.js error",
 			File:     match[1],
 			Line:     lineNum,
@@ -235,6 +376,12 @@ func (e *Extractor) extractFromLine(line string) *ExtractedError {
 			Source:   "nodejs",
 			Raw:      line,
 		}
+		// Start stack trace if this is the first "at" line, or continue accumulating
+		if !e.inStackTrace {
+			e.startStackTrace(nodeErr)
+		}
+		e.addStackTraceLine(line)
+		return nil // Don't return yet, accumulate the full stack
 	}
 
 	if match := eslintPattern.FindStringSubmatch(line); match != nil {

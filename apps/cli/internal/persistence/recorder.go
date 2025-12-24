@@ -3,7 +3,6 @@ package persistence
 import (
 	"crypto/rand"
 	"fmt"
-	"path/filepath"
 	"time"
 
 	"github.com/detent/cli/internal/errors"
@@ -38,8 +37,8 @@ type Recorder struct {
 	repoRoot  string
 	startTime time.Time
 
-	// JSONL writer for streaming results
-	jsonl *JSONLWriter
+	// SQLite writer for persistent storage
+	sqlite *SQLiteWriter
 
 	// In-memory tracking for final summary
 	errors        []*errors.ExtractedError
@@ -48,8 +47,9 @@ type Recorder struct {
 	warningCounts map[string]int          // warning count per file
 
 	// Run metadata
-	workflowsPath string
-	event         string
+	workflowName string
+	commitSHA    string
+	execMode     string
 }
 
 // generateUUID creates a simple UUID v4 without external dependencies
@@ -68,25 +68,34 @@ func generateUUID() string {
 }
 
 // NewRecorder creates a new persistence recorder
-func NewRecorder(repoRoot, workflowsPath, event string) (*Recorder, error) {
+func NewRecorder(repoRoot, workflowName, commitSHA, execMode string) (*Recorder, error) {
 	runID := generateUUID()
 
-	jsonl, err := NewJSONLWriter(repoRoot)
+	sqlite, err := NewSQLiteWriter(repoRoot)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create JSONL writer: %w", err)
+		return nil, fmt.Errorf("failed to create SQLite writer: %w", err)
+	}
+
+	// Record the run in the database
+	if err := sqlite.RecordRun(runID, workflowName, commitSHA, execMode); err != nil {
+		if closeErr := sqlite.Close(); closeErr != nil {
+			return nil, fmt.Errorf("failed to record run: %w (additionally, failed to close database: %v)", err, closeErr)
+		}
+		return nil, fmt.Errorf("failed to record run: %w", err)
 	}
 
 	return &Recorder{
 		runID:         runID,
 		repoRoot:      repoRoot,
 		startTime:     time.Now(),
-		jsonl:         jsonl,
+		sqlite:        sqlite,
 		errors:        make([]*errors.ExtractedError, 0),
 		fileMetadata:  make(map[string]*ScannedFile),
 		errorCounts:   make(map[string]int),
 		warningCounts: make(map[string]int),
-		workflowsPath: workflowsPath,
-		event:         event,
+		workflowName:  workflowName,
+		commitSHA:     commitSHA,
+		execMode:      execMode,
 	}, nil
 }
 
@@ -106,17 +115,18 @@ func (r *Recorder) RecordFinding(err *errors.ExtractedError) error {
 
 	// Build finding record for JSONL
 	finding := &FindingRecord{
-		Timestamp: time.Now(),
-		RunID:     r.runID,
-		FilePath:  err.File,
-		Message:   err.Message,
-		Line:      err.Line,
-		Column:    err.Column,
-		Severity:  err.Severity,
-		RuleID:    err.RuleID,
-		Category:  string(err.Category),
-		Source:    err.Source,
-		Raw:       err.Raw,
+		Timestamp:  time.Now(),
+		RunID:      r.runID,
+		FilePath:   err.File,
+		Message:    err.Message,
+		Line:       err.Line,
+		Column:     err.Column,
+		Severity:   err.Severity,
+		StackTrace: err.StackTrace,
+		RuleID:     err.RuleID,
+		Category:   string(err.Category),
+		Source:     err.Source,
+		Raw:        err.Raw,
 	}
 
 	// Add workflow context if available
@@ -125,111 +135,33 @@ func (r *Recorder) RecordFinding(err *errors.ExtractedError) error {
 		finding.WorkflowStep = err.WorkflowContext.Step
 	}
 
-	// Write to JSONL file
-	if err := r.jsonl.WriteFinding(finding); err != nil {
+	// Write to SQLite database
+	if err := r.sqlite.RecordError(finding); err != nil {
 		return fmt.Errorf("failed to record finding: %w", err)
 	}
 
 	return nil
 }
 
-// Finalize computes file hashes, builds the final run summary, and closes the JSONL writer
+// Finalize updates the run completion status and closes the SQLite connection
 func (r *Recorder) Finalize(exitCode int) error {
-	duration := time.Since(r.startTime)
+	// Get total error count from SQLite writer
+	totalErrors := r.sqlite.GetErrorCount()
 
-	// Compute file hashes and metadata for all scanned files
-	r.computeFileMetadata()
-
-	// Build scanned files list
-	scannedFiles := make([]ScannedFile, 0, len(r.fileMetadata))
-	for _, file := range r.fileMetadata {
-		scannedFiles = append(scannedFiles, *file)
+	// Finalize the run in the database
+	if err := r.sqlite.FinalizeRun(r.runID, totalErrors); err != nil {
+		return fmt.Errorf("failed to finalize run: %w", err)
 	}
 
-	// Calculate statistics
-	totalErrors := 0
-	totalWarnings := 0
-	for _, err := range r.errors {
-		if err.Severity == "error" {
-			totalErrors++
-		} else {
-			totalWarnings++
-		}
-	}
-
-	// Count unique files and rules
-	uniqueFiles := len(r.fileMetadata)
-	uniqueRules := countUniqueRules(r.errors)
-
-	// Build run summary
-	summary := &RunRecord{
-		RunID:         r.runID,
-		Timestamp:     r.startTime,
-		RepoPath:      r.repoRoot,
-		WorkflowsPath: r.workflowsPath,
-		Event:         r.event,
-		Duration:      duration,
-		ExitCode:      exitCode,
-		TotalErrors:   totalErrors,
-		TotalWarnings: totalWarnings,
-		UniqueFiles:   uniqueFiles,
-		UniqueRules:   uniqueRules,
-		ScannedFiles:  scannedFiles,
-		Errors:        r.errors,
-	}
-
-	// Write summary to JSONL
-	if err := r.jsonl.WriteRunSummary(summary); err != nil {
-		return fmt.Errorf("failed to write run summary: %w", err)
-	}
-
-	// Close JSONL writer
-	if err := r.jsonl.Close(); err != nil {
-		return fmt.Errorf("failed to close JSONL writer: %w", err)
+	// Close SQLite writer
+	if err := r.sqlite.Close(); err != nil {
+		return fmt.Errorf("failed to close SQLite writer: %w", err)
 	}
 
 	return nil
 }
 
-// computeFileMetadata computes hashes and metadata for all files with errors
-func (r *Recorder) computeFileMetadata() {
-	for filePath := range r.errorCounts {
-		if filePath == "" {
-			continue // Skip errors without file paths
-		}
-
-		// Make path absolute relative to repo root
-		absPath := filePath
-		if !filepath.IsAbs(filePath) {
-			absPath = filepath.Join(r.repoRoot, filePath)
-		}
-
-		errorCount := r.errorCounts[filePath]
-		warningCount := r.warningCounts[filePath]
-
-		scannedFile, err := BuildScannedFile(absPath, errorCount, warningCount)
-		if err != nil {
-			// Log warning but don't fail - file might have been deleted
-			fmt.Printf("Warning: failed to compute metadata for %s: %v\n", filePath, err)
-			continue
-		}
-
-		r.fileMetadata[filePath] = scannedFile
-	}
-}
-
-// countUniqueRules counts the number of unique rule IDs in errors
-func countUniqueRules(extractedErrors []*errors.ExtractedError) int {
-	rules := make(map[string]struct{})
-	for _, err := range extractedErrors {
-		if err.RuleID != "" {
-			rules[err.RuleID] = struct{}{}
-		}
-	}
-	return len(rules)
-}
-
-// GetOutputPath returns the path to the JSONL output file
+// GetOutputPath returns the path to the SQLite database file
 func (r *Recorder) GetOutputPath() string {
-	return r.jsonl.Path()
+	return r.sqlite.Path()
 }

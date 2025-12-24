@@ -15,6 +15,7 @@ import (
 	"github.com/detent/cli/internal/commands"
 	"github.com/detent/cli/internal/docker"
 	internalerrors "github.com/detent/cli/internal/errors"
+	"github.com/detent/cli/internal/git"
 	"github.com/detent/cli/internal/output"
 	"github.com/detent/cli/internal/persistence"
 	"github.com/detent/cli/internal/signal"
@@ -167,25 +168,43 @@ func runCheck(cmd *cobra.Command, args []string) error {
 		extracted = append(extracted, grouped.NoFile...)
 	}
 
-	// Persist results to .detent/ directory
-	recorder, err := persistence.NewRecorder(absRepoPath, workflowPath, event)
-	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "Warning: failed to initialize persistence: %v\n", err)
-	} else {
-		// Record all findings
-		for _, finding := range extracted {
-			if err := recorder.RecordFinding(finding); err != nil {
-				_, _ = fmt.Fprintf(os.Stderr, "Warning: failed to record finding: %v\n", err)
-			}
-		}
+	// Extract workflow name for database
+	workflowName := "all"
+	if workflowFile != "" {
+		workflowName = workflowFile
+	}
 
-		// Finalize the run with exit code
-		if err := recorder.Finalize(result.ExitCode); err != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "Warning: failed to finalize persistence: %v\n", err)
-		} else if !useTUI && outputFormat == "text" {
-			// Inform user of the output location
-			_, _ = fmt.Fprintf(os.Stderr, "\nResults saved to: %s\n", recorder.GetOutputPath())
+	// Get git commit SHA
+	commitSHA, err := git.GetCurrentCommitSHA()
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "Warning: failed to get git commit SHA: %v (using 'unknown')\n", err)
+		commitSHA = "unknown"
+	}
+
+	// Detect execution mode
+	execMode := git.DetectExecutionMode()
+
+	// Persist results to .detent/ directory
+	recorder, err := persistence.NewRecorder(absRepoPath, workflowName, commitSHA, execMode)
+	if err != nil {
+		return fmt.Errorf("failed to initialize persistence storage at %s/.detent: %w", absRepoPath, err)
+	}
+
+	// Record all findings
+	for i, finding := range extracted {
+		if err := recorder.RecordFinding(finding); err != nil {
+			return fmt.Errorf("failed to record finding %d/%d to persistence storage: %w", i+1, len(extracted), err)
 		}
+	}
+
+	// Finalize the run with exit code (this also closes the database connection)
+	if err := recorder.Finalize(result.ExitCode); err != nil {
+		return fmt.Errorf("failed to finalize persistence storage (run data may be incomplete): %w", err)
+	}
+
+	// Inform user of the output location in non-TUI text mode
+	if !useTUI && outputFormat == "text" {
+		_, _ = fmt.Fprintf(os.Stderr, "\nResults saved to: %s\n", recorder.GetOutputPath())
 	}
 
 	// Only print error report in non-TUI mode (TUI shows it in completion view)

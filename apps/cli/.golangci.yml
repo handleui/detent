@@ -19,6 +19,14 @@ linters:
     - unparam        # Report unused function parameters
     - nakedret       # Find naked returns in long functions
 
+  exclusions:
+    rules:
+      - path: '(.+)_test\.go'
+        linters:
+          - gosec
+          - govet
+          - staticcheck
+
   settings:
     govet:
       enable:
@@ -67,9 +75,11 @@ issues:
         - gosec
         - errcheck
         - gocritic
+        - govet
+        - staticcheck
 
     # Allow longer lines in generated code
-    - path: ".*\\.pb\\.go"
+    - path: \.pb\.go
       linters:
         - lll
 

@@ -68,4 +68,27 @@ var (
 	// Docker error patterns: infrastructure failures
 	// Matches: "No such container: abc123", "Cannot connect to the Docker daemon", etc.
 	dockerErrorPattern = regexp.MustCompile(`(?i)(no such container|cannot connect to.*docker|image pull failed|docker.*error response from daemon|container.*is not running|failed to.*docker|docker.*permission denied)`)
+
+	// Stack trace patterns for multi-line error capture
+
+	// Python traceback start pattern
+	pythonTracebackPattern = regexp.MustCompile(`^Traceback \(most recent call last\):`)
+
+	// Python traceback line pattern (captures file/line info and code snippet)
+	pythonTraceLinePattern = regexp.MustCompile(`^\s+File\s+"[^"]+",\s+line\s+\d+`)
+
+	// Go panic pattern
+	goPanicPattern = regexp.MustCompile(`^panic:`)
+
+	// Go goroutine pattern (indicates start of stack frames)
+	goGoroutinePattern = regexp.MustCompile(`^goroutine \d+ \[`)
+
+	// Go stack frame pattern (function call in stack trace)
+	goStackFramePattern = regexp.MustCompile(`^\S+\([^)]*\)$|^\s+\S+:\d+`)
+
+	// Node.js "at" stack trace pattern (looser match for accumulation)
+	nodeAtPattern = regexp.MustCompile(`^\s+at\s+`)
+
+	// Test output continuation pattern (lines after test failure)
+	testOutputPattern = regexp.MustCompile(`^\s{4,}`) // Indented test output lines
 )
