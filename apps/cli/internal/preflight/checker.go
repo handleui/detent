@@ -24,7 +24,7 @@ import (
 var ErrCancelled = errors.New("cancelled")
 
 // cancelledMessage is the friendly goodbye shown when user cancels
-var cancelledMessage = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render("Maybe next time.")
+var cancelledMessage = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render("Action cancelled. Maybe next time?")
 
 const (
 	// preflightVisualDelay allows the spinner to render before check execution begins.

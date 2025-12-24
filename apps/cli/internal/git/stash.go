@@ -111,8 +111,9 @@ func RestoreStashIfNeeded(repoRoot string, info *StashInfo) {
 	defer cancel()
 
 	if err := UnstashChanges(ctx, repoRoot, info); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to restore stashed changes: %v\n", err)
-		fmt.Fprintf(os.Stderr, "Your changes are still in the stash. Run 'git stash pop' to restore them manually.\n")
+		fmt.Fprintf(os.Stderr, "\nWarning: could not automatically restore your stashed changes\n")
+		fmt.Fprintf(os.Stderr, "Your changes are safe in git stash (%s). To restore:\n", info.StashMessage)
+		fmt.Fprintf(os.Stderr, "  git stash pop\n")
 	}
 
 	// Mark as already restored to prevent double-pop

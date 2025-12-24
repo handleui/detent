@@ -10,8 +10,23 @@ import (
 )
 
 const (
-	maxDisplayedFiles = 10
+	maxDisplayedFiles    = 10
+	defaultCommitMessage = "chore: save work in progress"
 )
+
+// isValidCommitMessage checks if a commit message is safe for git.
+// Rejects control characters including newlines (commit messages should be single-line).
+// Allows tabs for formatting.
+func isValidCommitMessage(msg string) bool {
+	for _, r := range msg {
+		// Reject all control characters except tab
+		// This includes: \n (10), \r (13), \0 (0), etc.
+		if r < 32 && r != '\t' {
+			return false
+		}
+	}
+	return true
+}
 
 // CleanWorktreeAction represents the user's choice for how to handle uncommitted changes
 type CleanWorktreeAction int
@@ -42,6 +57,7 @@ type CleanWorktreePromptModel struct {
 	textInput     textinput.Model
 	result        *CleanWorktreeResult
 	quitting      bool
+	inputError    string // Error message for invalid input
 }
 
 var (
@@ -51,12 +67,14 @@ var (
 	promptSelectedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(colorSuccess))
 	promptNormalStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
 	promptHintStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Italic(true)
+	promptDimStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	promptErrorStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
 )
 
 // NewCleanWorktreePromptModel creates a new prompt model with the given dirty files
 func NewCleanWorktreePromptModel(files []string) *CleanWorktreePromptModel {
 	ti := textinput.New()
-	ti.Placeholder = "Enter commit message..."
+	ti.Placeholder = defaultCommitMessage
 	ti.Focus()
 	ti.CharLimit = 200
 	ti.Width = 50
@@ -163,11 +181,16 @@ func (m *CleanWorktreePromptModel) handleCommitMessageInput(msg tea.KeyMsg) (tea
 	case "esc":
 		// Go back to action selection
 		m.step = 0
+		m.inputError = ""
 		return m, nil
 
 	case "enter":
 		message := strings.TrimSpace(m.textInput.Value())
 		if message == "" {
+			message = defaultCommitMessage
+		}
+		if !isValidCommitMessage(message) {
+			m.inputError = "message contains invalid characters"
 			return m, nil
 		}
 		m.result = &CleanWorktreeResult{
@@ -178,6 +201,9 @@ func (m *CleanWorktreePromptModel) handleCommitMessageInput(msg tea.KeyMsg) (tea
 		m.quitting = true
 		return m, tea.Quit
 	}
+
+	// Clear error on typing
+	m.inputError = ""
 
 	// Update text input
 	var cmd tea.Cmd
@@ -228,11 +254,15 @@ func (m *CleanWorktreePromptModel) renderActionSelection() string {
 	b.WriteString(promptTextStyle.Render("How would you like to proceed?"))
 	b.WriteString("\n\n")
 
-	// Menu options
-	options := []string{
-		"Commit changes (recommended)",
-		"Stash changes (run will test code WITHOUT stashed changes)",
-		"Cancel",
+	// Menu options with separate label and hint
+	type menuOption struct {
+		label string
+		hint  string
+	}
+	options := []menuOption{
+		{"Commit changes", "recommended"},
+		{"Stash changes", "run will test code without your uncommitted changes"},
+		{"Cancel", ""},
 	}
 
 	for i, option := range options {
@@ -242,7 +272,10 @@ func (m *CleanWorktreePromptModel) renderActionSelection() string {
 			cursor = "> "
 			style = promptSelectedStyle
 		}
-		b.WriteString(style.Render(cursor + option))
+		b.WriteString(style.Render(cursor + option.label))
+		if option.hint != "" {
+			b.WriteString(" " + promptDimStyle.Render(option.hint))
+		}
 		b.WriteString("\n")
 	}
 
@@ -261,7 +294,12 @@ func (m *CleanWorktreePromptModel) renderCommitMessageInput() string {
 	b.WriteString(promptTextStyle.Render("Enter commit message:"))
 	b.WriteString("\n\n")
 	b.WriteString(m.textInput.View())
-	b.WriteString("\n\n")
+	b.WriteString("\n")
+	if m.inputError != "" {
+		b.WriteString(promptErrorStyle.Render(m.inputError))
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
 	b.WriteString(promptHintStyle.Render("[enter to commit, esc to go back]"))
 
 	return b.String()
