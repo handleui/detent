@@ -118,10 +118,15 @@ func (p *PreflightDisplay) Render() {
 	p.numLines = len(lines)
 }
 
-// RenderFinal renders the final state and waits for user
+// RenderFinal renders the final state and waits for user.
+// Only shows non-pending checks to avoid overwhelming the user when errors occur.
 func (p *PreflightDisplay) RenderFinal() {
 	var lines []string
 	for _, check := range p.checks {
+		// Skip pending checks in final render to reduce noise on error
+		if check.Status == "pending" {
+			continue
+		}
 		lines = append(lines, RenderPreflightCheck(check))
 	}
 

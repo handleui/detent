@@ -68,6 +68,7 @@ type CheckRunner struct {
 	worktreeInfo     *git.WorktreeInfo // Worktree metadata including path and commit info
 	cleanupWorkflows func()            // Cleanup function for workflow temp directory
 	cleanupWorktree  func()            // Cleanup function for worktree
+	stashInfo        *git.StashInfo    // Tracks if changes were stashed during preflight
 
 	// Execution state - set during Run phase
 	startTime time.Time  // When execution started
@@ -199,6 +200,7 @@ func (r *CheckRunner) Prepare(ctx context.Context) error {
 	r.cleanupWorkflows = workflowRes.cleanupWorkflows
 	r.worktreeInfo = worktreeRes.worktreeInfo
 	r.cleanupWorktree = worktreeRes.cleanupWorktree
+	// Note: Non-TUI prepare doesn't set stashInfo (interactive prompt only in TUI mode)
 
 	return nil
 }
@@ -220,6 +222,7 @@ func (r *CheckRunner) PrepareWithTUI(ctx context.Context) error {
 	r.worktreeInfo = result.WorktreeInfo
 	r.cleanupWorkflows = result.CleanupWorkflows
 	r.cleanupWorktree = result.CleanupWorktree
+	r.stashInfo = result.StashInfo
 
 	return nil
 }
@@ -332,7 +335,7 @@ func (r *CheckRunner) RunWithTUI(ctx context.Context, logChan chan string, progr
 		ExitCode:     tuiRes.result.ExitCode,
 	}
 
-	defer cancel()
+	// Wait for goroutines to complete before returning
 	wg.Wait()
 
 	return wasCancelled, nil
@@ -486,6 +489,7 @@ func (r *CheckRunner) Persist() error {
 // Cleanup releases all resources allocated during Prepare.
 // Order matters: workflow temp files should be removed before the git worktree
 // to ensure consistent state during cleanup.
+// If changes were stashed during preflight, they are restored here.
 func (r *CheckRunner) Cleanup() {
 	if r.cleanupWorkflows != nil {
 		r.cleanupWorkflows()
@@ -493,6 +497,9 @@ func (r *CheckRunner) Cleanup() {
 	if r.cleanupWorktree != nil {
 		r.cleanupWorktree()
 	}
+
+	// Restore stashed changes if we stashed them during preflight
+	git.RestoreStashIfNeeded(r.config.RepoRoot, r.stashInfo)
 }
 
 // GetResult returns the complete result of the check run.

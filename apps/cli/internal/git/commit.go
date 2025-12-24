@@ -25,9 +25,9 @@ func GetCurrentCommitSHA() (string, error) {
 // The function:
 // 1. Runs `git add .` to stage all changes (tracked and untracked)
 // 2. Runs `git commit -m "message"` to create the commit
-// 3. Validates that the commit succeeded by checking git status is clean
 //
-// Returns error if staging, committing, or validation fails.
+// Returns error if staging or committing fails. We trust git commit's exit code
+// for validation rather than running an additional git status check.
 func CommitAllChanges(ctx context.Context, repoRoot, message string) error {
 	// #nosec G204 - repoRoot is from user's repository
 	addCmd := exec.CommandContext(ctx, "git", "-c", "core.hooksPath=/dev/null", "-C", repoRoot, "add", ".")
@@ -41,22 +41,11 @@ func CommitAllChanges(ctx context.Context, repoRoot, message string) error {
 	commitCmd := exec.CommandContext(ctx, "git", "-c", "core.hooksPath=/dev/null", "-C", repoRoot, "commit", "-m", message)
 	commitCmd.Env = safeGitEnv()
 
-	if output, err := commitCmd.CombinedOutput(); err != nil {
+	output, err := commitCmd.CombinedOutput()
+	if err != nil {
 		return fmt.Errorf("failed to commit changes: %w (output: %s)", err, strings.TrimSpace(string(output)))
 	}
 
-	// Validate that commit succeeded by checking status is clean
-	statusCmd := exec.CommandContext(ctx, "git", "-c", "core.hooksPath=/dev/null", "-C", repoRoot, "status", "--porcelain", "-uall")
-	statusCmd.Env = safeGitEnv()
-
-	statusOutput, err := statusCmd.Output()
-	if err != nil {
-		return fmt.Errorf("failed to verify commit: %w", err)
-	}
-
-	if strings.TrimSpace(string(statusOutput)) != "" {
-		return fmt.Errorf("commit succeeded but worktree is still dirty")
-	}
-
+	// Trust that git commit succeeded - it would have returned error otherwise
 	return nil
 }

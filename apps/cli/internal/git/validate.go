@@ -57,20 +57,29 @@ func ValidateGitRepository(ctx context.Context, path string) error {
 	return nil
 }
 
-// ValidateCleanWorktree checks if the worktree has any uncommitted or untracked changes.
-// Returns ErrWorktreeDirty if the worktree is not clean.
-// This requires all files to be committed before running checks, ensuring the checked
-// state exactly matches what will be pushed to the remote.
-func ValidateCleanWorktree(ctx context.Context, repoRoot string) error {
+// executeGitStatus runs git status --porcelain -uall and returns the output.
+// This is the single source of truth for checking worktree status.
+func executeGitStatus(ctx context.Context, repoRoot string) (string, error) {
 	// #nosec G204 - repoRoot is from user's repository, expected behavior
 	cmd := exec.CommandContext(ctx, "git", "-c", "core.hooksPath=/dev/null", "-C", repoRoot, "status", "--porcelain", "-uall")
 	cmd.Env = safeGitEnv()
 	output, err := cmd.Output()
 	if err != nil {
-		return fmt.Errorf("failed to check git status: %w", err)
+		return "", fmt.Errorf("failed to check git status: %w", err)
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+// ValidateCleanWorktree checks if the worktree has any uncommitted or untracked changes.
+// Returns ErrWorktreeDirty if the worktree is not clean.
+// This requires all files to be committed before running checks, ensuring the checked
+// state exactly matches what will be pushed to the remote.
+func ValidateCleanWorktree(ctx context.Context, repoRoot string) error {
+	status, err := executeGitStatus(ctx, repoRoot)
+	if err != nil {
+		return err
 	}
 
-	status := strings.TrimSpace(string(output))
 	if status != "" {
 		return fmt.Errorf("%w:\n%s", ErrWorktreeDirty, status)
 	}
@@ -221,19 +230,14 @@ func ValidateNoSubmodules(repoRoot string) error {
 //
 // Returns empty slice if worktree is clean, or error if git status command fails.
 func GetDirtyFilesList(ctx context.Context, repoRoot string) ([]string, error) {
-	// #nosec G204 - repoRoot is from user's repository, expected behavior
-	cmd := exec.CommandContext(ctx, "git", "-c", "core.hooksPath=/dev/null", "-C", repoRoot, "status", "--porcelain", "-uall")
-	cmd.Env = safeGitEnv()
-	output, err := cmd.Output()
+	status, err := executeGitStatus(ctx, repoRoot)
 	if err != nil {
-		return nil, fmt.Errorf("failed to check git status: %w", err)
+		return nil, err
 	}
 
-	status := strings.TrimSpace(string(output))
 	if status == "" {
 		return []string{}, nil
 	}
 
-	lines := strings.Split(status, "\n")
-	return lines, nil
+	return strings.Split(status, "\n"), nil
 }

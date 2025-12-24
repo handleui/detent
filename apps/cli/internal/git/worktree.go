@@ -6,13 +6,46 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 )
 
 const (
 	// cleanupTimeout is the maximum time allowed for cleanup operations
 	cleanupTimeout = 30 * time.Second
+
+	// maxTmpDiskUsagePct is the maximum percentage of disk usage allowed in /tmp
+	// before we refuse to create a worktree (prevents filling the disk)
+	maxTmpDiskUsagePct = 80
 )
+
+// checkTmpDiskSpace validates that the temporary directory has sufficient space.
+// Returns an error if disk usage exceeds maxTmpDiskUsagePct.
+func checkTmpDiskSpace() error {
+	tmpDir := os.TempDir()
+
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(tmpDir, &stat); err != nil {
+		return fmt.Errorf("checking disk space in %s: %w", tmpDir, err)
+	}
+
+	// Calculate usage percentage
+	// Use Bavail (available to non-root) for more accurate free space
+	totalBlocks := stat.Blocks
+	availBlocks := stat.Bavail
+	if totalBlocks == 0 {
+		return nil // Can't calculate, allow operation
+	}
+
+	usedPct := float64(totalBlocks-availBlocks) / float64(totalBlocks) * 100
+
+	if usedPct > maxTmpDiskUsagePct {
+		return fmt.Errorf("insufficient disk space in %s: %.1f%% used (max %d%%)",
+			tmpDir, usedPct, maxTmpDiskUsagePct)
+	}
+
+	return nil
+}
 
 // WorktreeInfo contains metadata about the created worktree
 type WorktreeInfo struct {
@@ -26,6 +59,11 @@ type WorktreeInfo struct {
 //
 // Note: This requires a clean worktree. Call ValidateCleanWorktree() before this.
 func PrepareWorktree(ctx context.Context, repoRoot, runID string) (*WorktreeInfo, func(), error) {
+	// 0. Check disk space before allocating resources
+	if err := checkTmpDiskSpace(); err != nil {
+		return nil, nil, err
+	}
+
 	// 1. Get current commit SHA from repoRoot
 	cmd := exec.CommandContext(ctx, "git", "-c", "core.hooksPath=/dev/null", "rev-parse", "HEAD")
 	cmd.Dir = repoRoot
@@ -164,9 +202,9 @@ func removeWorktree(ctx context.Context, repoRoot, worktreePath string) error {
 }
 
 // pruneWorktrees cleans up orphaned git worktree metadata.
-// Uses context for cancellation and applies a default timeout.
+// Uses context for cancellation and wraps it with a cleanup timeout.
 func pruneWorktrees(ctx context.Context, repoRoot string) {
-	// Apply timeout if context doesn't already have one
+	// Wrap context with cleanup timeout to ensure bounded execution
 	ctx, cancel := context.WithTimeout(ctx, cleanupTimeout)
 	defer cancel()
 
