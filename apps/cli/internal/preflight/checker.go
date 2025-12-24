@@ -6,17 +6,25 @@ package preflight
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/detent/cli/internal/commands"
 	"github.com/detent/cli/internal/docker"
 	"github.com/detent/cli/internal/git"
 	"github.com/detent/cli/internal/tui"
 	"github.com/detent/cli/internal/workflow"
 )
+
+// ErrCancelled is returned when the user cancels an operation
+var ErrCancelled = errors.New("cancelled")
+
+// cancelledMessage is the friendly goodbye shown when user cancels
+var cancelledMessage = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render("Maybe next time.")
 
 const (
 	// preflightVisualDelay allows the spinner to render before check execution begins.
@@ -81,6 +89,7 @@ type preflightChecker struct {
 // executeCheck runs a single check with standardized error handling and UI updates.
 // It updates the display to show "running", executes the check function, and updates
 // the display to show "success" or "error" depending on the result.
+// For cancellation errors, it shows a friendly goodbye message instead of error details.
 func (p *preflightChecker) executeCheck(checkName string, checkFunc func() error) error {
 	time.Sleep(p.transitionDelay)
 	p.display.UpdateCheck(checkName, "running", nil)
@@ -88,6 +97,12 @@ func (p *preflightChecker) executeCheck(checkName string, checkFunc func() error
 
 	err := checkFunc()
 	if err != nil {
+		if errors.Is(err, ErrCancelled) {
+			p.display.Clear()
+			fmt.Fprintln(os.Stderr, cancelledMessage)
+			fmt.Fprintln(os.Stderr)
+			return err
+		}
 		p.display.UpdateCheck(checkName, "error", err)
 		p.display.RenderFinal()
 		return err
@@ -185,7 +200,7 @@ func EnsureCleanWorktree(ctx context.Context, repoRoot string, display *tui.Pref
 
 	result := promptModel.GetResult()
 	if result == nil || result.Cancelled {
-		return nil, fmt.Errorf("see you soon")
+		return nil, ErrCancelled
 	}
 
 	// Execute user's choice
@@ -204,7 +219,7 @@ func EnsureCleanWorktree(ctx context.Context, repoRoot string, display *tui.Pref
 		return stashInfo, nil // Return stash info for later restoration
 
 	case tui.ActionCancel:
-		return nil, fmt.Errorf("see you soon")
+		return nil, ErrCancelled
 
 	default:
 		return nil, fmt.Errorf("unknown action: %v", result.Action)

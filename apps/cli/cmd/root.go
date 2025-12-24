@@ -12,7 +12,7 @@ import (
 
 const (
 	brandingColor = "42"  // Green - matches colorSuccess in TUI
-	commandColor  = "252" // Light gray - matches promptTitleStyle/promptNormalStyle
+	commandColor  = "15"  // Pure white for command name
 )
 
 var (
