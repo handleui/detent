@@ -140,17 +140,19 @@ func (p *preflightChecker) executeWorktreePrep(checkName string, checkFunc func(
 // EnsureCleanWorktree validates that the worktree is clean, or prompts the user
 // to clean it interactively. Returns StashInfo if changes were stashed, nil otherwise.
 //
+// The display parameter allows hiding the preflight checks while the prompt is shown.
+//
 // The function:
 // 1. Gets dirty files list (which also checks if worktree is clean)
 // 2. If clean, returns nil (no action needed)
-// 3. If dirty, launches interactive Bubble Tea prompt with options:
-//    - Commit: stages all changes and commits with user-provided message
-//    - Stash: stashes changes (with warning) to be restored during cleanup
-//    - Cancel: returns error to abort the run
+// 3. If dirty, clears the check display and launches interactive Bubble Tea prompt with options:
+//   - Commit: stages all changes and commits with user-provided message
+//   - Stash: stashes changes (with warning) to be restored during cleanup
+//   - Cancel: returns error to abort the run
 //
 // This ensures users understand WHY a clean worktree is required and provides
 // convenient ways to achieve it.
-func EnsureCleanWorktree(ctx context.Context, repoRoot string) (*git.StashInfo, error) {
+func EnsureCleanWorktree(ctx context.Context, repoRoot string, display *tui.PreflightDisplay) (*git.StashInfo, error) {
 	// Get dirty files list (this also checks if worktree is clean)
 	files, err := git.GetDirtyFilesList(ctx, repoRoot)
 	if err != nil {
@@ -160,6 +162,11 @@ func EnsureCleanWorktree(ctx context.Context, repoRoot string) (*git.StashInfo, 
 	// If no dirty files, worktree is clean
 	if len(files) == 0 {
 		return nil, nil // Already clean, no action needed
+	}
+
+	// Clear the preflight display to show a clean prompt
+	if display != nil {
+		display.Clear()
 	}
 
 	// Launch interactive prompt
@@ -178,7 +185,7 @@ func EnsureCleanWorktree(ctx context.Context, repoRoot string) (*git.StashInfo, 
 
 	result := promptModel.GetResult()
 	if result == nil || result.Cancelled {
-		return nil, fmt.Errorf("user cancelled: worktree cleanup required")
+		return nil, fmt.Errorf("see you soon")
 	}
 
 	// Execute user's choice
@@ -197,7 +204,7 @@ func EnsureCleanWorktree(ctx context.Context, repoRoot string) (*git.StashInfo, 
 		return stashInfo, nil // Return stash info for later restoration
 
 	case tui.ActionCancel:
-		return nil, fmt.Errorf("user cancelled: worktree cleanup required")
+		return nil, fmt.Errorf("see you soon")
 
 	default:
 		return nil, fmt.Errorf("unknown action: %v", result.Action)
@@ -231,7 +238,7 @@ func RunPreflightChecks(ctx context.Context, workflowPath, repoRoot, runID, work
 	var stashInfo *git.StashInfo
 	if err := checker.executeCheck("Checking for uncommitted changes", func() error {
 		var err error
-		stashInfo, err = EnsureCleanWorktree(ctx, repoRoot)
+		stashInfo, err = EnsureCleanWorktree(ctx, repoRoot, display)
 		return err
 	}); err != nil {
 		return nil, err

@@ -45,17 +45,12 @@ type CleanWorktreePromptModel struct {
 }
 
 var (
-	titleStyle     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorError))
-	explanationStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	fileListStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	selectedStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color(colorSuccess)).Bold(true)
-	unselectedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	warningStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color(colorRunning))
-	hintStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Italic(true)
-	borderStyle     = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("241")).
-			Padding(1, 2)
+	promptTitleStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("252"))
+	promptTextStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	promptFileStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
+	promptSelectedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(colorSuccess)).Bold(true)
+	promptNormalStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	promptHintStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Italic(true)
 )
 
 // NewCleanWorktreePromptModel creates a new prompt model with the given dirty files
@@ -197,6 +192,7 @@ func (m *CleanWorktreePromptModel) View() string {
 	}
 
 	var content strings.Builder
+	content.WriteString("\n")
 
 	switch m.step {
 	case 0:
@@ -205,53 +201,53 @@ func (m *CleanWorktreePromptModel) View() string {
 		content.WriteString(m.renderCommitMessageInput())
 	}
 
-	return borderStyle.Render(content.String())
+	return content.String()
 }
 
 // renderActionSelection renders the initial action selection screen (step 0)
 func (m *CleanWorktreePromptModel) renderActionSelection() string {
 	var b strings.Builder
 
-	b.WriteString(titleStyle.Render("Uncommitted Changes Detected"))
+	b.WriteString(promptTitleStyle.Render("Uncommitted changes detected"))
 	b.WriteString("\n\n")
 
-	b.WriteString(explanationStyle.Render(
-		"Detent requires a clean worktree to ensure the tested state\nmatches what will run in CI/CD.",
+	b.WriteString(promptTextStyle.Render(
+		"Detent requires a clean worktree to ensure the tested state",
+	))
+	b.WriteString("\n")
+	b.WriteString(promptTextStyle.Render(
+		"matches what will run in CI/CD.",
 	))
 	b.WriteString("\n\n")
 
-	b.WriteString(explanationStyle.Render("Uncommitted files:"))
+	b.WriteString(promptTextStyle.Render("Uncommitted files:"))
 	b.WriteString("\n")
 	b.WriteString(m.renderFileList())
-	b.WriteString("\n\n")
+	b.WriteString("\n")
 
-	b.WriteString(explanationStyle.Render("How would you like to proceed?"))
+	b.WriteString(promptTextStyle.Render("How would you like to proceed?"))
 	b.WriteString("\n\n")
 
 	// Menu options
 	options := []string{
 		"Commit changes (recommended)",
-		"Stash changes (⚠️  run will test code WITHOUT stashed changes)",
+		"Stash changes (run will test code WITHOUT stashed changes)",
 		"Cancel",
 	}
 
 	for i, option := range options {
 		cursor := "  "
-		style := unselectedStyle
+		style := promptNormalStyle
 		if i == m.selectedIndex {
-			cursor = "▸ "
-			style = selectedStyle
-		}
-		if i == 1 {
-			// Use warning style for stash option
-			style = warningStyle
+			cursor = "> "
+			style = promptSelectedStyle
 		}
 		b.WriteString(style.Render(cursor + option))
 		b.WriteString("\n")
 	}
 
 	b.WriteString("\n")
-	b.WriteString(hintStyle.Render("[↑/↓ to select, Enter to confirm, Esc to cancel]"))
+	b.WriteString(promptHintStyle.Render("[up/down to select, enter to confirm, esc to cancel]"))
 
 	return b.String()
 }
@@ -260,13 +256,13 @@ func (m *CleanWorktreePromptModel) renderActionSelection() string {
 func (m *CleanWorktreePromptModel) renderCommitMessageInput() string {
 	var b strings.Builder
 
-	b.WriteString(titleStyle.Render("Commit Changes"))
+	b.WriteString(promptTitleStyle.Render("Commit changes"))
 	b.WriteString("\n\n")
-	b.WriteString(explanationStyle.Render("Enter commit message:"))
+	b.WriteString(promptTextStyle.Render("Enter commit message:"))
 	b.WriteString("\n\n")
 	b.WriteString(m.textInput.View())
 	b.WriteString("\n\n")
-	b.WriteString(hintStyle.Render("[Enter to commit, Esc to go back]"))
+	b.WriteString(promptHintStyle.Render("[enter to commit, esc to go back]"))
 
 	return b.String()
 }
@@ -283,13 +279,13 @@ func (m *CleanWorktreePromptModel) renderFileList() string {
 	}
 
 	for i := 0; i < displayCount; i++ {
-		b.WriteString(fileListStyle.Render(fmt.Sprintf("  %s", m.files[i])))
+		b.WriteString(promptFileStyle.Render(fmt.Sprintf("  %s", m.files[i])))
 		b.WriteString("\n")
 	}
 
 	if hasMore {
 		remaining := len(m.files) - maxDisplayedFiles
-		b.WriteString(fileListStyle.Render(fmt.Sprintf("  ... and %d more files", remaining)))
+		b.WriteString(promptFileStyle.Render(fmt.Sprintf("  ... and %d more files", remaining)))
 		b.WriteString("\n")
 	}
 

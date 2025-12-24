@@ -14,11 +14,11 @@ const (
 	cursorUpEscapeSuffix = "A"
 	clearToEndOfScreen   = "\033[J"
 
-	// Preflight check color codes
-	colorPending = "241"
-	colorRunning = "226"
+	// Preflight check color codes - green is brand color, rest are neutral
+	colorPending = "245"
+	colorRunning = "252"
 	colorSuccess = "42"
-	colorError   = "196"
+	colorError   = "252"
 )
 
 // PreflightCheck represents a single pre-flight check
@@ -43,22 +43,22 @@ func RenderPreflightCheck(check PreflightCheck) string {
 
 	switch check.Status {
 	case "pending":
-		icon = "○"
+		icon = "-"
 		style = checkPendingStyle
 	case "running":
-		icon = "◐"
+		icon = ">"
 		style = checkRunningStyle
 	case "success":
-		icon = "✓"
+		icon = "+"
 		style = checkSuccessStyle
 	case "error":
-		icon = "✗"
+		icon = "x"
 		style = checkErrorStyle
 		if check.Error != nil {
 			suffix = fmt.Sprintf(" (%s)", check.Error.Error())
 		}
 	default:
-		icon = "○"
+		icon = "-"
 		style = checkPendingStyle
 	}
 
@@ -137,13 +137,14 @@ func (p *PreflightDisplay) RenderFinal() {
 		fmt.Fprint(os.Stderr, clearToEndOfScreen)
 	}
 
-	// Print all check lines
+	// Print all check lines with trailing blank line for separation
 	output := strings.Join(lines, "\n")
 	fmt.Fprintln(os.Stderr, output)
+	fmt.Fprintln(os.Stderr)
 
-	// Track that we've rendered and how many lines
+	// Track that we've rendered and how many lines (including blank line)
 	p.rendered = true
-	p.numLines = len(lines)
+	p.numLines = len(lines) + 1
 }
 
 // AllSuccess returns true if all checks passed
@@ -154,4 +155,14 @@ func (p *PreflightDisplay) AllSuccess() bool {
 		}
 	}
 	return true
+}
+
+// Clear removes the display from screen and resets render state
+func (p *PreflightDisplay) Clear() {
+	if p.rendered && p.numLines > 0 {
+		fmt.Fprintf(os.Stderr, "%s%d%s", cursorUpEscapePrefix, p.numLines, cursorUpEscapeSuffix)
+		fmt.Fprint(os.Stderr, clearToEndOfScreen)
+	}
+	p.rendered = false
+	p.numLines = 0
 }
