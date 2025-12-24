@@ -20,7 +20,7 @@ const (
 	detentDBName = "detent.db"
 	batchSize    = 500 // Batch size for error inserts
 
-	currentSchemaVersion = 2 // Current database schema version
+	currentSchemaVersion = 3 // Current database schema version
 )
 
 // createDirIfNotExists creates a directory if it doesn't exist
@@ -187,6 +187,41 @@ func (w *SQLiteWriter) applyMigrations(fromVersion int) error {
 			ALTER TABLE runs ADD COLUMN base_commit_sha TEXT;
 
 			CREATE INDEX IF NOT EXISTS idx_runs_is_dirty ON runs(is_dirty);
+			`,
+		},
+		{
+			version: 3,
+			name:    "add_heals_table",
+			sql: `
+			CREATE TABLE IF NOT EXISTS heals (
+				heal_id TEXT PRIMARY KEY,
+				error_id TEXT NOT NULL,
+				run_id TEXT,
+				diff_content TEXT NOT NULL,
+				file_path TEXT,
+				model_id TEXT,
+				prompt_hash TEXT,
+				input_tokens INTEGER DEFAULT 0,
+				output_tokens INTEGER DEFAULT 0,
+				cache_read_tokens INTEGER DEFAULT 0,
+				cache_write_tokens INTEGER DEFAULT 0,
+				cost_usd REAL DEFAULT 0,
+				status TEXT DEFAULT 'pending',
+				created_at INTEGER NOT NULL,
+				applied_at INTEGER,
+				verified_at INTEGER,
+				verification_result TEXT,
+				attempt_number INTEGER DEFAULT 1,
+				parent_heal_id TEXT,
+				failure_reason TEXT,
+				FOREIGN KEY (error_id) REFERENCES errors(error_id),
+				FOREIGN KEY (run_id) REFERENCES runs(run_id),
+				FOREIGN KEY (parent_heal_id) REFERENCES heals(heal_id)
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_heals_error_id ON heals(error_id);
+			CREATE INDEX IF NOT EXISTS idx_heals_status ON heals(status);
+			CREATE INDEX IF NOT EXISTS idx_heals_run_id ON heals(run_id);
 			`,
 		},
 	}
@@ -497,6 +532,301 @@ func (w *SQLiteWriter) GetErrorCount() int {
 	w.batchMutex.Lock()
 	defer w.batchMutex.Unlock()
 	return w.errorCount
+}
+
+// RecordHeal inserts a new heal record into the database
+func (w *SQLiteWriter) RecordHeal(heal *HealRecord) error {
+	query := `
+		INSERT INTO heals (
+			heal_id, error_id, run_id, diff_content, file_path,
+			model_id, prompt_hash, input_tokens, output_tokens,
+			cache_read_tokens, cache_write_tokens, cost_usd,
+			status, created_at, applied_at, verified_at, verification_result,
+			attempt_number, parent_heal_id, failure_reason
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`
+
+	var appliedAt, verifiedAt *int64
+	if heal.AppliedAt != nil {
+		ts := heal.AppliedAt.Unix()
+		appliedAt = &ts
+	}
+	if heal.VerifiedAt != nil {
+		ts := heal.VerifiedAt.Unix()
+		verifiedAt = &ts
+	}
+
+	var verificationResult *string
+	if heal.VerificationResult != "" {
+		s := string(heal.VerificationResult)
+		verificationResult = &s
+	}
+
+	_, err := w.db.Exec(query,
+		heal.HealID,
+		heal.ErrorID,
+		heal.RunID,
+		heal.DiffContent,
+		heal.FilePath,
+		heal.ModelID,
+		heal.PromptHash,
+		heal.InputTokens,
+		heal.OutputTokens,
+		heal.CacheReadTokens,
+		heal.CacheWriteTokens,
+		heal.CostUSD,
+		string(heal.Status),
+		heal.CreatedAt.Unix(),
+		appliedAt,
+		verifiedAt,
+		verificationResult,
+		heal.AttemptNumber,
+		heal.ParentHealID,
+		heal.FailureReason,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to record heal: %w", err)
+	}
+
+	return nil
+}
+
+// UpdateHealStatus updates the status and optionally the applied_at timestamp of a heal
+func (w *SQLiteWriter) UpdateHealStatus(healID string, status HealStatus, appliedAt *time.Time) error {
+	var query string
+	var args []interface{}
+
+	if appliedAt != nil {
+		query = `UPDATE heals SET status = ?, applied_at = ? WHERE heal_id = ?`
+		args = []interface{}{string(status), appliedAt.Unix(), healID}
+	} else {
+		query = `UPDATE heals SET status = ? WHERE heal_id = ?`
+		args = []interface{}{string(status), healID}
+	}
+
+	result, err := w.db.Exec(query, args...)
+	if err != nil {
+		return fmt.Errorf("failed to update heal status: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return fmt.Errorf("heal not found: %s", healID)
+	}
+
+	return nil
+}
+
+// RecordHealVerification updates a heal with verification results
+func (w *SQLiteWriter) RecordHealVerification(healID string, result VerificationResult) error {
+	query := `UPDATE heals SET verified_at = ?, verification_result = ? WHERE heal_id = ?`
+
+	dbResult, err := w.db.Exec(query, time.Now().Unix(), string(result), healID)
+	if err != nil {
+		return fmt.Errorf("failed to record heal verification: %w", err)
+	}
+
+	rowsAffected, err := dbResult.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return fmt.Errorf("heal not found: %s", healID)
+	}
+
+	return nil
+}
+
+// GetHealsForError retrieves all heals for a given error, ordered by attempt number
+func (w *SQLiteWriter) GetHealsForError(errorID string) ([]*HealRecord, error) {
+	query := `
+		SELECT heal_id, error_id, run_id, diff_content, file_path,
+			model_id, prompt_hash, input_tokens, output_tokens,
+			cache_read_tokens, cache_write_tokens, cost_usd,
+			status, created_at, applied_at, verified_at, verification_result,
+			attempt_number, parent_heal_id, failure_reason
+		FROM heals
+		WHERE error_id = ?
+		ORDER BY attempt_number ASC
+	`
+
+	rows, err := w.db.Query(query, errorID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query heals: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var heals []*HealRecord
+	for rows.Next() {
+		heal, scanErr := scanHealRow(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		heals = append(heals, heal)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating heals: %w", err)
+	}
+
+	return heals, nil
+}
+
+// GetLatestHealForError retrieves the most recent heal for a given error
+func (w *SQLiteWriter) GetLatestHealForError(errorID string) (*HealRecord, error) {
+	query := `
+		SELECT heal_id, error_id, run_id, diff_content, file_path,
+			model_id, prompt_hash, input_tokens, output_tokens,
+			cache_read_tokens, cache_write_tokens, cost_usd,
+			status, created_at, applied_at, verified_at, verification_result,
+			attempt_number, parent_heal_id, failure_reason
+		FROM heals
+		WHERE error_id = ?
+		ORDER BY attempt_number DESC
+		LIMIT 1
+	`
+
+	row := w.db.QueryRow(query, errorID)
+	heal, err := scanHealRowSingle(row)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get latest heal: %w", err)
+	}
+
+	return heal, nil
+}
+
+// scanHealRow scans a heal row from sql.Rows
+func scanHealRow(rows *sql.Rows) (*HealRecord, error) {
+	var heal HealRecord
+	var runID, filePath, modelID, promptHash sql.NullString
+	var appliedAt, verifiedAt sql.NullInt64
+	var verificationResult, parentHealID, failureReason sql.NullString
+	var createdAtUnix int64
+	var status string
+
+	err := rows.Scan(
+		&heal.HealID,
+		&heal.ErrorID,
+		&runID,
+		&heal.DiffContent,
+		&filePath,
+		&modelID,
+		&promptHash,
+		&heal.InputTokens,
+		&heal.OutputTokens,
+		&heal.CacheReadTokens,
+		&heal.CacheWriteTokens,
+		&heal.CostUSD,
+		&status,
+		&createdAtUnix,
+		&appliedAt,
+		&verifiedAt,
+		&verificationResult,
+		&heal.AttemptNumber,
+		&parentHealID,
+		&failureReason,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to scan heal row: %w", err)
+	}
+
+	heal.RunID = runID.String
+	heal.FilePath = filePath.String
+	heal.ModelID = modelID.String
+	heal.PromptHash = promptHash.String
+	heal.Status = HealStatus(status)
+	heal.CreatedAt = time.Unix(createdAtUnix, 0)
+
+	if appliedAt.Valid {
+		t := time.Unix(appliedAt.Int64, 0)
+		heal.AppliedAt = &t
+	}
+	if verifiedAt.Valid {
+		t := time.Unix(verifiedAt.Int64, 0)
+		heal.VerifiedAt = &t
+	}
+	if verificationResult.Valid {
+		heal.VerificationResult = VerificationResult(verificationResult.String)
+	}
+	if parentHealID.Valid {
+		heal.ParentHealID = &parentHealID.String
+	}
+	if failureReason.Valid {
+		heal.FailureReason = &failureReason.String
+	}
+
+	return &heal, nil
+}
+
+// scanHealRowSingle scans a heal row from sql.Row
+func scanHealRowSingle(row *sql.Row) (*HealRecord, error) {
+	var heal HealRecord
+	var runID, filePath, modelID, promptHash sql.NullString
+	var appliedAt, verifiedAt sql.NullInt64
+	var verificationResult, parentHealID, failureReason sql.NullString
+	var createdAtUnix int64
+	var status string
+
+	err := row.Scan(
+		&heal.HealID,
+		&heal.ErrorID,
+		&runID,
+		&heal.DiffContent,
+		&filePath,
+		&modelID,
+		&promptHash,
+		&heal.InputTokens,
+		&heal.OutputTokens,
+		&heal.CacheReadTokens,
+		&heal.CacheWriteTokens,
+		&heal.CostUSD,
+		&status,
+		&createdAtUnix,
+		&appliedAt,
+		&verifiedAt,
+		&verificationResult,
+		&heal.AttemptNumber,
+		&parentHealID,
+		&failureReason,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	heal.RunID = runID.String
+	heal.FilePath = filePath.String
+	heal.ModelID = modelID.String
+	heal.PromptHash = promptHash.String
+	heal.Status = HealStatus(status)
+	heal.CreatedAt = time.Unix(createdAtUnix, 0)
+
+	if appliedAt.Valid {
+		t := time.Unix(appliedAt.Int64, 0)
+		heal.AppliedAt = &t
+	}
+	if verifiedAt.Valid {
+		t := time.Unix(verifiedAt.Int64, 0)
+		heal.VerifiedAt = &t
+	}
+	if verificationResult.Valid {
+		heal.VerificationResult = VerificationResult(verificationResult.String)
+	}
+	if parentHealID.Valid {
+		heal.ParentHealID = &parentHealID.String
+	}
+	if failureReason.Valid {
+		heal.FailureReason = &failureReason.String
+	}
+
+	return &heal, nil
 }
 
 // Close closes the database connection
