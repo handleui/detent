@@ -116,8 +116,23 @@ func (r *CheckRunner) Prepare(ctx context.Context) error {
 		return err
 	}
 
-	// Phase 2: Validate clean worktree (requires git repository to be confirmed)
+	// Phase 2: Sequential validations (require git repository to be confirmed)
+
+	// Best-effort cleanup of orphaned worktrees from previous runs (SIGKILL recovery)
+	_, _ = git.CleanupOrphanedWorktrees(ctx, r.config.RepoRoot)
+
+	// Validate clean worktree
 	if err := git.ValidateCleanWorktree(ctx, r.config.RepoRoot); err != nil {
+		return err
+	}
+
+	// Validate no submodules (not yet supported)
+	if err := git.ValidateNoSubmodules(r.config.RepoRoot); err != nil {
+		return err
+	}
+
+	// Validate symlinks don't escape repository (security check)
+	if err := git.ValidateNoEscapingSymlinks(ctx, r.config.RepoRoot); err != nil {
 		return err
 	}
 
@@ -469,19 +484,14 @@ func (r *CheckRunner) Persist() error {
 }
 
 // Cleanup releases all resources allocated during Prepare.
-// This includes:
-// - Temporary workflow directory (via cleanupWorkflows)
-// - Git worktree (via cleanupWorktree)
-//
-// This should be called via defer after creating the runner to ensure cleanup
-// happens even if preparation or execution fails. Cleanup is idempotent and
-// safe to call multiple times.
+// Order matters: workflow temp files should be removed before the git worktree
+// to ensure consistent state during cleanup.
 func (r *CheckRunner) Cleanup() {
-	if r.cleanupWorktree != nil {
-		r.cleanupWorktree()
-	}
 	if r.cleanupWorkflows != nil {
 		r.cleanupWorkflows()
+	}
+	if r.cleanupWorktree != nil {
+		r.cleanupWorktree()
 	}
 }
 

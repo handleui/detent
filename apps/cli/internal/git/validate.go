@@ -3,7 +3,10 @@ package git
 import (
 	"context"
 	"fmt"
+	"io/fs"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -15,6 +18,12 @@ var ErrWorktreeDirty = fmt.Errorf("worktree has uncommitted changes - please com
 
 // ErrNotGitRepository is returned when a path is not a git repository
 var ErrNotGitRepository = fmt.Errorf("not a git repository")
+
+// ErrSymlinkEscape is returned when a symlink in the repo points outside the repo root
+var ErrSymlinkEscape = fmt.Errorf("symlink escapes repository boundaries")
+
+// ErrSubmodulesNotSupported is returned when a repo contains submodules
+var ErrSubmodulesNotSupported = fmt.Errorf("submodules are not yet supported")
 
 // ValidateWorktreeInitialized checks if worktree info is present
 // Returns ErrWorktreeNotInitialized if nil
@@ -53,5 +62,73 @@ func ValidateCleanWorktree(ctx context.Context, repoRoot string) error {
 		return fmt.Errorf("%w:\n%s", ErrWorktreeDirty, status)
 	}
 
+	return nil
+}
+
+// ValidateNoEscapingSymlinks walks the repository and checks that no symlinks
+// point to targets outside the repository root. This prevents symlink escape attacks.
+// Skips .git directory and common dependency directories for performance.
+func ValidateNoEscapingSymlinks(ctx context.Context, repoRoot string) error {
+	// Resolve repoRoot to its canonical path (resolves symlinks like /var -> /private/var on macOS)
+	absRepoRoot, err := filepath.EvalSymlinks(repoRoot)
+	if err != nil {
+		// If EvalSymlinks fails, fall back to Abs
+		absRepoRoot, err = filepath.Abs(repoRoot)
+		if err != nil {
+			return fmt.Errorf("resolving repo root: %w", err)
+		}
+	}
+
+	return filepath.WalkDir(absRepoRoot, func(path string, d fs.DirEntry, err error) error {
+		// Check context cancellation
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		if err != nil {
+			return nil // Skip paths we can't access
+		}
+
+		// Skip .git and common dependency directories
+		name := d.Name()
+		if d.IsDir() && (name == ".git" || name == "node_modules" || name == "vendor" || name == ".venv") {
+			return filepath.SkipDir
+		}
+
+		// Only check symlinks
+		if d.Type()&fs.ModeSymlink == 0 {
+			return nil
+		}
+
+		// Resolve the symlink target
+		target, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return nil // Broken symlink - OK, will fail naturally later
+		}
+
+		// Ensure target is within repo root
+		absTarget, err := filepath.Abs(target)
+		if err != nil {
+			return nil
+		}
+
+		rel, err := filepath.Rel(absRepoRoot, absTarget)
+		if err != nil || strings.HasPrefix(rel, "..") {
+			return fmt.Errorf("%w: %s points to %s", ErrSymlinkEscape, path, target)
+		}
+
+		return nil
+	})
+}
+
+// ValidateNoSubmodules checks if the repository contains git submodules.
+// Returns ErrSubmodulesNotSupported if .gitmodules file exists.
+func ValidateNoSubmodules(repoRoot string) error {
+	gitmodulesPath := filepath.Join(repoRoot, ".gitmodules")
+	if _, err := os.Stat(gitmodulesPath); err == nil {
+		return fmt.Errorf("%w: please remove submodules or use a repository without them", ErrSubmodulesNotSupported)
+	}
 	return nil
 }

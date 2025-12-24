@@ -120,13 +120,25 @@ func (p *PreflightDisplay) Render() {
 
 // RenderFinal renders the final state and waits for user
 func (p *PreflightDisplay) RenderFinal() {
-	// Don't clear - just show final state
 	var lines []string
 	for _, check := range p.checks {
 		lines = append(lines, RenderPreflightCheck(check))
 	}
 
-	fmt.Fprintln(os.Stderr, strings.Join(lines, "\n"))
+	if p.rendered {
+		// Move cursor up to overwrite previous output
+		fmt.Fprintf(os.Stderr, "%s%d%s", cursorUpEscapePrefix, p.numLines, cursorUpEscapeSuffix)
+		// Clear from cursor to end of screen
+		fmt.Fprint(os.Stderr, clearToEndOfScreen)
+	}
+
+	// Print all check lines
+	output := strings.Join(lines, "\n")
+	fmt.Fprintln(os.Stderr, output)
+
+	// Track that we've rendered and how many lines
+	p.rendered = true
+	p.numLines = len(lines)
 }
 
 // AllSuccess returns true if all checks passed

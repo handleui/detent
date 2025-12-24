@@ -54,13 +54,15 @@ type worktreePrepResult struct {
 	cleanup func()
 }
 
-// Cleanup executes both cleanup functions in the correct order (worktree first, then workflows).
+// Cleanup executes both cleanup functions in the correct order (workflows first, then worktree).
+// Order matters: workflow temp files should be removed before the git worktree
+// to ensure consistent state during cleanup.
 func (r *Result) Cleanup() {
-	if r.CleanupWorktree != nil {
-		r.CleanupWorktree()
-	}
 	if r.CleanupWorkflows != nil {
 		r.CleanupWorkflows()
+	}
+	if r.CleanupWorktree != nil {
+		r.CleanupWorktree()
 	}
 }
 

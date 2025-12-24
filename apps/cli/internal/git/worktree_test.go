@@ -70,8 +70,10 @@ func TestPrepareWorktree_CleanRepo(t *testing.T) {
 		t.Fatal("WorktreeInfo should not be nil")
 	}
 
-	if info.Path != filepath.Join(os.TempDir(), "detent-"+runID) {
-		t.Errorf("WorktreeInfo.Path = %s, want %s", info.Path, filepath.Join(os.TempDir(), "detent-"+runID))
+	// Path should be in temp directory with our prefix (atomic creation uses random suffix)
+	expectedPrefix := filepath.Join(os.TempDir(), "detent-worktree-")
+	if !strings.HasPrefix(info.Path, expectedPrefix) {
+		t.Errorf("WorktreeInfo.Path = %s, should start with %s", info.Path, expectedPrefix)
 	}
 
 	if info.CommitSHA == "" {

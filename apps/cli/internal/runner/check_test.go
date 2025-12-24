@@ -451,12 +451,12 @@ func TestCheckRunner_extractAndProcessErrors(t *testing.T) {
 		{
 			name: "with errors in output",
 			actResult: &act.RunResult{
-				Stdout:   "main.go:10:5: error: undefined variable 'x'",
-				Stderr:   "Error: Process completed with exit code 1",
+				Stdout:   "main.go:10:5: undefined: x\n",
+				Stderr:   "Error: Process completed with exit code 1\n",
 				ExitCode: 1,
 				Duration: 3 * time.Second,
 			},
-			wantExtractedLen: 1,
+			wantExtractedLen: 2, // Go error + exit code metadata
 			wantErrorCount:   true,
 		},
 		{
