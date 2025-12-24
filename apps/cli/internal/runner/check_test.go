@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -205,15 +206,11 @@ func TestCheckRunner_RunWithoutPrepare(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Should panic because worktreeInfo is nil
-	// The buildActConfig will use nil worktreeInfo.Path which will cause a nil pointer dereference
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("Run() should panic when Prepare() hasn't been called")
-		}
-	}()
-
-	_ = runner.Run(ctx)
+	// Should return error because worktreeInfo is nil
+	err := runner.Run(ctx)
+	if !errors.Is(err, git.ErrWorktreeNotInitialized) {
+		t.Errorf("Run() should return ErrWorktreeNotInitialized when Prepare() hasn't been called, got: %v", err)
+	}
 }
 
 // TestCheckRunner_PersistWithoutRun tests Persist without calling Run first

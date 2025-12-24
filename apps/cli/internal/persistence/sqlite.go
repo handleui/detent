@@ -2,7 +2,6 @@ package persistence
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,7 +19,7 @@ const (
 	detentDBName = "detent.db"
 	batchSize    = 500 // Batch size for error inserts
 
-	currentSchemaVersion = 2 // Current database schema version
+	currentSchemaVersion = 6 // Current database schema version
 )
 
 // createDirIfNotExists creates a directory if it doesn't exist
@@ -189,6 +188,99 @@ func (w *SQLiteWriter) applyMigrations(fromVersion int) error {
 			CREATE INDEX IF NOT EXISTS idx_runs_is_dirty ON runs(is_dirty);
 			`,
 		},
+		{
+			version: 3,
+			name:    "add_heals_table",
+			sql: `
+			CREATE TABLE IF NOT EXISTS heals (
+				heal_id TEXT PRIMARY KEY,
+				error_id TEXT NOT NULL,
+				run_id TEXT,
+				diff_content TEXT NOT NULL,
+				diff_content_hash TEXT,
+				file_path TEXT,
+				model_id TEXT,
+				prompt_hash TEXT,
+				input_tokens INTEGER DEFAULT 0,
+				output_tokens INTEGER DEFAULT 0,
+				cache_read_tokens INTEGER DEFAULT 0,
+				cache_write_tokens INTEGER DEFAULT 0,
+				cost_usd REAL DEFAULT 0,
+				status TEXT DEFAULT 'pending',
+				created_at INTEGER NOT NULL,
+				applied_at INTEGER,
+				verified_at INTEGER,
+				verification_result TEXT,
+				attempt_number INTEGER DEFAULT 1,
+				parent_heal_id TEXT,
+				failure_reason TEXT,
+				FOREIGN KEY (error_id) REFERENCES errors(error_id),
+				FOREIGN KEY (run_id) REFERENCES runs(run_id),
+				FOREIGN KEY (parent_heal_id) REFERENCES heals(heal_id)
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_heals_error_id ON heals(error_id);
+			CREATE INDEX IF NOT EXISTS idx_heals_status ON heals(status);
+			CREATE INDEX IF NOT EXISTS idx_heals_run_id ON heals(run_id);
+			CREATE INDEX IF NOT EXISTS idx_heals_diff_content_hash ON heals(diff_content_hash);
+			`,
+		},
+		{
+			version: 4,
+			name:    "add_error_locations",
+			sql: `
+			CREATE TABLE IF NOT EXISTS error_locations (
+				location_id TEXT PRIMARY KEY,
+				error_id TEXT NOT NULL,
+				run_id TEXT NOT NULL,
+				file_path TEXT NOT NULL,
+				line_number INTEGER,
+				column_number INTEGER,
+				file_hash TEXT,
+				first_seen_at INTEGER NOT NULL,
+				last_seen_at INTEGER NOT NULL,
+				seen_count INTEGER DEFAULT 1,
+				FOREIGN KEY (error_id) REFERENCES errors(error_id),
+				FOREIGN KEY (run_id) REFERENCES runs(run_id),
+				UNIQUE(error_id, file_path, line_number)
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_error_locations_error_id ON error_locations(error_id);
+			CREATE INDEX IF NOT EXISTS idx_error_locations_file_path ON error_locations(file_path);
+			CREATE INDEX IF NOT EXISTS idx_error_locations_run_id ON error_locations(run_id);
+			`,
+		},
+		{
+			version: 5,
+			name:    "add_sync_and_state_tracking",
+			sql: `
+			-- Codebase state hash for deduplication across cloud agents
+			ALTER TABLE runs ADD COLUMN codebase_state_hash TEXT;
+
+			-- Sync status for future remote sync (pending/synced/failed)
+			ALTER TABLE runs ADD COLUMN sync_status TEXT DEFAULT 'pending';
+			ALTER TABLE errors ADD COLUMN sync_status TEXT DEFAULT 'pending';
+			ALTER TABLE heals ADD COLUMN sync_status TEXT DEFAULT 'pending';
+
+			-- Indices for sync queries
+			CREATE INDEX IF NOT EXISTS idx_runs_codebase_state_hash ON runs(codebase_state_hash);
+			CREATE INDEX IF NOT EXISTS idx_runs_sync_status ON runs(sync_status);
+			CREATE INDEX IF NOT EXISTS idx_errors_sync_status ON errors(sync_status);
+			CREATE INDEX IF NOT EXISTS idx_heals_sync_status ON heals(sync_status);
+			`,
+		},
+		{
+			version: 6,
+			name:    "drop_unused_indices",
+			sql: `
+			-- Drop indices with low selectivity or unused
+			DROP INDEX IF EXISTS idx_errors_run_id;
+			DROP INDEX IF EXISTS idx_errors_status;
+			DROP INDEX IF EXISTS idx_errors_content_hash_time;
+			DROP INDEX IF EXISTS idx_runs_is_dirty;
+			DROP INDEX IF EXISTS idx_errors_sync_status;
+			`,
+		},
 	}
 
 	// Apply each migration in a transaction
@@ -231,35 +323,62 @@ func (w *SQLiteWriter) applyMigrations(fromVersion int) error {
 }
 
 // RecordRun inserts a new run record into the database
-func (w *SQLiteWriter) RecordRun(runID, workflowName, commitSHA, executionMode string, isDirty bool, dirtyFiles []string) error {
-	// Marshal dirty files to JSON
-	var dirtyFilesJSON *string
-	if len(dirtyFiles) > 0 {
-		jsonBytes, err := json.Marshal(dirtyFiles)
-		if err != nil {
-			return fmt.Errorf("failed to marshal dirty files: %w", err)
-		}
-		jsonStr := string(jsonBytes)
-		dirtyFilesJSON = &jsonStr
-	}
-
+func (w *SQLiteWriter) RecordRun(runID, workflowName, commitSHA, executionMode string, isDirty bool) error {
 	// Convert isDirty bool to integer (0 or 1)
 	isDirtyInt := 0
 	if isDirty {
 		isDirtyInt = 1
 	}
 
+	// Note: dirty_files and base_commit_sha are deprecated (redundant with codebase_state_hash)
 	query := `
-		INSERT INTO runs (run_id, workflow_name, commit_sha, execution_mode, started_at, is_dirty, dirty_files, base_commit_sha)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO runs (run_id, workflow_name, commit_sha, execution_mode, started_at, is_dirty)
+		VALUES (?, ?, ?, ?, ?, ?)
 	`
 
-	_, err := w.db.Exec(query, runID, workflowName, commitSHA, executionMode, time.Now().Unix(), isDirtyInt, dirtyFilesJSON, commitSHA)
+	_, err := w.db.Exec(query, runID, workflowName, commitSHA, executionMode, time.Now().Unix(), isDirtyInt)
 	if err != nil {
 		return fmt.Errorf("failed to record run: %w", err)
 	}
 
 	return nil
+}
+
+// SetCodebaseStateHash updates a run with the computed codebase state hash.
+// This should be called after dirty file hashes are computed.
+func (w *SQLiteWriter) SetCodebaseStateHash(runID, stateHash string) error {
+	query := `UPDATE runs SET codebase_state_hash = ? WHERE run_id = ?`
+
+	result, err := w.db.Exec(query, stateHash, runID)
+	if err != nil {
+		return fmt.Errorf("failed to set codebase state hash: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return fmt.Errorf("run not found: %s", runID)
+	}
+
+	return nil
+}
+
+// GetRunByStateHash finds a run by its codebase state hash (for deduplication)
+func (w *SQLiteWriter) GetRunByStateHash(stateHash string) (runID string, found bool, err error) {
+	query := `SELECT run_id FROM runs WHERE codebase_state_hash = ? ORDER BY started_at DESC LIMIT 1`
+
+	err = w.db.QueryRow(query, stateHash).Scan(&runID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("failed to query run by state hash: %w", err)
+	}
+
+	return runID, true, nil
 }
 
 // RecordFindings adds multiple findings in a single batch operation
@@ -497,6 +616,417 @@ func (w *SQLiteWriter) GetErrorCount() int {
 	w.batchMutex.Lock()
 	defer w.batchMutex.Unlock()
 	return w.errorCount
+}
+
+// RecordHeal inserts a new heal record into the database
+func (w *SQLiteWriter) RecordHeal(heal *HealRecord) error {
+	query := `
+		INSERT INTO heals (
+			heal_id, error_id, run_id, diff_content, diff_content_hash, file_path,
+			model_id, prompt_hash, input_tokens, output_tokens,
+			cache_read_tokens, cache_write_tokens, cost_usd,
+			status, created_at, applied_at, verified_at, verification_result,
+			attempt_number, parent_heal_id, failure_reason
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`
+
+	var appliedAt, verifiedAt *int64
+	if heal.AppliedAt != nil {
+		ts := heal.AppliedAt.Unix()
+		appliedAt = &ts
+	}
+	if heal.VerifiedAt != nil {
+		ts := heal.VerifiedAt.Unix()
+		verifiedAt = &ts
+	}
+
+	var verificationResult *string
+	if heal.VerificationResult != "" {
+		s := string(heal.VerificationResult)
+		verificationResult = &s
+	}
+
+	// Compute diff content hash if not provided
+	diffContentHash := heal.DiffContentHash
+	if diffContentHash == "" && heal.DiffContent != "" {
+		diffContentHash = ComputeContentHash(heal.DiffContent)
+	}
+
+	_, err := w.db.Exec(query,
+		heal.HealID,
+		heal.ErrorID,
+		heal.RunID,
+		heal.DiffContent,
+		diffContentHash,
+		heal.FilePath,
+		heal.ModelID,
+		heal.PromptHash,
+		heal.InputTokens,
+		heal.OutputTokens,
+		heal.CacheReadTokens,
+		heal.CacheWriteTokens,
+		heal.CostUSD,
+		string(heal.Status),
+		heal.CreatedAt.Unix(),
+		appliedAt,
+		verifiedAt,
+		verificationResult,
+		heal.AttemptNumber,
+		heal.ParentHealID,
+		heal.FailureReason,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to record heal: %w", err)
+	}
+
+	return nil
+}
+
+// UpdateHealStatus updates the status and optionally the applied_at timestamp of a heal
+func (w *SQLiteWriter) UpdateHealStatus(healID string, status HealStatus, appliedAt *time.Time) error {
+	var query string
+	var args []interface{}
+
+	if appliedAt != nil {
+		query = `UPDATE heals SET status = ?, applied_at = ? WHERE heal_id = ?`
+		args = []interface{}{string(status), appliedAt.Unix(), healID}
+	} else {
+		query = `UPDATE heals SET status = ? WHERE heal_id = ?`
+		args = []interface{}{string(status), healID}
+	}
+
+	result, err := w.db.Exec(query, args...)
+	if err != nil {
+		return fmt.Errorf("failed to update heal status: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return fmt.Errorf("heal not found: %s", healID)
+	}
+
+	return nil
+}
+
+// RecordHealVerification updates a heal with verification results
+func (w *SQLiteWriter) RecordHealVerification(healID string, result VerificationResult) error {
+	query := `UPDATE heals SET verified_at = ?, verification_result = ? WHERE heal_id = ?`
+
+	dbResult, err := w.db.Exec(query, time.Now().Unix(), string(result), healID)
+	if err != nil {
+		return fmt.Errorf("failed to record heal verification: %w", err)
+	}
+
+	rowsAffected, err := dbResult.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return fmt.Errorf("heal not found: %s", healID)
+	}
+
+	return nil
+}
+
+// GetHealsForError retrieves all heals for a given error, ordered by attempt number
+func (w *SQLiteWriter) GetHealsForError(errorID string) ([]*HealRecord, error) {
+	query := `
+		SELECT heal_id, error_id, run_id, diff_content, diff_content_hash, file_path,
+			model_id, prompt_hash, input_tokens, output_tokens,
+			cache_read_tokens, cache_write_tokens, cost_usd,
+			status, created_at, applied_at, verified_at, verification_result,
+			attempt_number, parent_heal_id, failure_reason
+		FROM heals
+		WHERE error_id = ?
+		ORDER BY attempt_number ASC
+	`
+
+	rows, err := w.db.Query(query, errorID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query heals: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var heals []*HealRecord
+	for rows.Next() {
+		heal, scanErr := scanHealRow(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		heals = append(heals, heal)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating heals: %w", err)
+	}
+
+	return heals, nil
+}
+
+// GetLatestHealForError retrieves the most recent heal for a given error
+func (w *SQLiteWriter) GetLatestHealForError(errorID string) (*HealRecord, error) {
+	query := `
+		SELECT heal_id, error_id, run_id, diff_content, diff_content_hash, file_path,
+			model_id, prompt_hash, input_tokens, output_tokens,
+			cache_read_tokens, cache_write_tokens, cost_usd,
+			status, created_at, applied_at, verified_at, verification_result,
+			attempt_number, parent_heal_id, failure_reason
+		FROM heals
+		WHERE error_id = ?
+		ORDER BY attempt_number DESC
+		LIMIT 1
+	`
+
+	row := w.db.QueryRow(query, errorID)
+	heal, err := scanHealRowSingle(row)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get latest heal: %w", err)
+	}
+
+	return heal, nil
+}
+
+// scanHealRow scans a heal row from sql.Rows
+func scanHealRow(rows *sql.Rows) (*HealRecord, error) {
+	var heal HealRecord
+	var runID, diffContentHash, filePath, modelID, promptHash sql.NullString
+	var appliedAt, verifiedAt sql.NullInt64
+	var verificationResult, parentHealID, failureReason sql.NullString
+	var createdAtUnix int64
+	var status string
+
+	err := rows.Scan(
+		&heal.HealID,
+		&heal.ErrorID,
+		&runID,
+		&heal.DiffContent,
+		&diffContentHash,
+		&filePath,
+		&modelID,
+		&promptHash,
+		&heal.InputTokens,
+		&heal.OutputTokens,
+		&heal.CacheReadTokens,
+		&heal.CacheWriteTokens,
+		&heal.CostUSD,
+		&status,
+		&createdAtUnix,
+		&appliedAt,
+		&verifiedAt,
+		&verificationResult,
+		&heal.AttemptNumber,
+		&parentHealID,
+		&failureReason,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to scan heal row: %w", err)
+	}
+
+	heal.RunID = runID.String
+	heal.DiffContentHash = diffContentHash.String
+	heal.FilePath = filePath.String
+	heal.ModelID = modelID.String
+	heal.PromptHash = promptHash.String
+	heal.Status = HealStatus(status)
+	heal.CreatedAt = time.Unix(createdAtUnix, 0)
+
+	if appliedAt.Valid {
+		t := time.Unix(appliedAt.Int64, 0)
+		heal.AppliedAt = &t
+	}
+	if verifiedAt.Valid {
+		t := time.Unix(verifiedAt.Int64, 0)
+		heal.VerifiedAt = &t
+	}
+	if verificationResult.Valid {
+		heal.VerificationResult = VerificationResult(verificationResult.String)
+	}
+	if parentHealID.Valid {
+		heal.ParentHealID = &parentHealID.String
+	}
+	if failureReason.Valid {
+		heal.FailureReason = &failureReason.String
+	}
+
+	return &heal, nil
+}
+
+// scanHealRowSingle scans a heal row from sql.Row
+func scanHealRowSingle(row *sql.Row) (*HealRecord, error) {
+	var heal HealRecord
+	var runID, diffContentHash, filePath, modelID, promptHash sql.NullString
+	var appliedAt, verifiedAt sql.NullInt64
+	var verificationResult, parentHealID, failureReason sql.NullString
+	var createdAtUnix int64
+	var status string
+
+	err := row.Scan(
+		&heal.HealID,
+		&heal.ErrorID,
+		&runID,
+		&heal.DiffContent,
+		&diffContentHash,
+		&filePath,
+		&modelID,
+		&promptHash,
+		&heal.InputTokens,
+		&heal.OutputTokens,
+		&heal.CacheReadTokens,
+		&heal.CacheWriteTokens,
+		&heal.CostUSD,
+		&status,
+		&createdAtUnix,
+		&appliedAt,
+		&verifiedAt,
+		&verificationResult,
+		&heal.AttemptNumber,
+		&parentHealID,
+		&failureReason,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	heal.RunID = runID.String
+	heal.DiffContentHash = diffContentHash.String
+	heal.FilePath = filePath.String
+	heal.ModelID = modelID.String
+	heal.PromptHash = promptHash.String
+	heal.Status = HealStatus(status)
+	heal.CreatedAt = time.Unix(createdAtUnix, 0)
+
+	if appliedAt.Valid {
+		t := time.Unix(appliedAt.Int64, 0)
+		heal.AppliedAt = &t
+	}
+	if verifiedAt.Valid {
+		t := time.Unix(verifiedAt.Int64, 0)
+		heal.VerifiedAt = &t
+	}
+	if verificationResult.Valid {
+		heal.VerificationResult = VerificationResult(verificationResult.String)
+	}
+	if parentHealID.Valid {
+		heal.ParentHealID = &parentHealID.String
+	}
+	if failureReason.Valid {
+		heal.FailureReason = &failureReason.String
+	}
+
+	return &heal, nil
+}
+
+// RecordErrorLocation records or updates an error location
+func (w *SQLiteWriter) RecordErrorLocation(loc *ErrorLocation) error {
+	now := time.Now().Unix()
+
+	// Try to update existing location first (upsert pattern)
+	updateQuery := `
+		UPDATE error_locations
+		SET seen_count = seen_count + 1, last_seen_at = ?, file_hash = COALESCE(?, file_hash)
+		WHERE error_id = ? AND file_path = ? AND line_number = ?
+	`
+
+	result, err := w.db.Exec(updateQuery, now, loc.FileHash, loc.ErrorID, loc.FilePath, loc.LineNumber)
+	if err != nil {
+		return fmt.Errorf("failed to update error location: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	// If no existing row, insert new one
+	if rowsAffected == 0 {
+		locationID, uuidErr := util.GenerateUUID()
+		if uuidErr != nil {
+			return fmt.Errorf("failed to generate location ID: %w", uuidErr)
+		}
+
+		insertQuery := `
+			INSERT INTO error_locations (
+				location_id, error_id, run_id, file_path, line_number,
+				column_number, file_hash, first_seen_at, last_seen_at, seen_count
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+		`
+
+		_, err = w.db.Exec(insertQuery,
+			locationID,
+			loc.ErrorID,
+			loc.RunID,
+			loc.FilePath,
+			loc.LineNumber,
+			loc.ColumnNumber,
+			loc.FileHash,
+			now,
+			now,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to insert error location: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// GetLocationsForError retrieves all locations where an error has been seen
+func (w *SQLiteWriter) GetLocationsForError(errorID string) ([]*ErrorLocation, error) {
+	query := `
+		SELECT location_id, error_id, run_id, file_path, line_number,
+			column_number, file_hash, first_seen_at, last_seen_at, seen_count
+		FROM error_locations
+		WHERE error_id = ?
+		ORDER BY seen_count DESC, last_seen_at DESC
+	`
+
+	rows, err := w.db.Query(query, errorID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query error locations: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var locations []*ErrorLocation
+	for rows.Next() {
+		var loc ErrorLocation
+		var fileHash sql.NullString
+		var firstSeenAt, lastSeenAt int64
+
+		err := rows.Scan(
+			&loc.LocationID,
+			&loc.ErrorID,
+			&loc.RunID,
+			&loc.FilePath,
+			&loc.LineNumber,
+			&loc.ColumnNumber,
+			&fileHash,
+			&firstSeenAt,
+			&lastSeenAt,
+			&loc.SeenCount,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan error location: %w", err)
+		}
+
+		loc.FileHash = fileHash.String
+		loc.FirstSeenAt = time.Unix(firstSeenAt, 0)
+		loc.LastSeenAt = time.Unix(lastSeenAt, 0)
+		locations = append(locations, &loc)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating error locations: %w", err)
+	}
+
+	return locations, nil
 }
 
 // Close closes the database connection

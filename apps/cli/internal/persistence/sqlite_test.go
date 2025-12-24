@@ -72,12 +72,10 @@ func TestSQLiteWriter_initSchema(t *testing.T) {
 		t.Errorf("Expected table name 'errors', got %v", tableName)
 	}
 
-	// Verify key indices exist
+	// Verify key indices exist (note: some indices were dropped in migration v6)
 	indices := []string{
-		"idx_errors_run_id",
 		"idx_errors_content_hash",
 		"idx_errors_file_path",
-		"idx_errors_status",
 	}
 
 	for _, indexName := range indices {
@@ -99,7 +97,7 @@ func TestSQLiteWriter_RecordRun(t *testing.T) {
 	defer func() { _ = writer.Close() }()
 
 	runID := "run-123"
-	err = writer.RecordRun(runID, "CI", "abc123", "github", false, nil)
+	err = writer.RecordRun(runID, "CI", "abc123", "github", false)
 	if err != nil {
 		t.Fatalf("RecordRun() error = %v", err)
 	}
@@ -137,7 +135,7 @@ func TestSQLiteWriter_RecordError_WithFlush(t *testing.T) {
 	defer func() { _ = writer.Close() }()
 
 	runID := "test-run"
-	if err := writer.RecordRun(runID, "test", "abc123", "github", false, nil); err != nil {
+	if err := writer.RecordRun(runID, "test", "abc123", "github", false); err != nil {
 		t.Fatalf("Failed to record run: %v", err)
 	}
 
@@ -182,7 +180,7 @@ func TestSQLiteWriter_RecordError_Deduplication(t *testing.T) {
 	defer func() { _ = writer.Close() }()
 
 	runID := "test-run"
-	if err := writer.RecordRun(runID, "test", "abc123", "github", false, nil); err != nil {
+	if err := writer.RecordRun(runID, "test", "abc123", "github", false); err != nil {
 		t.Fatalf("Failed to record run: %v", err)
 	}
 
@@ -237,7 +235,7 @@ func TestSQLiteWriter_FinalizeRun(t *testing.T) {
 	defer func() { _ = writer.Close() }()
 
 	runID := "run-with-errors"
-	if err := writer.RecordRun(runID, "test", "abc123", "github", false, nil); err != nil {
+	if err := writer.RecordRun(runID, "test", "abc123", "github", false); err != nil {
 		t.Fatalf("Failed to record run: %v", err)
 	}
 
@@ -287,7 +285,7 @@ func TestSQLiteWriter_ErrorFields(t *testing.T) {
 	defer func() { _ = writer.Close() }()
 
 	runID := "test-run"
-	if err := writer.RecordRun(runID, "test", "abc123", "github", false, nil); err != nil {
+	if err := writer.RecordRun(runID, "test", "abc123", "github", false); err != nil {
 		t.Fatalf("Failed to record run: %v", err)
 	}
 
@@ -370,7 +368,7 @@ func TestSQLiteWriter_FlushBatch(t *testing.T) {
 	defer func() { _ = writer.Close() }()
 
 	runID := "test-run"
-	if err := writer.RecordRun(runID, "test", "abc123", "github", false, nil); err != nil {
+	if err := writer.RecordRun(runID, "test", "abc123", "github", false); err != nil {
 		t.Fatalf("Failed to record run: %v", err)
 	}
 
@@ -422,7 +420,7 @@ func TestSQLiteWriter_LastSeenAtUpdates(t *testing.T) {
 	defer func() { _ = writer.Close() }()
 
 	runID := "timestamp-test"
-	if err := writer.RecordRun(runID, "test", "abc123", "github", false, nil); err != nil {
+	if err := writer.RecordRun(runID, "test", "abc123", "github", false); err != nil {
 		t.Fatalf("Failed to record run: %v", err)
 	}
 
@@ -530,37 +528,22 @@ func TestSQLiteWriter_SchemaMigration(t *testing.T) {
 		t.Errorf("Schema version = %d, want %d", version, currentSchemaVersion)
 	}
 
-	// Verify new columns exist in runs table
+	// Verify is_dirty column exists in runs table
 	var isDirty int
-	var dirtyFiles, baseCommitSHA *string
 	runID := "migration-test"
-	dirtyFilesList := []string{"file1.go", "file2.go"}
-	err = writer.RecordRun(runID, "test", "abc123", "github", true, dirtyFilesList)
+	err = writer.RecordRun(runID, "test", "abc123", "github", true)
 	if err != nil {
-		t.Fatalf("Failed to record run with new columns: %v", err)
+		t.Fatalf("Failed to record run: %v", err)
 	}
 
-	query := "SELECT is_dirty, dirty_files, base_commit_sha FROM runs WHERE run_id = ?"
-	err = writer.db.QueryRow(query, runID).Scan(&isDirty, &dirtyFiles, &baseCommitSHA)
+	query := "SELECT is_dirty FROM runs WHERE run_id = ?"
+	err = writer.db.QueryRow(query, runID).Scan(&isDirty)
 	if err != nil {
-		t.Fatalf("Failed to query new columns: %v", err)
+		t.Fatalf("Failed to query is_dirty: %v", err)
 	}
 
 	if isDirty != 1 {
 		t.Errorf("is_dirty = %d, want 1", isDirty)
-	}
-	if dirtyFiles == nil {
-		t.Error("dirty_files should not be nil")
-	}
-	if baseCommitSHA == nil || *baseCommitSHA != "abc123" {
-		t.Errorf("base_commit_sha = %v, want 'abc123'", baseCommitSHA)
-	}
-
-	// Verify idx_runs_is_dirty index exists
-	var indexName string
-	err = writer.db.QueryRow("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_runs_is_dirty'").Scan(&indexName)
-	if err != nil {
-		t.Errorf("Index idx_runs_is_dirty not created: %v", err)
 	}
 
 	if closeErr := writer.Close(); closeErr != nil {
@@ -582,66 +565,5 @@ func TestSQLiteWriter_SchemaMigration(t *testing.T) {
 	}
 	if version2 != currentSchemaVersion {
 		t.Errorf("Schema version after reopen = %d, want %d", version2, currentSchemaVersion)
-	}
-}
-
-// TestSQLiteWriter_DirtyFilesJSON tests JSON marshaling of dirty files
-func TestSQLiteWriter_DirtyFilesJSON(t *testing.T) {
-	tmpDir := t.TempDir()
-	writer, err := NewSQLiteWriter(tmpDir)
-	if err != nil {
-		t.Fatalf("Failed to create writer: %v", err)
-	}
-	defer func() { _ = writer.Close() }()
-
-	testCases := []struct {
-		name       string
-		dirtyFiles []string
-		expectNull bool
-	}{
-		{
-			name:       "nil dirty files",
-			dirtyFiles: nil,
-			expectNull: true,
-		},
-		{
-			name:       "empty dirty files",
-			dirtyFiles: []string{},
-			expectNull: true,
-		},
-		{
-			name:       "single dirty file",
-			dirtyFiles: []string{"main.go"},
-			expectNull: false,
-		},
-		{
-			name:       "multiple dirty files",
-			dirtyFiles: []string{"file1.go", "file2.go", "file3.go"},
-			expectNull: false,
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			runID := "test-" + tc.name
-			err := writer.RecordRun(runID, "test", "abc123", "github", len(tc.dirtyFiles) > 0, tc.dirtyFiles)
-			if err != nil {
-				t.Fatalf("RecordRun() error = %v", err)
-			}
-
-			var dirtyFilesJSON *string
-			query := "SELECT dirty_files FROM runs WHERE run_id = ?"
-			err = writer.db.QueryRow(query, runID).Scan(&dirtyFilesJSON)
-			if err != nil {
-				t.Fatalf("Failed to query dirty_files: %v", err)
-			}
-
-			if tc.expectNull && dirtyFilesJSON != nil {
-				t.Errorf("Expected dirty_files to be NULL, got %v", *dirtyFilesJSON)
-			}
-			if !tc.expectNull && dirtyFilesJSON == nil {
-				t.Error("Expected dirty_files to be non-NULL")
-			}
-		})
 	}
 }

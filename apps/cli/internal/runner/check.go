@@ -378,7 +378,6 @@ func (r *CheckRunner) Persist() error {
 		r.worktreeInfo.BaseCommitSHA,
 		execMode,
 		r.worktreeInfo.IsDirty,
-		r.worktreeInfo.DirtyFiles,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to initialize persistence storage at %s/.detent: %w", r.config.RepoRoot, err)
