@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -18,6 +19,13 @@ import (
 	"github.com/detent/cli/internal/tui"
 	"github.com/detent/cli/internal/workflow"
 )
+
+// sendToTUI sends a message to the TUI program in a non-blocking manner.
+// This prevents the caller from blocking if the TUI is slow to process messages.
+// The send is executed in a separate goroutine to avoid backpressure on the act runner.
+func sendToTUI(program *tea.Program, msg tea.Msg) {
+	go program.Send(msg)
+}
 
 // CheckRunner orchestrates a complete check run lifecycle including:
 // - Workflow preparation (injection of continue-on-error and timeouts)
@@ -61,6 +69,14 @@ type CheckRunner struct {
 	// Execution state - set during Run phase
 	startTime time.Time  // When execution started
 	result    *RunResult // Complete run result including act output, errors, and metadata
+}
+
+// tuiResult encapsulates the result of a TUI-based check run.
+type tuiResult struct {
+	result    *act.RunResult
+	extracted []*internalerrors.ExtractedError
+	grouped   *internalerrors.GroupedErrors
+	err       error
 }
 
 // New creates a new CheckRunner with the given configuration.
@@ -134,14 +150,7 @@ func (r *CheckRunner) Run(ctx context.Context) error {
 	r.startTime = time.Now()
 
 	// Configure act execution (matching runWithoutTUI logic from cmd/check.go:476-490)
-	actConfig := &act.RunConfig{
-		WorkflowPath: r.tmpDir,
-		Event:        r.config.Event,
-		Verbose:      false,
-		WorkDir:      r.worktreeInfo.Path,
-		StreamOutput: r.config.StreamOutput,
-		LogChan:      nil,
-	}
+	actConfig := r.buildActConfig(nil)
 
 	// Execute workflow using act
 	actResult, err := act.Run(ctx, actConfig)
@@ -179,48 +188,91 @@ func (r *CheckRunner) Run(ctx context.Context) error {
 // Note: A non-zero exit code from act is not treated as an error - it's captured
 // in the result and sent via DoneMsg.
 func (r *CheckRunner) RunWithTUI(ctx context.Context, logChan chan string, program *tea.Program) (bool, error) {
-	// Create cancellable context for TUI control (matching runWithTUIAndExtract:462-464)
+	// NOTE: Keep context wrapper - needed for proper cancellation
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	r.startTime = time.Now()
 
-	// Configure act with TUI integration
-	actConfig := &act.RunConfig{
-		WorkflowPath: r.tmpDir,
-		Event:        r.config.Event,
-		Verbose:      false,
-		WorkDir:      r.worktreeInfo.Path,
-		StreamOutput: false,
-		LogChan:      logChan,
-	}
+	actConfig := r.buildActConfig(logChan)
 
-	// Start act runner in goroutine (matching startActRunner:376-408)
-	type tuiResult struct {
-		result    *act.RunResult
-		extracted []*internalerrors.ExtractedError
-		grouped   *internalerrors.GroupedErrors
-		err       error
-	}
 	resultChan := make(chan tuiResult, 1)
 
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	r.startActRunnerGoroutine(ctx, actConfig, logChan, program, resultChan, &wg)
+	r.startLogProcessorGoroutine(ctx, logChan, program, &wg)
+
+	finalModel, err := program.Run()
+	if err != nil {
+		cancel()
+		wg.Wait()
+		return false, err
+	}
+
+	checkModel, ok := finalModel.(*tui.CheckModel)
+	var wasCancelled bool
+	if ok {
+		wasCancelled = checkModel.Cancelled
+	}
+
+	tuiRes := <-resultChan
+	if tuiRes.err != nil {
+		cancel()
+		wg.Wait()
+		return false, tuiRes.err
+	}
+
+	r.result = &RunResult{
+		ActResult:    tuiRes.result,
+		Extracted:    tuiRes.extracted,
+		Grouped:      tuiRes.grouped,
+		WorktreeInfo: r.worktreeInfo,
+		RunID:        r.config.RunID,
+		StartTime:    r.startTime,
+		Duration:     tuiRes.result.Duration,
+		Cancelled:    wasCancelled,
+		ExitCode:     tuiRes.result.ExitCode,
+	}
+
+	defer cancel()
+	wg.Wait()
+
+	return wasCancelled, nil
+}
+
+// startActRunnerGoroutine starts a goroutine to run act and process results.
+func (r *CheckRunner) startActRunnerGoroutine(
+	ctx context.Context,
+	actConfig *act.RunConfig,
+	logChan chan string,
+	program *tea.Program,
+	resultChan chan tuiResult,
+	wg *sync.WaitGroup,
+) {
 	go func() {
+		defer wg.Done()
+		defer close(logChan)
+		defer func() {
+			if rec := recover(); rec != nil {
+				err := fmt.Errorf("act.Run panicked: %v", rec)
+				resultChan <- tuiResult{err: err}
+				sendToTUI(program, tui.ErrMsg(err))
+			}
+		}()
+
 		result, err := act.Run(ctx, actConfig)
-		close(logChan)
 
 		if err != nil {
 			resultChan <- tuiResult{err: err}
-			program.Send(tui.ErrMsg(err))
+			sendToTUI(program, tui.ErrMsg(err))
 			return
 		}
 
-		// Extract and process errors once (cached for later use)
 		extracted, grouped := r.extractAndProcessErrors(result)
-
-		// Check if context was cancelled
 		cancelled := errors.Is(ctx.Err(), context.Canceled)
 
-		// Send completion to TUI
 		program.Send(tui.DoneMsg{
 			Duration:  result.Duration,
 			ExitCode:  result.ExitCode,
@@ -234,24 +286,30 @@ func (r *CheckRunner) RunWithTUI(ctx context.Context, logChan chan string, progr
 			grouped:   grouped,
 		}
 	}()
+}
 
-	// Start log processor (matching startLogProcessor:411-435)
+// startLogProcessorGoroutine starts a goroutine to process log messages.
+func (r *CheckRunner) startLogProcessorGoroutine(
+	ctx context.Context,
+	logChan chan string,
+	program *tea.Program,
+	wg *sync.WaitGroup,
+) {
 	go func() {
+		defer wg.Done()
 		for {
 			select {
 			case line, ok := <-logChan:
 				if !ok {
 					return
 				}
-
 				select {
 				case <-ctx.Done():
 					return
 				default:
-					program.Send(tui.LogMsg(line))
-
+					sendToTUI(program, tui.LogMsg(line))
 					if progress := tui.ParseActProgress(line); progress != nil {
-						program.Send(*progress)
+						sendToTUI(program, *progress)
 					}
 				}
 			case <-ctx.Done():
@@ -259,40 +317,6 @@ func (r *CheckRunner) RunWithTUI(ctx context.Context, logChan chan string, progr
 			}
 		}
 	}()
-
-	// Wait for TUI completion (matching collectTUIResult:438-458)
-	finalModel, err := program.Run()
-	if err != nil {
-		return false, err
-	}
-
-	// Extract cancellation status from model
-	checkModel, ok := finalModel.(*tui.CheckModel)
-	var wasCancelled bool
-	if ok {
-		wasCancelled = checkModel.Cancelled
-	}
-
-	// Get result from channel
-	tuiRes := <-resultChan
-	if tuiRes.err != nil {
-		return false, tuiRes.err
-	}
-
-	// Store result using cached extracted/grouped errors (already processed in goroutine)
-	r.result = &RunResult{
-		ActResult:    tuiRes.result,
-		Extracted:    tuiRes.extracted,
-		Grouped:      tuiRes.grouped,
-		WorktreeInfo: r.worktreeInfo,
-		RunID:        r.config.RunID,
-		StartTime:    r.startTime,
-		Duration:     tuiRes.result.Duration,
-		Cancelled:    wasCancelled,
-		ExitCode:     tuiRes.result.ExitCode,
-	}
-
-	return wasCancelled, nil
 }
 
 // extractAndProcessErrors extracts errors from act output, applies severity, and groups by file.
@@ -352,11 +376,9 @@ func (r *CheckRunner) Persist() error {
 		return fmt.Errorf("failed to initialize persistence storage at %s/.detent: %w", r.config.RepoRoot, err)
 	}
 
-	// Record all findings
-	for i, finding := range r.result.Extracted {
-		if err := recorder.RecordFinding(finding); err != nil {
-			return fmt.Errorf("failed to record finding %d/%d to persistence storage: %w", i+1, len(r.result.Extracted), err)
-		}
+	// Record all findings in a single batch operation
+	if err := recorder.RecordFindings(r.result.Extracted); err != nil {
+		return fmt.Errorf("failed to record findings: %w", err)
 	}
 
 	// Finalize the run with exit code (this also closes the database connection)
@@ -391,4 +413,18 @@ func (r *CheckRunner) Cleanup() {
 // The result includes all extracted errors, timing information, and act output.
 func (r *CheckRunner) GetResult() *RunResult {
 	return r.result
+}
+
+// buildActConfig constructs an act.RunConfig with appropriate settings.
+// When logChan is nil, StreamOutput is enabled (for non-TUI mode).
+// When logChan is provided, output is streamed to the channel (for TUI mode).
+func (r *CheckRunner) buildActConfig(logChan chan string) *act.RunConfig {
+	return &act.RunConfig{
+		WorkflowPath: r.tmpDir,
+		Event:        r.config.Event,
+		Verbose:      false,
+		WorkDir:      r.worktreeInfo.Path,
+		StreamOutput: logChan == nil && r.config.StreamOutput,
+		LogChan:      logChan,
+	}
 }

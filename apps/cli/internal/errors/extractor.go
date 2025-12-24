@@ -10,8 +10,30 @@ import (
 )
 
 const (
-	maxStackTraceLines    = 5000 // Maximum stack trace lines to prevent memory exhaustion
+	maxStackTraceLines   = 5000  // Maximum stack trace lines to prevent memory exhaustion
 	maxDeduplicationSize = 10000 // Maximum deduplicated errors to prevent unbounded map growth
+
+	// SeverityError is the interned constant for "error" severity level
+	SeverityError = "error"
+	// SeverityWarning is the interned constant for "warning" severity level
+	SeverityWarning = "warning"
+
+	// SourceESLint is the source identifier for ESLint
+	SourceESLint = "eslint"
+	// SourceTypeScript is the source identifier for TypeScript
+	SourceTypeScript = "typescript"
+	// SourceGo is the source identifier for Go
+	SourceGo = "go"
+	// SourceGoTest is the source identifier for Go tests
+	SourceGoTest = "go-test"
+	// SourcePython is the source identifier for Python
+	SourcePython = "python"
+	// SourceRust is the source identifier for Rust
+	SourceRust = "rust"
+	// SourceDocker is the source identifier for Docker
+	SourceDocker = "docker"
+	// SourceNodeJS is the source identifier for Node.js
+	SourceNodeJS = "nodejs"
 )
 
 // Extractor processes act output and extracts structured errors.
@@ -158,6 +180,18 @@ func parseLineCol(lineStr, colStr string) (line, col int, err error) {
 	return line, col, nil
 }
 
+// internSeverity returns an interned severity constant for common values.
+// This reduces memory allocations by reusing string constants.
+func internSeverity(s string) string {
+	if s == "error" {
+		return SeverityError
+	}
+	if s == "warning" {
+		return SeverityWarning
+	}
+	return s
+}
+
 // startStackTrace begins accumulating stack trace lines for an error
 func (e *Extractor) startStackTrace(owner *ExtractedError) {
 	e.inStackTrace = true
@@ -259,7 +293,7 @@ func (e *Extractor) extractFromLine(line string) *ExtractedError {
 		panicErr := &ExtractedError{
 			Message:  strings.TrimPrefix(line, "panic: "),
 			Category: CategoryRuntime,
-			Source:   "go",
+			Source:   SourceGo,
 			Raw:      line,
 		}
 		e.startStackTrace(panicErr)
@@ -284,8 +318,8 @@ func (e *Extractor) extractFromLine(line string) *ExtractedError {
 		return &ExtractedError{
 			Message:  strings.TrimSpace(match[0]),
 			Category: CategoryRuntime,
-			Source:   "docker",
-			Severity: "error",
+			Source:   SourceDocker,
+			Severity: SeverityError,
 			Raw:      line,
 		}
 	}
@@ -302,7 +336,7 @@ func (e *Extractor) extractFromLine(line string) *ExtractedError {
 			Line:     lineNum,
 			Column:   colNum,
 			Category: CategoryCompile,
-			Source:   "go",
+			Source:   SourceGo,
 			Raw:      line,
 		}
 	}
@@ -320,7 +354,7 @@ func (e *Extractor) extractFromLine(line string) *ExtractedError {
 			Column:   colNum,
 			RuleID:   match[4],            // "TS2749", "TS1234", etc. (may be empty)
 			Category: CategoryTypeCheck,
-			Source:   "typescript",
+			Source:   SourceTypeScript,
 			Raw:      line,
 		}
 	}
@@ -343,7 +377,7 @@ func (e *Extractor) extractFromLine(line string) *ExtractedError {
 		return &ExtractedError{
 			Message:  message,
 			Category: CategoryRuntime,
-			Source:   "python",
+			Source:   SourcePython,
 			Raw:      line,
 		}
 	}
@@ -357,7 +391,7 @@ func (e *Extractor) extractFromLine(line string) *ExtractedError {
 			File:     match[1],
 			Line:     lineNum,
 			Category: CategoryRuntime,
-			Source:   "python",
+			Source:   SourcePython,
 			Raw:      line,
 		}
 		// Start accumulating stack trace for Python errors
@@ -373,7 +407,7 @@ func (e *Extractor) extractFromLine(line string) *ExtractedError {
 			Message:  match[2],
 			RuleID:   match[1], // Error code like "E0123"
 			Category: CategoryCompile,
-			Source:   "rust",
+			Source:   SourceRust,
 			Raw:      line,
 		}
 		return nil // Don't return yet, wait for location line
@@ -402,7 +436,7 @@ func (e *Extractor) extractFromLine(line string) *ExtractedError {
 			Line:     lineNum,
 			Column:   colNum,
 			Category: CategoryCompile,
-			Source:   "rust",
+			Source:   SourceRust,
 			Raw:      line,
 		}
 	}
@@ -412,7 +446,7 @@ func (e *Extractor) extractFromLine(line string) *ExtractedError {
 		testErr := &ExtractedError{
 			Message:  "Test failed: " + match[1],
 			Category: CategoryTest,
-			Source:   "go-test",
+			Source:   SourceGoTest,
 			Raw:      line,
 		}
 		// Start accumulating test output as stack trace
@@ -433,7 +467,7 @@ func (e *Extractor) extractFromLine(line string) *ExtractedError {
 			Line:     lineNum,
 			Column:   colNum,
 			Category: CategoryRuntime,
-			Source:   "nodejs",
+			Source:   SourceNodeJS,
 			Raw:      line,
 		}
 		// Start stack trace if this is the first "at" line, or continue accumulating
@@ -460,10 +494,10 @@ func (e *Extractor) extractFromLine(line string) *ExtractedError {
 			File:     e.lastFile, // Use the last seen file path
 			Line:     lineNum,
 			Column:   colNum,
-			Severity: match[3], // "error" or "warning"
+			Severity: internSeverity(match[3]), // "error" or "warning"
 			RuleID:   ruleID,
 			Category: CategoryLint,
-			Source:   "eslint",
+			Source:   SourceESLint,
 			Raw:      line,
 		}
 

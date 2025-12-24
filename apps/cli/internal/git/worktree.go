@@ -179,7 +179,7 @@ func copyDirtyFiles(repoRoot, worktreePath string, dirtyFiles []string) error {
 
 			// Create destination directory if needed
 			dstDir := filepath.Dir(dstPath)
-			if err := os.MkdirAll(dstDir, 0o750); err != nil {
+			if err := os.MkdirAll(dstDir, 0o700); err != nil {
 				return fmt.Errorf("creating directory %s: %w", dstDir, err)
 			}
 

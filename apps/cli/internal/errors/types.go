@@ -183,20 +183,74 @@ func GroupByWorkflow(errs []*ExtractedError) map[string][]*ExtractedError {
 // It provides multi-dimensional error organization (by file, category, workflow) with
 // detailed statistics, making it ideal for detailed reporting and analysis.
 func GroupComprehensive(errs []*ExtractedError, basePath string) *ComprehensiveErrorGroup {
-	grouped := &ComprehensiveErrorGroup{
-		ByFile:     make(map[string][]*ExtractedError),
-		ByCategory: GroupByCategory(errs),
-		ByWorkflow: GroupByWorkflow(errs),
-		Total:      len(errs),
-		Stats: ErrorStats{
-			ByCategory: make(map[ErrorCategory]int),
-			BySource:   make(map[string]int),
-		},
-	}
-
+	// PASS 1: Count occurrences for pre-allocation
+	fileCounts := make(map[string]int)
+	categoryCounts := make(map[ErrorCategory]int)
+	workflowCounts := make(map[string]int)
+	sourceCounts := make(map[string]int)
 	uniqueFiles := make(map[string]struct{})
 	uniqueRules := make(map[string]struct{})
 
+	for _, err := range errs {
+		// Count files
+		if err.File != "" {
+			file := err.File
+			if basePath != "" {
+				file = makeRelative(file, basePath)
+			}
+			fileCounts[file]++
+			uniqueFiles[file] = struct{}{}
+		}
+
+		// Count categories
+		category := err.Category
+		if category == "" {
+			category = CategoryUnknown
+		}
+		categoryCounts[category]++
+
+		// Count workflows
+		workflowKey := "no-workflow"
+		if err.WorkflowContext != nil && err.WorkflowContext.Job != "" {
+			workflowKey = err.WorkflowContext.Job
+		}
+		workflowCounts[workflowKey]++
+
+		// Count sources
+		if err.Source != "" {
+			sourceCounts[err.Source]++
+		}
+
+		// Count unique rules
+		if err.RuleID != "" {
+			uniqueRules[err.RuleID] = struct{}{}
+		}
+	}
+
+	// PASS 2: Pre-allocate and populate
+	grouped := &ComprehensiveErrorGroup{
+		ByFile:     make(map[string][]*ExtractedError, len(fileCounts)),
+		ByCategory: make(map[ErrorCategory][]*ExtractedError, len(categoryCounts)),
+		ByWorkflow: make(map[string][]*ExtractedError, len(workflowCounts)),
+		Total:      len(errs),
+		Stats: ErrorStats{
+			ByCategory: make(map[ErrorCategory]int, len(categoryCounts)),
+			BySource:   make(map[string]int, len(sourceCounts)),
+		},
+	}
+
+	// Pre-allocate slice capacities
+	for file, count := range fileCounts {
+		grouped.ByFile[file] = make([]*ExtractedError, 0, count)
+	}
+	for category, count := range categoryCounts {
+		grouped.ByCategory[category] = make([]*ExtractedError, 0, count)
+	}
+	for workflow, count := range workflowCounts {
+		grouped.ByWorkflow[workflow] = make([]*ExtractedError, 0, count)
+	}
+
+	// Now populate with pre-allocated slices
 	for _, err := range errs {
 		// Group by file
 		if err.File != "" {
@@ -205,10 +259,23 @@ func GroupComprehensive(errs []*ExtractedError, basePath string) *ComprehensiveE
 				file = makeRelative(file, basePath)
 			}
 			grouped.ByFile[file] = append(grouped.ByFile[file], err)
-			uniqueFiles[file] = struct{}{}
 		} else {
 			grouped.NoFile = append(grouped.NoFile, err)
 		}
+
+		// Group by category
+		category := err.Category
+		if category == "" {
+			category = CategoryUnknown
+		}
+		grouped.ByCategory[category] = append(grouped.ByCategory[category], err)
+
+		// Group by workflow
+		workflowKey := "no-workflow"
+		if err.WorkflowContext != nil && err.WorkflowContext.Job != "" {
+			workflowKey = err.WorkflowContext.Job
+		}
+		grouped.ByWorkflow[workflowKey] = append(grouped.ByWorkflow[workflowKey], err)
 
 		// Collect statistics
 		// Note: All errors should have severity set by the extractor via InferSeverity
@@ -219,18 +286,10 @@ func GroupComprehensive(errs []*ExtractedError, basePath string) *ComprehensiveE
 			grouped.Stats.WarningCount++
 		}
 
-		category := err.Category
-		if category == "" {
-			category = CategoryUnknown
-		}
 		grouped.Stats.ByCategory[category]++
 
 		if err.Source != "" {
 			grouped.Stats.BySource[err.Source]++
-		}
-
-		if err.RuleID != "" {
-			uniqueRules[err.RuleID] = struct{}{}
 		}
 	}
 

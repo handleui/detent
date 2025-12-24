@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	internalerrors "github.com/detent/cli/internal/errors"
@@ -19,8 +18,6 @@ import (
 )
 
 const (
-	actTimeout = 35 * time.Minute
-
 	// Channel buffer sizes
 	logChannelBufferSize = 100 // Buffer size for streaming act logs to TUI
 )
@@ -172,7 +169,7 @@ func runCheck(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create context with timeout
-	ctx, cancel := context.WithTimeout(cmd.Context(), actTimeout)
+	ctx, cancel := context.WithTimeout(cmd.Context(), runner.ActTimeout)
 	defer cancel()
 
 	// Create runner

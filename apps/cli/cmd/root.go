@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/detent/cli/internal/runner"
 	"github.com/detent/cli/internal/signal"
 	"github.com/spf13/cobra"
 )
@@ -50,7 +51,7 @@ func init() {
 	rootCmd.AddCommand(injectCmd)
 
 	// Persistent flags available to all commands
-	rootCmd.PersistentFlags().StringVarP(&workflowsDir, "workflows", "w", ".github/workflows", "workflows directory path")
+	rootCmd.PersistentFlags().StringVarP(&workflowsDir, "workflows", "w", runner.WorkflowsDir, "workflows directory path")
 	rootCmd.PersistentFlags().StringVar(&workflowFile, "workflow", "", "specific workflow file (e.g., ci.yml)")
 
 	rootCmd.SetHelpTemplate(fmt.Sprintf(`%s

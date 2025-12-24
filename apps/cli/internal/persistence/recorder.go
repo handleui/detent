@@ -64,6 +64,61 @@ func NewRecorder(repoRoot, workflowName, commitSHA, execMode string, isDirty boo
 	}, nil
 }
 
+// RecordFindings records multiple findings in a single transaction for better performance
+func (r *Recorder) RecordFindings(findings []*errors.ExtractedError) error {
+	if len(findings) == 0 {
+		return nil
+	}
+
+	// Build finding records for all findings
+	findingRecords := make([]*FindingRecord, 0, len(findings))
+	for _, err := range findings {
+		finding := &FindingRecord{
+			Timestamp:  time.Now(),
+			RunID:      r.runID,
+			FilePath:   err.File,
+			Message:    err.Message,
+			Line:       err.Line,
+			Column:     err.Column,
+			Severity:   err.Severity,
+			StackTrace: err.StackTrace,
+			RuleID:     err.RuleID,
+			Category:   string(err.Category),
+			Source:     err.Source,
+			Raw:        err.Raw,
+		}
+
+		// Add workflow context if available
+		if err.WorkflowContext != nil {
+			finding.WorkflowJob = err.WorkflowContext.Job
+			finding.WorkflowStep = err.WorkflowContext.Step
+		}
+
+		findingRecords = append(findingRecords, finding)
+	}
+
+	// Write all findings in a single transaction
+	if err := r.sqlite.RecordFindings(findingRecords); err != nil {
+		return fmt.Errorf("failed to record findings: %w", err)
+	}
+
+	// Update in-memory tracking after successful batch write
+	for _, err := range findings {
+		r.errors = append(r.errors, err)
+
+		// Track file-level counts
+		if err.File != "" {
+			if err.Severity == "error" {
+				r.errorCounts[err.File]++
+			} else {
+				r.warningCounts[err.File]++
+			}
+		}
+	}
+
+	return nil
+}
+
 // RecordFinding logs a single finding to JSONL and tracks it in memory
 func (r *Recorder) RecordFinding(err *errors.ExtractedError) error {
 	// Build finding record for SQLite database

@@ -262,6 +262,22 @@ func (w *SQLiteWriter) RecordRun(runID, workflowName, commitSHA, executionMode s
 	return nil
 }
 
+// RecordFindings adds multiple findings in a single batch operation
+func (w *SQLiteWriter) RecordFindings(findings []*FindingRecord) error {
+	if len(findings) == 0 {
+		return nil
+	}
+
+	w.batchMutex.Lock()
+	defer w.batchMutex.Unlock()
+
+	// Add all findings to the batch
+	w.batch = append(w.batch, findings...)
+
+	// Flush the entire batch immediately for consistency
+	return w.flushBatch()
+}
+
 // RecordError adds an error to the batch and flushes when batch size is reached
 func (w *SQLiteWriter) RecordError(finding *FindingRecord) error {
 	w.batchMutex.Lock()

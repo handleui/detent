@@ -2,11 +2,15 @@ package runner
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 )
 
 var validEventPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+var validUUIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 // RunConfig configures a workflow execution run.
 // This is the high-level configuration that orchestrates the entire check workflow,
@@ -48,6 +52,38 @@ func (c *RunConfig) Validate() error {
 		return fmt.Errorf("WorkflowPath is required")
 	}
 
+	if c.RunID == "" {
+		return fmt.Errorf("RunID is required")
+	}
+	if !validUUIDPattern.MatchString(c.RunID) {
+		return fmt.Errorf("invalid RunID format: must be a valid UUID v4")
+	}
+
+	// Validate WorkflowPath doesn't escape RepoRoot
+	absRepo, err := filepath.Abs(c.RepoRoot)
+	if err != nil {
+		return fmt.Errorf("resolving RepoRoot: %w", err)
+	}
+
+	absWorkflow, err := filepath.Abs(c.WorkflowPath)
+	if err != nil {
+		return fmt.Errorf("resolving WorkflowPath: %w", err)
+	}
+
+	relPath, err := filepath.Rel(absRepo, absWorkflow)
+	if err != nil || strings.HasPrefix(relPath, "..") {
+		return fmt.Errorf("WorkflowPath must be within RepoRoot")
+	}
+
+	// Check if path exists and is not a symlink
+	fileInfo, err := os.Lstat(absWorkflow)
+	if err != nil {
+		// Path doesn't exist yet - that's ok, PrepareWorkflows will handle it
+		// But we still validated it's within RepoRoot
+	} else if fileInfo.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("WorkflowPath cannot be a symlink")
+	}
+
 	if c.Event == "" {
 		c.Event = "push" // Default to push event
 	}
@@ -55,10 +91,6 @@ func (c *RunConfig) Validate() error {
 	// Validate event name format
 	if !validEventPattern.MatchString(c.Event) {
 		return fmt.Errorf("invalid event name %q: must contain only alphanumeric, underscore, or hyphen", c.Event)
-	}
-
-	if c.RunID == "" {
-		return fmt.Errorf("RunID is required")
 	}
 
 	return nil
