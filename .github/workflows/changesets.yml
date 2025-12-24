@@ -10,10 +10,11 @@ concurrency: ${{ github.workflow }}-${{ github.ref }}
 permissions:
   contents: write
   pull-requests: write
+  id-token: write
 
 jobs:
-  version:
-    name: Version Packages
+  release:
+    name: Release
     runs-on: ubuntu-latest
 
     steps:
@@ -25,43 +26,69 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+          cache-dependency-path: apps/cli/go.sum
 
       - name: Install dependencies
         run: npm install
 
-      - name: Create Release Pull Request or Create Tags
+      - name: Create Release Pull Request or Publish
         id: changesets
         uses: changesets/action@v1
         with:
           version: npm run version
-          commit: 'chore: version packages'
-          title: 'chore: version packages'
+          commit: "chore: version packages"
+          title: "chore: version packages"
+          createGithubReleases: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Create git tags
-        if: steps.changesets.outputs.hasChangesets == 'false'
+      - name: Add labels to changesets PR
+        if: steps.changesets.outputs.pullRequestNumber != ''
+        run: gh pr edit ${{ steps.changesets.outputs.pullRequestNumber }} --add-label "release"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and Publish to npm
+        if: steps.changesets.outputs.hasChangesets == 'false' && steps.changesets.outputs.pullRequestNumber == ''
+        working-directory: apps/cli
         run: |
-          # Get all package.json files in the workspace
-          PACKAGES=$(find apps packages -name "package.json" -not -path "*/node_modules/*")
+          echo "Building Go binaries for all platforms..."
 
-          for pkg in $PACKAGES; do
-            PKG_NAME=$(node -p "require('./$pkg').name")
-            PKG_VERSION=$(node -p "require('./$pkg').version")
+          VERSION=$(node -p "require('./package.json').version")
 
-            # Only create tags for @detent/cli (the main publishable package)
-            if [ "$PKG_NAME" = "@detent/cli" ]; then
-              TAG_NAME="v${PKG_VERSION}"
+          # Prepare release directory
+          npm run prepare-release
 
-              # Check if tag already exists
-              if git rev-parse "$TAG_NAME" >/dev/null 2>&1; then
-                echo "Tag $TAG_NAME already exists, skipping"
-              else
-                echo "Creating tag $TAG_NAME for $PKG_NAME"
-                git tag "$TAG_NAME"
-                git push origin "$TAG_NAME"
-                echo "Created and pushed tag: $TAG_NAME"
-              fi
+          # Build for all platforms
+          platforms=("linux/amd64" "darwin/arm64" "windows/amd64")
+
+          for platform in "${platforms[@]}"; do
+            GOOS="${platform%/*}"
+            GOARCH="${platform#*/}"
+            OUTPUT="bin/dt-${GOOS}-${GOARCH}"
+
+            if [ "$GOOS" = "windows" ]; then
+              OUTPUT="${OUTPUT}.exe"
             fi
+
+            echo "Building for $GOOS/$GOARCH..."
+            CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH go build \
+              -trimpath \
+              -ldflags "-s -w -X github.com/detent/cli/cmd.Version=$VERSION" \
+              -o "$OUTPUT"
+
+            ls -lh "$OUTPUT"
           done
+
+          echo "Publishing to npm with provenance..."
+          npm publish --provenance --access public
+
+          echo "Successfully published @detent/cli@$VERSION"
