@@ -34,8 +34,8 @@ func CleanupOrphanedWorktrees(ctx context.Context, repoRoot string) (int, error)
 // PruneWorktreeMetadata runs 'git worktree prune' to clean up stale worktree metadata.
 func PruneWorktreeMetadata(ctx context.Context, repoRoot string) error {
 	// #nosec G204 - repoRoot is validated before this call
-	cmd := exec.CommandContext(ctx, "git", "-C", repoRoot, "worktree", "prune")
-	cmd.Env = append(os.Environ(), secureGitEnv()...)
+	cmd := exec.CommandContext(ctx, "git", "-c", "core.hooksPath=/dev/null", "-C", repoRoot, "worktree", "prune")
+	cmd.Env = safeGitEnv()
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("pruning worktree metadata: %w", err)
 	}
@@ -43,6 +43,8 @@ func PruneWorktreeMetadata(ctx context.Context, repoRoot string) error {
 }
 
 // cleanOrphanedTempDirs finds and removes orphaned detent worktree directories in the temp folder.
+// SECURITY: Uses Lstat to detect symlinks and refuses to follow them, preventing TOCTOU attacks
+// where an attacker replaces a directory with a symlink between check and removal.
 func cleanOrphanedTempDirs() (int, error) {
 	pattern := filepath.Join(os.TempDir(), worktreeDirPrefix+"*")
 	matches, err := filepath.Glob(pattern)
@@ -52,13 +54,31 @@ func cleanOrphanedTempDirs() (int, error) {
 
 	removed := 0
 	for _, match := range matches {
-		info, err := os.Stat(match)
+		// SECURITY: Use Lstat to detect symlinks without following them
+		info, err := os.Lstat(match)
 		if err != nil {
 			continue // Already gone or inaccessible
 		}
 
+		// SECURITY: Skip symlinks - never follow them to prevent escape attacks
+		if info.Mode()&os.ModeSymlink != 0 {
+			continue
+		}
+
+		// SECURITY: Must be a directory
+		if !info.IsDir() {
+			continue
+		}
+
 		// Only remove directories older than the threshold
 		if time.Since(info.ModTime()) < orphanAgeThreshold {
+			continue
+		}
+
+		// SECURITY: Re-check it's still a directory before removal
+		// This is defense-in-depth against race between Lstat and RemoveAll
+		recheck, err := os.Lstat(match)
+		if err != nil || recheck.Mode()&os.ModeSymlink != 0 || !recheck.IsDir() {
 			continue
 		}
 

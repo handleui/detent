@@ -2,6 +2,7 @@ package git
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -205,5 +206,112 @@ func TestValidateNoEscapingSymlinks_SkipsGitDir(t *testing.T) {
 	err := ValidateNoEscapingSymlinks(ctx, repoPath)
 	if err != nil {
 		t.Errorf("ValidateNoEscapingSymlinks() should skip .git directory, got: %v", err)
+	}
+}
+
+// TestValidateNoEscapingSymlinks_DepthLimit tests validation fails when depth limit exceeded
+func TestValidateNoEscapingSymlinks_DepthLimit(t *testing.T) {
+	repoPath, cleanup := setupGitRepo(t)
+	defer cleanup()
+
+	// Create a deeply nested directory structure (exceeding maxSymlinkDepth = 100)
+	deepPath := repoPath
+	for i := 0; i <= 101; i++ {
+		deepPath = filepath.Join(deepPath, "dir")
+	}
+	if err := os.MkdirAll(deepPath, 0o755); err != nil {
+		t.Fatalf("Failed to create deep directory: %v", err)
+	}
+
+	// Create a file in the deep directory
+	testFile := filepath.Join(deepPath, "test.txt")
+	if err := os.WriteFile(testFile, []byte("test"), 0o644); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	ctx := context.Background()
+	err := ValidateNoEscapingSymlinks(ctx, repoPath)
+	if err == nil {
+		t.Error("ValidateNoEscapingSymlinks() should fail when depth limit exceeded")
+	}
+
+	if !strings.Contains(err.Error(), "symlink validation limit exceeded") {
+		t.Errorf("Error should mention 'symlink validation limit exceeded', got: %v", err)
+	}
+
+	if !strings.Contains(err.Error(), "maximum traversal depth") {
+		t.Errorf("Error should mention 'maximum traversal depth', got: %v", err)
+	}
+}
+
+// TestValidateNoEscapingSymlinks_SymlinkCountLimit tests validation fails when symlink count exceeded
+func TestValidateNoEscapingSymlinks_SymlinkCountLimit(t *testing.T) {
+	repoPath, cleanup := setupGitRepo(t)
+	defer cleanup()
+
+	// Create more symlinks than maxSymlinksChecked (10000)
+	// Create 10001 symlinks to exceed the limit
+	targetFile := filepath.Join(repoPath, "target.txt")
+	if err := os.WriteFile(targetFile, []byte("target"), 0o644); err != nil {
+		t.Fatalf("Failed to create target file: %v", err)
+	}
+
+	for i := 0; i <= 10001; i++ {
+		linkPath := filepath.Join(repoPath, "links", filepath.Join("dir", strings.Repeat("0", 10-len(fmt.Sprintf("%d", i))))+fmt.Sprintf("%d.txt", i))
+		linkDir := filepath.Dir(linkPath)
+		if err := os.MkdirAll(linkDir, 0o755); err != nil {
+			t.Fatalf("Failed to create link directory: %v", err)
+		}
+		if err := os.Symlink(targetFile, linkPath); err != nil {
+			t.Fatalf("Failed to create symlink %d: %v", i, err)
+		}
+	}
+
+	ctx := context.Background()
+	err := ValidateNoEscapingSymlinks(ctx, repoPath)
+	if err == nil {
+		t.Error("ValidateNoEscapingSymlinks() should fail when symlink count limit exceeded")
+	}
+
+	if !strings.Contains(err.Error(), "symlink validation limit exceeded") {
+		t.Errorf("Error should mention 'symlink validation limit exceeded', got: %v", err)
+	}
+
+	if !strings.Contains(err.Error(), "maximum symlink count") {
+		t.Errorf("Error should mention 'maximum symlink count', got: %v", err)
+	}
+}
+
+// TestValidateNoEscapingSymlinks_WithinLimits tests validation passes when within limits
+func TestValidateNoEscapingSymlinks_WithinLimits(t *testing.T) {
+	repoPath, cleanup := setupGitRepo(t)
+	defer cleanup()
+
+	// Create a moderately deep directory structure (depth = 50)
+	deepPath := repoPath
+	for i := 0; i < 50; i++ {
+		deepPath = filepath.Join(deepPath, "dir")
+	}
+	if err := os.MkdirAll(deepPath, 0o755); err != nil {
+		t.Fatalf("Failed to create deep directory: %v", err)
+	}
+
+	// Create 100 internal symlinks (well under the limit)
+	targetFile := filepath.Join(repoPath, "target.txt")
+	if err := os.WriteFile(targetFile, []byte("target"), 0o644); err != nil {
+		t.Fatalf("Failed to create target file: %v", err)
+	}
+
+	for i := 0; i < 100; i++ {
+		linkPath := filepath.Join(deepPath, fmt.Sprintf("link%d.txt", i))
+		if err := os.Symlink(targetFile, linkPath); err != nil {
+			t.Fatalf("Failed to create symlink %d: %v", i, err)
+		}
+	}
+
+	ctx := context.Background()
+	err := ValidateNoEscapingSymlinks(ctx, repoPath)
+	if err != nil {
+		t.Errorf("ValidateNoEscapingSymlinks() should pass when within limits, got: %v", err)
 	}
 }

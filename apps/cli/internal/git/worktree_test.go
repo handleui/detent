@@ -270,9 +270,10 @@ func TestRemoveWorktree_NonexistentPath(t *testing.T) {
 	defer cleanup()
 
 	nonexistentPath := filepath.Join(os.TempDir(), "detent-nonexistent-xyz")
+	ctx := context.Background()
 
 	// Should not panic or fail fatally
-	err := removeWorktree(repoPath, nonexistentPath)
+	err := removeWorktree(ctx, repoPath, nonexistentPath)
 	if err == nil {
 		// Git might succeed (no-op) or fail - either is acceptable
 		t.Log("removeWorktree succeeded on nonexistent path (expected)")

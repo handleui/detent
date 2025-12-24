@@ -6,6 +6,12 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
+)
+
+const (
+	// cleanupTimeout is the maximum time allowed for cleanup operations
+	cleanupTimeout = 30 * time.Second
 )
 
 // WorktreeInfo contains metadata about the created worktree
@@ -21,9 +27,9 @@ type WorktreeInfo struct {
 // Note: This requires a clean worktree. Call ValidateCleanWorktree() before this.
 func PrepareWorktree(ctx context.Context, repoRoot, runID string) (*WorktreeInfo, func(), error) {
 	// 1. Get current commit SHA from repoRoot
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
+	cmd := exec.CommandContext(ctx, "git", "-c", "core.hooksPath=/dev/null", "rev-parse", "HEAD")
 	cmd.Dir = repoRoot
-	cmd.Env = append(os.Environ(), secureGitEnv()...)
+	cmd.Env = safeGitEnv()
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, nil, fmt.Errorf("getting current commit SHA: %w", err)
@@ -46,7 +52,7 @@ func PrepareWorktree(ctx context.Context, repoRoot, runID string) (*WorktreeInfo
 	// 3. Create worktree in detached HEAD state
 	if err := createWorktree(ctx, repoRoot, worktreeDir, commitSHA); err != nil {
 		_ = os.RemoveAll(worktreeDir)
-		pruneWorktrees(repoRoot)
+		pruneWorktrees(ctx, repoRoot)
 		return nil, nil, fmt.Errorf("creating worktree: %w", err)
 	}
 
@@ -55,9 +61,11 @@ func PrepareWorktree(ctx context.Context, repoRoot, runID string) (*WorktreeInfo
 		CommitSHA: commitSHA,
 	}
 
-	// 4. Return cleanup function
+	// 4. Return cleanup function with its own timeout context
 	cleanup := func() {
-		if err := removeWorktree(repoRoot, worktreeDir); err != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+		defer cancel()
+		if err := removeWorktree(cleanupCtx, repoRoot, worktreeDir); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to remove worktree at %s: %v\n", worktreeDir, err)
 		}
 	}
@@ -65,20 +73,72 @@ func PrepareWorktree(ctx context.Context, repoRoot, runID string) (*WorktreeInfo
 	return worktreeInfo, cleanup, nil
 }
 
-// secureGitEnv returns environment variables that harden git against config injection attacks.
-func secureGitEnv() []string {
-	return []string{
-		"GIT_CONFIG_NOSYSTEM=1",  // Ignore /etc/gitconfig
-		"GIT_CONFIG_NOGLOBAL=1",  // Ignore ~/.gitconfig
-		"GIT_TERMINAL_PROMPT=0",  // Never prompt for credentials
+// safeGitEnv returns a minimal, safe environment for executing git commands.
+// Uses an allowlist approach to prevent inheritance of dangerous GIT_* variables like:
+// - GIT_OBJECT_DIRECTORY, GIT_ALTERNATE_OBJECT_DIRECTORIES (arbitrary file access)
+// - GIT_AUTHOR_NAME/EMAIL, GIT_COMMITTER_NAME/EMAIL (identity manipulation)
+// - GIT_WORK_TREE, GIT_DIR (repository path manipulation)
+// - GIT_INDEX_FILE (index manipulation)
+// - etc.
+//
+// This function:
+// 1. Starts with ONLY essential system variables (PATH, HOME, USER, TMPDIR, etc.)
+// 2. Adds secure git overrides to harden against config injection
+// 3. Does NOT inherit ANY GIT_* variables from parent environment
+func safeGitEnv() []string {
+	// Essential system environment variables (allowlist)
+	essentialVars := []string{
+		"PATH",    // Required to find git and other executables
+		"HOME",    // Required for git to find default config locations
+		"USER",    // Used by git for default author/committer info
+		"TMPDIR",  // Temp directory location
+		"TEMP",    // Windows temp directory
+		"TMP",     // Alternative temp directory
+		"LANG",    // Locale settings for proper output encoding
+		"LC_ALL",  // Locale override
+		"LC_CTYPE", // Character type locale
+		"SHELL",   // Shell for git pager and commands
+		"TERM",    // Terminal type
 	}
+
+	env := make([]string, 0, len(essentialVars)+8)
+
+	// Add essential variables from current environment (if set)
+	for _, key := range essentialVars {
+		if value, exists := os.LookupEnv(key); exists {
+			env = append(env, fmt.Sprintf("%s=%s", key, value))
+		}
+	}
+
+	// Add secure git overrides
+	env = append(env,
+		// Ignore system and global git configuration
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_NOGLOBAL=1",
+
+		// Never prompt for credentials or input
+		"GIT_TERMINAL_PROMPT=0",
+
+		// Prevent SSH credential prompts and MITM attacks
+		"GIT_SSH_COMMAND=ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new",
+
+		// Disable credential/editor prompts with no-op executables
+		"GIT_ASKPASS=/bin/true",
+		"GIT_EDITOR=/bin/true",
+		"GIT_PAGER=cat",
+
+		// Ignore system gitattributes
+		"GIT_ATTR_NOSYSTEM=1",
+	)
+
+	return env
 }
 
 // createWorktree creates a new worktree at the specified path
 func createWorktree(ctx context.Context, repoRoot, worktreePath, commitSHA string) error {
-	cmd := exec.CommandContext(ctx, "git", "worktree", "add", "-d", worktreePath, commitSHA)
+	cmd := exec.CommandContext(ctx, "git", "-c", "core.hooksPath=/dev/null", "worktree", "add", "-d", worktreePath, commitSHA)
 	cmd.Dir = repoRoot
-	cmd.Env = append(os.Environ(), secureGitEnv()...)
+	cmd.Env = safeGitEnv()
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -88,11 +148,12 @@ func createWorktree(ctx context.Context, repoRoot, worktreePath, commitSHA strin
 	return nil
 }
 
-// removeWorktree removes the worktree using git worktree remove --force
-func removeWorktree(repoRoot, worktreePath string) error {
-	cmd := exec.Command("git", "worktree", "remove", "--force", worktreePath)
+// removeWorktree removes the worktree using git worktree remove --force.
+// Uses context for cancellation and timeout support.
+func removeWorktree(ctx context.Context, repoRoot, worktreePath string) error {
+	cmd := exec.CommandContext(ctx, "git", "-c", "core.hooksPath=/dev/null", "worktree", "remove", "--force", worktreePath)
 	cmd.Dir = repoRoot
-	cmd.Env = append(os.Environ(), secureGitEnv()...)
+	cmd.Env = safeGitEnv()
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -103,8 +164,13 @@ func removeWorktree(repoRoot, worktreePath string) error {
 }
 
 // pruneWorktrees cleans up orphaned git worktree metadata.
-func pruneWorktrees(repoRoot string) {
-	cmd := exec.Command("git", "-C", repoRoot, "worktree", "prune")
-	cmd.Env = append(os.Environ(), secureGitEnv()...)
+// Uses context for cancellation and applies a default timeout.
+func pruneWorktrees(ctx context.Context, repoRoot string) {
+	// Apply timeout if context doesn't already have one
+	ctx, cancel := context.WithTimeout(ctx, cleanupTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", "-c", "core.hooksPath=/dev/null", "-C", repoRoot, "worktree", "prune")
+	cmd.Env = safeGitEnv()
 	_ = cmd.Run() // Best effort
 }
