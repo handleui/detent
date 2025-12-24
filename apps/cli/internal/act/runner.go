@@ -10,18 +10,10 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
-	"syscall"
 	"time"
 )
 
 const gracefulShutdownTimeout = 5 * time.Second
-
-// killProcessGroup sends a signal to an entire process group.
-// Using negative PID sends the signal to all processes in the group.
-// This ensures child processes (spawned by act/Docker) are also terminated.
-func killProcessGroup(pgid int, sig syscall.Signal) error {
-	return syscall.Kill(-pgid, sig)
-}
 
 // RunConfig configures the act execution.
 // ActBinary should only be set by trusted code paths (defaults to "act").
@@ -84,8 +76,8 @@ func Run(ctx context.Context, cfg *RunConfig) (*RunResult, error) {
 	cmd := exec.CommandContext(ctx, actBinary, args...) //nolint:gosec // ActBinary is trusted; defaults to "act"
 	cmd.Dir = cfg.WorkDir
 
-	// Set up process group to ensure graceful shutdown
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// Set up process group to ensure graceful shutdown (platform-specific)
+	setupProcessGroup(cmd)
 
 	var stdout, stderr bytes.Buffer
 
@@ -132,14 +124,8 @@ func Run(ctx context.Context, cfg *RunConfig) (*RunResult, error) {
 	case <-ctx.Done():
 		// Context cancelled - attempt graceful shutdown of entire process group
 		if cmd.Process != nil {
-			// Try SIGTERM to entire process group first for graceful shutdown
-			// This ensures child processes (spawned by act/Docker) are also signaled
-			if pgid, pgidErr := syscall.Getpgid(cmd.Process.Pid); pgidErr == nil {
-				_ = killProcessGroup(pgid, syscall.SIGTERM)
-			} else {
-				// Fallback to single process if we can't get process group
-				_ = cmd.Process.Signal(syscall.SIGTERM)
-			}
+			// Try graceful termination first (SIGTERM on Unix, Kill on Windows)
+			terminateProcess(cmd)
 
 			// Wait for graceful shutdown
 			gracefulTimeout := time.After(gracefulShutdownTimeout)
@@ -147,11 +133,8 @@ func Run(ctx context.Context, cfg *RunConfig) (*RunResult, error) {
 			case err = <-done:
 				// Gracefully exited
 			case <-gracefulTimeout:
-				// Force kill entire process group if still running
-				if pgid, pgidErr := syscall.Getpgid(cmd.Process.Pid); pgidErr == nil {
-					_ = killProcessGroup(pgid, syscall.SIGKILL)
-				}
-				_ = cmd.Process.Kill() // Also kill main process directly as fallback
+				// Force kill if still running
+				forceKillProcess(cmd)
 				err = <-done
 			}
 		} else {
