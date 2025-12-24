@@ -147,6 +147,10 @@ func (r *CheckRunner) PrepareWithTUI(ctx context.Context) error {
 // Note: A non-zero exit code from act is not treated as an error - it's captured
 // in the result for analysis.
 func (r *CheckRunner) Run(ctx context.Context) error {
+	if err := git.ValidateWorktreeInitialized(r.worktreeInfo); err != nil {
+		return err
+	}
+
 	r.startTime = time.Now()
 
 	// Configure act execution (matching runWithoutTUI logic from cmd/check.go:476-490)
@@ -188,6 +192,10 @@ func (r *CheckRunner) Run(ctx context.Context) error {
 // Note: A non-zero exit code from act is not treated as an error - it's captured
 // in the result and sent via DoneMsg.
 func (r *CheckRunner) RunWithTUI(ctx context.Context, logChan chan string, program *tea.Program) (bool, error) {
+	if err := git.ValidateWorktreeInitialized(r.worktreeInfo); err != nil {
+		return false, err
+	}
+
 	// NOTE: Keep context wrapper - needed for proper cancellation
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -419,6 +427,8 @@ func (r *CheckRunner) GetResult() *RunResult {
 // When logChan is nil, StreamOutput is enabled (for non-TUI mode).
 // When logChan is provided, output is streamed to the channel (for TUI mode).
 func (r *CheckRunner) buildActConfig(logChan chan string) *act.RunConfig {
+	git.RequireWorktreeInitialized(r.worktreeInfo)
+
 	return &act.RunConfig{
 		WorkflowPath: r.tmpDir,
 		Event:        r.config.Event,

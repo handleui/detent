@@ -42,7 +42,7 @@ func FormatText(w io.Writer, grouped *errors.GroupedErrors) {
 		} else {
 			_, _ = fmt.Fprintf(w, "%s> %s✖ %s %s%s\n", colorBold, colorRed, problemText, detailText, colorReset)
 		}
-		_, _ = fmt.Fprintf(w, "%s  Run 'detent fix' to auto-fix or fix manually and re-run%s\n\n", colorGray, colorReset)
+		_, _ = fmt.Fprintf(w, "%s  Run 'detent heal' to auto-fix or fix manually and re-run%s\n\n", colorGray, colorReset)
 	}
 
 	if len(grouped.ByFile) > 0 {
