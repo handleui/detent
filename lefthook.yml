@@ -1,7 +1,6 @@
 pre-commit:
   skip:
-    - ref: $CI
-      reason: "Skipping hooks in CI - checks run in CI workflow"
+    - run: test "${CI}" = "true"
   parallel: true
   jobs:
     - name: biome
