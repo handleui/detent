@@ -70,6 +70,7 @@ type HealRecord struct {
 	ErrorID            string             `json:"error_id"`
 	RunID              string             `json:"run_id,omitempty"`
 	DiffContent        string             `json:"diff_content"`
+	DiffContentHash    string             `json:"diff_content_hash,omitempty"`
 	FilePath           string             `json:"file_path,omitempty"`
 	ModelID            string             `json:"model_id,omitempty"`
 	PromptHash         string             `json:"prompt_hash,omitempty"`
@@ -86,4 +87,18 @@ type HealRecord struct {
 	AttemptNumber      int                `json:"attempt_number"`
 	ParentHealID       *string            `json:"parent_heal_id,omitempty"`
 	FailureReason      *string            `json:"failure_reason,omitempty"`
+}
+
+// ErrorLocation tracks where an error appears across runs
+type ErrorLocation struct {
+	LocationID   string    `json:"location_id"`
+	ErrorID      string    `json:"error_id"`
+	RunID        string    `json:"run_id"`
+	FilePath     string    `json:"file_path"`
+	LineNumber   int       `json:"line_number"`
+	ColumnNumber int       `json:"column_number"`
+	FileHash     string    `json:"file_hash,omitempty"`
+	FirstSeenAt  time.Time `json:"first_seen_at"`
+	LastSeenAt   time.Time `json:"last_seen_at"`
+	SeenCount    int       `json:"seen_count"`
 }
