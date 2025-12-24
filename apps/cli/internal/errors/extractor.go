@@ -36,9 +36,10 @@ type Extractor struct {
 	lastRustError      *ExtractedError  // Tracks the last Rust error (for multi-line error format)
 
 	// Stack trace accumulation
-	inStackTrace    bool            // Are we currently reading a stack trace?
-	stackTraceLines []string        // Accumulate stack trace lines
-	stackTraceOwner *ExtractedError // Which error owns this stack trace
+	inStackTrace      bool            // Are we currently reading a stack trace?
+	stackTraceBuilder strings.Builder // Accumulate stack trace lines
+	stackTraceLines   int             // Count of stack trace lines
+	stackTraceOwner   *ExtractedError // Which error owns this stack trace
 
 	// Message builders for language-specific message construction
 	pythonBuilder *messages.PythonMessageBuilder
@@ -66,7 +67,7 @@ type errKey struct {
 // file locations. Severity inference is done as a separate post-processing step.
 func (e *Extractor) Extract(output string) []*ExtractedError {
 	var extracted []*ExtractedError
-	seen := make(map[errKey]struct{})
+	seen := make(map[errKey]struct{}, 256)
 
 	scanner := bufio.NewScanner(strings.NewReader(output))
 	for scanner.Scan() {
@@ -145,7 +146,8 @@ func parseLineCol(lineStr, colStr string) (line, col int, err error) {
 // startStackTrace begins accumulating stack trace lines for an error
 func (e *Extractor) startStackTrace(owner *ExtractedError) {
 	e.inStackTrace = true
-	e.stackTraceLines = make([]string, 0, 100)
+	e.stackTraceBuilder.Reset()
+	e.stackTraceLines = 0
 	e.stackTraceOwner = owner
 }
 
@@ -156,24 +158,29 @@ func (e *Extractor) addStackTraceLine(line string) {
 	}
 
 	// Check if we've reached the maximum stack trace lines
-	if len(e.stackTraceLines) > maxStackTraceLines {
+	if e.stackTraceLines > maxStackTraceLines {
 		// Add truncation message only once (when just exceeded limit)
-		if len(e.stackTraceLines) == maxStackTraceLines+1 {
-			e.stackTraceLines = append(e.stackTraceLines, "... (stack trace truncated)")
+		if e.stackTraceLines == maxStackTraceLines+1 {
+			e.stackTraceBuilder.WriteString("... (stack trace truncated)\n")
 		}
 		return
 	}
 
-	e.stackTraceLines = append(e.stackTraceLines, line)
+	if e.stackTraceLines > 0 {
+		e.stackTraceBuilder.WriteByte('\n')
+	}
+	e.stackTraceBuilder.WriteString(line)
+	e.stackTraceLines++
 }
 
 // finalizeStackTrace attaches the accumulated stack trace to the owner and resets state
 func (e *Extractor) finalizeStackTrace() {
-	if e.inStackTrace && e.stackTraceOwner != nil && len(e.stackTraceLines) > 0 {
-		e.stackTraceOwner.StackTrace = strings.Join(e.stackTraceLines, "\n")
+	if e.inStackTrace && e.stackTraceOwner != nil && e.stackTraceLines > 0 {
+		e.stackTraceOwner.StackTrace = e.stackTraceBuilder.String()
 	}
 	e.inStackTrace = false
-	e.stackTraceLines = nil
+	e.stackTraceBuilder.Reset()
+	e.stackTraceLines = 0
 	e.stackTraceOwner = nil
 }
 

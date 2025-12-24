@@ -54,9 +54,10 @@ type ExtractedError struct {
 
 // GroupedErrors groups errors by file path for organized output
 type GroupedErrors struct {
-	ByFile map[string][]*ExtractedError `json:"by_file"`
-	NoFile []*ExtractedError            `json:"no_file"`
-	Total  int                          `json:"total"`
+	ByFile    map[string][]*ExtractedError `json:"by_file"`
+	NoFile    []*ExtractedError            `json:"no_file"`
+	Total     int                          `json:"total"`
+	hasErrors bool                         // Track if any errors (not warnings) exist
 }
 
 // GroupByFile organizes extracted errors by their file paths
@@ -73,6 +74,11 @@ func GroupByFileWithBase(errs []*ExtractedError, basePath string) *GroupedErrors
 	}
 
 	for _, err := range errs {
+		// Track if we encounter any actual errors (not warnings)
+		if err.Severity == "error" {
+			grouped.hasErrors = true
+		}
+
 		if err.File != "" {
 			file := err.File
 			if basePath != "" {
@@ -85,6 +91,12 @@ func GroupByFileWithBase(errs []*ExtractedError, basePath string) *GroupedErrors
 	}
 
 	return grouped
+}
+
+// HasErrors returns true if the grouped errors contain any errors (not warnings).
+// This is tracked during grouping in O(n) time to avoid expensive nested loops.
+func (g *GroupedErrors) HasErrors() bool {
+	return g.hasErrors
 }
 
 // makeRelative converts an absolute path to relative if it starts with basePath

@@ -40,3 +40,12 @@ func InferSeverity(err *ExtractedError) string {
 		return "warning"
 	}
 }
+
+// ApplySeverity infers severity for all extracted errors based on their category.
+// This is done as explicit post-processing after extraction to maintain separation
+// of concerns: extraction is pure parsing, severity is business logic.
+func ApplySeverity(extractedErrors []*ExtractedError) {
+	for _, err := range extractedErrors {
+		err.Severity = InferSeverity(err)
+	}
+}

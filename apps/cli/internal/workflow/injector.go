@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/goccy/go-yaml"
+	"golang.org/x/sync/errgroup"
 )
 
 // InjectContinueOnError modifies a workflow to add continue-on-error: true to all jobs and steps.
@@ -137,27 +139,52 @@ func PrepareWorkflows(srcDir, specificWorkflow string) (tmpDir string, cleanup f
 
 	cleanup = func() { _ = os.RemoveAll(tmpDir) }
 
+	// Process workflows in parallel using errgroup
+	// Each workflow is independent, so parallel processing is safe
+	var g errgroup.Group
+	var mu sync.Mutex // Protects file writes to tmpDir
+
+	// Set a reasonable concurrency limit to avoid resource exhaustion
+	// This limits the number of concurrent workflow processing goroutines
+	g.SetLimit(10)
+
 	for _, wfPath := range workflows {
-		wf, err := ParseWorkflowFile(wfPath)
-		if err != nil {
-			cleanup()
-			return "", nil, fmt.Errorf("parsing %s: %w", wfPath, err)
-		}
+		wfPath := wfPath // Capture loop variable for goroutine
+		g.Go(func() error {
+			// Parse workflow file
+			wf, parseErr := ParseWorkflowFile(wfPath)
+			if parseErr != nil {
+				return fmt.Errorf("parsing %s: %w", wfPath, parseErr)
+			}
 
-		InjectContinueOnError(wf)
-		InjectTimeouts(wf)
+			// Apply modifications
+			InjectContinueOnError(wf)
+			InjectTimeouts(wf)
 
-		data, err := yaml.Marshal(wf)
-		if err != nil {
-			cleanup()
-			return "", nil, fmt.Errorf("marshaling %s: %w", wfPath, err)
-		}
+			// Marshal to YAML
+			data, marshalErr := yaml.Marshal(wf)
+			if marshalErr != nil {
+				return fmt.Errorf("marshaling %s: %w", wfPath, marshalErr)
+			}
 
-		filename := filepath.Base(wfPath)
-		if err := os.WriteFile(filepath.Join(tmpDir, filename), data, 0o600); err != nil {
-			cleanup()
-			return "", nil, fmt.Errorf("writing %s: %w", filename, err)
-		}
+			// Write to temp directory (mutex-protected to ensure thread-safe file writes)
+			filename := filepath.Base(wfPath)
+			mu.Lock()
+			writeErr := os.WriteFile(filepath.Join(tmpDir, filename), data, 0o600)
+			mu.Unlock()
+
+			if writeErr != nil {
+				return fmt.Errorf("writing %s: %w", filename, writeErr)
+			}
+
+			return nil
+		})
+	}
+
+	// Wait for all goroutines to complete and check for errors
+	if err := g.Wait(); err != nil {
+		cleanup()
+		return "", nil, err
 	}
 
 	return tmpDir, cleanup, nil

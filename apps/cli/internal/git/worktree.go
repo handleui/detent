@@ -7,7 +7,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+
+	"golang.org/x/sync/errgroup"
 )
 
 // WorktreeInfo contains metadata about the created worktree
@@ -150,41 +153,63 @@ func createWorktree(ctx context.Context, repoRoot, worktreePath, commitSHA strin
 	return nil
 }
 
-// copyDirtyFiles copies uncommitted changes from source repo to worktree
+// copyDirtyFiles copies uncommitted changes from source repo to worktree in parallel
 func copyDirtyFiles(repoRoot, worktreePath string, dirtyFiles []string) error {
-	for _, relPath := range dirtyFiles {
-		srcPath := filepath.Join(repoRoot, relPath)
-		dstPath := filepath.Join(worktreePath, relPath)
-
-		// Create destination directory if needed
-		dstDir := filepath.Dir(dstPath)
-		if err := os.MkdirAll(dstDir, 0o750); err != nil {
-			return fmt.Errorf("creating directory %s: %w", dstDir, err)
-		}
-
-		// Check if source exists and get its info
-		// #nosec G304 -- srcPath is derived from git status output and repoRoot, controlled by the application
-		srcInfo, err := os.Stat(srcPath)
-		if os.IsNotExist(err) {
-			// Source file deleted - remove from worktree too
-			_ = os.Remove(dstPath)
-			continue
-		} else if err != nil {
-			return fmt.Errorf("stat %s: %w", relPath, err)
-		}
-
-		// Skip directories - we only copy files
-		if srcInfo.IsDir() {
-			continue
-		}
-
-		// Copy file
-		if err := copyFile(srcPath, dstPath); err != nil {
-			return fmt.Errorf("copying %s: %w", relPath, err)
-		}
+	// Determine worker pool size: use number of CPUs, capped between 4-8
+	numWorkers := runtime.NumCPU()
+	if numWorkers < 4 {
+		numWorkers = 4
+	}
+	if numWorkers > 8 {
+		numWorkers = 8
 	}
 
-	return nil
+	// Create errgroup for coordinated goroutine execution
+	g := new(errgroup.Group)
+	g.SetLimit(numWorkers)
+
+	// Process each file in parallel
+	for _, relPath := range dirtyFiles {
+		// Capture loop variable for goroutine
+		relPath := relPath
+
+		g.Go(func() error {
+			srcPath := filepath.Join(repoRoot, relPath)
+			dstPath := filepath.Join(worktreePath, relPath)
+
+			// Create destination directory if needed
+			dstDir := filepath.Dir(dstPath)
+			if err := os.MkdirAll(dstDir, 0o750); err != nil {
+				return fmt.Errorf("creating directory %s: %w", dstDir, err)
+			}
+
+			// Check if source exists and get its info
+			// #nosec G304 -- srcPath is derived from git status output and repoRoot, controlled by the application
+			srcInfo, err := os.Stat(srcPath)
+			if os.IsNotExist(err) {
+				// Source file deleted - remove from worktree too
+				_ = os.Remove(dstPath)
+				return nil
+			} else if err != nil {
+				return fmt.Errorf("stat %s: %w", relPath, err)
+			}
+
+			// Skip directories - we only copy files
+			if srcInfo.IsDir() {
+				return nil
+			}
+
+			// Copy file
+			if err := copyFile(srcPath, dstPath); err != nil {
+				return fmt.Errorf("copying %s: %w", relPath, err)
+			}
+
+			return nil
+		})
+	}
+
+	// Wait for all goroutines to complete and return first error if any
+	return g.Wait()
 }
 
 // copyFile copies a single file from src to dst

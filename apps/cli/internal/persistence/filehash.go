@@ -12,18 +12,30 @@ import (
 
 // ComputeFileHash calculates the SHA256 hash of a file
 func ComputeFileHash(path string) (string, error) {
+	hash, _, err := ComputeFileHashWithInfo(path)
+	return hash, err
+}
+
+// ComputeFileHashWithInfo calculates the SHA256 hash of a file and returns file info
+func ComputeFileHashWithInfo(path string) (string, os.FileInfo, error) {
 	file, err := os.Open(path) // #nosec G304 - path is from user's repository, expected behavior
 	if err != nil {
-		return "", fmt.Errorf("failed to open file for hashing: %w", err)
+		return "", nil, fmt.Errorf("failed to open file for hashing: %w", err)
 	}
 	defer func() { _ = file.Close() }()
 
-	hash := sha256.New()
-	if _, err := io.Copy(hash, file); err != nil {
-		return "", fmt.Errorf("failed to compute hash: %w", err)
+	// Get file info while file is open
+	info, err := file.Stat()
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to stat file: %w", err)
 	}
 
-	return hex.EncodeToString(hash.Sum(nil)), nil
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", nil, fmt.Errorf("failed to compute hash: %w", err)
+	}
+
+	return hex.EncodeToString(hash.Sum(nil)), info, nil
 }
 
 // GetFileInfo retrieves file metadata (size, mod time)
@@ -38,14 +50,9 @@ func GetFileInfo(path string) (size, modTime int64, err error) {
 
 // BuildScannedFile creates a ScannedFile record with hash and metadata
 func BuildScannedFile(path string, errorCount, warningCount int) (*ScannedFile, error) {
-	hash, err := ComputeFileHash(path)
+	hash, info, err := ComputeFileHashWithInfo(path)
 	if err != nil {
 		return nil, err
-	}
-
-	info, err := os.Stat(path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to stat file: %w", err)
 	}
 
 	return &ScannedFile{

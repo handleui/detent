@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/detent/cli/internal/errors"
+	"github.com/detent/cli/internal/util"
 )
 
 // TestNewRecorder tests recorder creation
@@ -208,9 +209,9 @@ func TestGenerateUUID(t *testing.T) {
 	uuids := make(map[string]bool)
 
 	for i := 0; i < 100; i++ {
-		uuid, err := generateUUID()
+		uuid, err := util.GenerateUUID()
 		if err != nil {
-			t.Fatalf("generateUUID() failed: %v", err)
+			t.Fatalf("util.GenerateUUID() failed: %v", err)
 		}
 
 		// Verify format (8-4-4-4-12)

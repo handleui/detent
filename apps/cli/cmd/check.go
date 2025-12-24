@@ -2,68 +2,38 @@ package cmd
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
-	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/detent/cli/internal/act"
-	"github.com/detent/cli/internal/commands"
-	"github.com/detent/cli/internal/docker"
 	internalerrors "github.com/detent/cli/internal/errors"
 	"github.com/detent/cli/internal/git"
 	"github.com/detent/cli/internal/output"
 	"github.com/detent/cli/internal/persistence"
+	"github.com/detent/cli/internal/preflight"
 	"github.com/detent/cli/internal/signal"
 	"github.com/detent/cli/internal/tui"
+	"github.com/detent/cli/internal/util"
 	"github.com/detent/cli/internal/workflow"
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 )
 
 const (
-	actTimeout               = 35 * time.Minute
-	preflightVisualDelay     = 200 * time.Millisecond
-	preflightTransitionDelay = 100 * time.Millisecond
-	preflightCompletionPause = 300 * time.Millisecond
+	actTimeout = 35 * time.Minute
 
 	// Channel buffer sizes
 	logChannelBufferSize = 100 // Buffer size for streaming act logs to TUI
-
-	// UUID v4 bit manipulation constants
-	uuidVersionMask = 0x0f
-	uuidVersion4    = 0x40
-	uuidVariantMask = 0x3f
-	uuidVariantRFC  = 0x80
-
-	// UUID byte positions for version and variant
-	uuidVersionByteIndex = 6
-	uuidVariantByteIndex = 8
-
-	// UUID byte slice sizes for formatting
-	uuidBytesTotal  = 16
-	uuidSlice1End   = 4
-	uuidSlice2Start = 4
-	uuidSlice2End   = 6
-	uuidSlice3Start = 6
-	uuidSlice3End   = 8
-	uuidSlice4Start = 8
-	uuidSlice4End   = 10
-	uuidSlice5Start = 10
 )
 
 var (
 	// Command-specific flags
 	outputFormat string
 	event        string
-
-	// Pre-compiled regex for parseActProgress
-	jobStepPattern = regexp.MustCompile(`^\[([^\]]+)\]\s+(.+)`)
 )
 
 var checkCmd = &cobra.Command{
@@ -108,32 +78,6 @@ func init() {
 	checkCmd.Flags().StringVarP(&event, "event", "e", "push", "GitHub event type (push, pull_request, etc.)")
 }
 
-// generateUUID creates a simple UUID v4 without external dependencies
-func generateUUID() (string, error) {
-	b := make([]byte, uuidBytesTotal)
-	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("failed to generate random bytes for UUID: %w", err)
-	}
-	// Set version (4) and variant bits
-	b[uuidVersionByteIndex] = (b[uuidVersionByteIndex] & uuidVersionMask) | uuidVersion4
-	b[uuidVariantByteIndex] = (b[uuidVariantByteIndex] & uuidVariantMask) | uuidVariantRFC
-	return fmt.Sprintf("%x-%x-%x-%x-%x",
-		b[0:uuidSlice1End],
-		b[uuidSlice2Start:uuidSlice2End],
-		b[uuidSlice3Start:uuidSlice3End],
-		b[uuidSlice4Start:uuidSlice4End],
-		b[uuidSlice5Start:]), nil
-}
-
-// applySeverity infers severity for all extracted errors based on their category.
-// This is done as explicit post-processing after extraction to maintain separation
-// of concerns: extraction is pure parsing, severity is business logic.
-func applySeverity(extractedErrors []*internalerrors.ExtractedError) {
-	for _, err := range extractedErrors {
-		err.Severity = internalerrors.InferSeverity(err)
-	}
-}
-
 func runCheck(cmd *cobra.Command, args []string) error {
 	if outputFormat != "text" && outputFormat != "json" && outputFormat != "json-detailed" {
 		return fmt.Errorf("invalid output format %q: must be 'text', 'json', or 'json-detailed'", outputFormat)
@@ -147,7 +91,7 @@ func runCheck(cmd *cobra.Command, args []string) error {
 	workflowPath := filepath.Join(absRepoPath, workflowsDir)
 
 	// Generate run ID early for worktree creation
-	runID, err := generateUUID()
+	runID, err := util.GenerateUUID()
 	if err != nil {
 		return fmt.Errorf("generating run ID: %w", err)
 	}
@@ -166,7 +110,7 @@ func runCheck(cmd *cobra.Command, args []string) error {
 
 	if useTUI {
 		// Run pre-flight checks with visual feedback
-		tmpDir, worktreeInfo, cleanupWorkflows, cleanupWorktree, err = runPreflightChecks(ctx, workflowPath, absRepoPath, runID)
+		tmpDir, worktreeInfo, cleanupWorkflows, cleanupWorktree, err = preflight.RunPreflightChecks(ctx, workflowPath, absRepoPath, runID, workflowFile)
 		if err != nil {
 			return err
 		}
@@ -213,7 +157,7 @@ func runCheck(cmd *cobra.Command, args []string) error {
 		combinedOutput := result.Stdout + result.Stderr
 		extractor := internalerrors.NewExtractor()
 		extracted = extractor.Extract(combinedOutput)
-		applySeverity(extracted)
+		internalerrors.ApplySeverity(extracted)
 		grouped = internalerrors.GroupByFileWithBase(extracted, absRepoPath)
 	} else {
 		// Error flattening: TUI mode already extracted and grouped errors for display.
@@ -285,30 +229,8 @@ func runCheck(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("workflow execution failed with exit code %d", result.ExitCode)
 	}
 
-	// Check if there are any actual errors (not warnings)
-	hasErrors := false
-	for _, issues := range grouped.ByFile {
-		for _, issue := range issues {
-			if issue.Severity == "error" {
-				hasErrors = true
-				break
-			}
-		}
-		if hasErrors {
-			break
-		}
-	}
-
-	if !hasErrors {
-		for _, issue := range grouped.NoFile {
-			if issue.Severity == "error" {
-				hasErrors = true
-				break
-			}
-		}
-	}
-
-	if hasErrors {
+	// Check if there are any actual errors (not warnings) using O(1) method
+	if grouped.HasErrors() {
 		return fmt.Errorf("found errors in workflow execution")
 	}
 
@@ -367,7 +289,7 @@ func runWithTUIAndExtract(ctx context.Context, repoPath, tmpDir string) (*act.Ru
 		combinedOutput := result.Stdout + result.Stderr
 		extractor := internalerrors.NewExtractor()
 		extracted := extractor.Extract(combinedOutput)
-		applySeverity(extracted)
+		internalerrors.ApplySeverity(extracted)
 		grouped := internalerrors.GroupByFileWithBase(extracted, repoPath)
 
 		// Check if context was cancelled
@@ -394,7 +316,7 @@ func runWithTUIAndExtract(ctx context.Context, repoPath, tmpDir string) (*act.Ru
 			program.Send(tui.LogMsg(line))
 
 			// Parse for progress information
-			if progress := parseActProgress(line); progress != nil {
+			if progress := tui.ParseActProgress(line); progress != nil {
 				program.Send(*progress)
 			}
 		}
@@ -447,119 +369,4 @@ func runWithoutTUI(ctx context.Context, repoPath, tmpDir string) (*act.RunResult
 	_, _ = fmt.Fprintf(os.Stderr, "done (%s)\n", result.Duration)
 
 	return result, nil
-}
-
-// parseActProgress extracts progress information from act output
-func parseActProgress(line string) *tui.ProgressMsg {
-	// Pattern: [Job Name/Step Name] or similar
-	// act outputs lines like: "[job-name] 🚀  Start image..."
-	// "[job-name]   ✅  Success - Step Name"
-	// We'll parse these to extract current step info
-
-	// Match job/step patterns using pre-compiled regex
-	matches := jobStepPattern.FindStringSubmatch(line)
-
-	if len(matches) >= 3 {
-		jobName := matches[1]
-		stepInfo := strings.TrimSpace(matches[2])
-
-		// Clean up step info
-		stepInfo = strings.TrimPrefix(stepInfo, "🚀  ")
-		stepInfo = strings.TrimPrefix(stepInfo, "✅  ")
-		stepInfo = strings.TrimPrefix(stepInfo, "❌  ")
-
-		status := fmt.Sprintf("%s: %s", jobName, stepInfo)
-
-		return &tui.ProgressMsg{
-			Status:      status,
-			CurrentStep: 0,
-			TotalSteps:  0,
-		}
-	}
-
-	return nil
-}
-
-// runPreflightChecks performs and displays pre-flight checks before running act
-func runPreflightChecks(ctx context.Context, workflowPath, repoRoot, runID string) (tmpDir string, worktreeInfo *git.WorktreeInfo, cleanupWorkflows, cleanupWorktree func(), err error) {
-	checks := []string{
-		"Checking act installation",
-		"Checking Docker availability",
-		"Preparing workflows (injecting continue-on-error)",
-		"Creating temporary workspace",
-		"Creating isolated worktree",
-	}
-
-	display := tui.NewPreflightDisplay(checks)
-	display.Render()
-
-	// Check 1: Act installation
-	time.Sleep(preflightVisualDelay)
-	display.UpdateCheck("Checking act installation", "running", nil)
-	display.Render()
-
-	err = commands.CheckAct()
-	if err != nil {
-		display.UpdateCheck("Checking act installation", "error", err)
-		display.RenderFinal()
-		return "", nil, nil, nil, err
-	}
-
-	display.UpdateCheck("Checking act installation", "success", nil)
-	display.Render()
-
-	// Check 2: Docker availability
-	time.Sleep(preflightTransitionDelay)
-	display.UpdateCheck("Checking Docker availability", "running", nil)
-	display.Render()
-
-	err = docker.IsAvailable(ctx)
-	if err != nil {
-		display.UpdateCheck("Checking Docker availability", "error", err)
-		display.RenderFinal()
-		return "", nil, nil, nil, fmt.Errorf("docker is not available: %w", err)
-	}
-
-	display.UpdateCheck("Checking Docker availability", "success", nil)
-	display.Render()
-
-	// Check 3: Prepare workflows
-	time.Sleep(preflightTransitionDelay)
-	display.UpdateCheck("Preparing workflows (injecting continue-on-error)", "running", nil)
-	display.Render()
-
-	tmpDir, cleanupWorkflows, err = workflow.PrepareWorkflows(workflowPath, workflowFile)
-	if err != nil {
-		display.UpdateCheck("Preparing workflows (injecting continue-on-error)", "error", err)
-		display.RenderFinal()
-		return "", nil, nil, nil, fmt.Errorf("preparing workflows: %w", err)
-	}
-
-	display.UpdateCheck("Preparing workflows (injecting continue-on-error)", "success", nil)
-	display.UpdateCheck("Creating temporary workspace", "success", nil)
-	display.Render()
-
-	// Check 4: Create worktree
-	time.Sleep(preflightTransitionDelay)
-	display.UpdateCheck("Creating isolated worktree", "running", nil)
-	display.Render()
-
-	worktreeInfo, cleanupWorktree, err = git.PrepareWorktree(ctx, repoRoot, runID)
-	if err != nil {
-		display.UpdateCheck("Creating isolated worktree", "error", err)
-		display.RenderFinal()
-		cleanupWorkflows()
-		return "", nil, nil, nil, fmt.Errorf("creating worktree: %w", err)
-	}
-
-	display.UpdateCheck("Creating isolated worktree", "success", nil)
-	display.Render()
-
-	// Small pause to show all checks passed
-	time.Sleep(preflightCompletionPause)
-
-	// Add a blank line before TUI starts
-	fmt.Fprintln(os.Stderr)
-
-	return tmpDir, worktreeInfo, cleanupWorkflows, cleanupWorktree, nil
 }
