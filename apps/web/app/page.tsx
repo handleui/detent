@@ -1,4 +1,3 @@
-import { Button } from "@detent/ui/button";
 import Image, { type ImageProps } from "next/image";
 import styles from "./page.module.css";
 
@@ -63,12 +62,6 @@ export default function Home() {
             Read our docs
           </a>
         </div>
-        <Button
-          className={styles.secondary}
-          onClick={() => console.log("clicked")}
-        >
-          Click me
-        </Button>
       </main>
       <footer className={styles.footer}>
         <a
