@@ -30,7 +30,7 @@ type Recorder struct {
 }
 
 // NewRecorder creates a new persistence recorder
-func NewRecorder(repoRoot, workflowName, commitSHA, execMode string, isDirty bool) (*Recorder, error) {
+func NewRecorder(repoRoot, workflowName, commitSHA, execMode string) (*Recorder, error) {
 	runID, err := util.GenerateUUID()
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate run ID: %w", err)
@@ -42,7 +42,7 @@ func NewRecorder(repoRoot, workflowName, commitSHA, execMode string, isDirty boo
 	}
 
 	// Record the run in the database
-	if err := sqlite.RecordRun(runID, workflowName, commitSHA, execMode, isDirty); err != nil {
+	if err := sqlite.RecordRun(runID, workflowName, commitSHA, execMode); err != nil {
 		if closeErr := sqlite.Close(); closeErr != nil {
 			return nil, fmt.Errorf("failed to record run: %w (additionally, failed to close database: %v)", err, closeErr)
 		}

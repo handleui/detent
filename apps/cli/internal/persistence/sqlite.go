@@ -19,7 +19,7 @@ const (
 	detentDBName = "detent.db"
 	batchSize    = 500 // Batch size for error inserts
 
-	currentSchemaVersion = 6 // Current database schema version
+	currentSchemaVersion = 7 // Current database schema version
 )
 
 // createDirIfNotExists creates a directory if it doesn't exist
@@ -281,6 +281,16 @@ func (w *SQLiteWriter) applyMigrations(fromVersion int) error {
 			DROP INDEX IF EXISTS idx_errors_sync_status;
 			`,
 		},
+		{
+			version: 7,
+			name:    "drop_dirty_state_tracking",
+			sql: `
+			-- Drop codebase_state_hash index - we now use commit_sha directly for dedup
+			-- (columns is_dirty, dirty_files, base_commit_sha, codebase_state_hash remain in schema
+			-- but are no longer written - SQLite doesn't support DROP COLUMN easily)
+			DROP INDEX IF EXISTS idx_runs_codebase_state_hash;
+			`,
+		},
 	}
 
 	// Apply each migration in a transaction
@@ -323,20 +333,15 @@ func (w *SQLiteWriter) applyMigrations(fromVersion int) error {
 }
 
 // RecordRun inserts a new run record into the database
-func (w *SQLiteWriter) RecordRun(runID, workflowName, commitSHA, executionMode string, isDirty bool) error {
-	// Convert isDirty bool to integer (0 or 1)
-	isDirtyInt := 0
-	if isDirty {
-		isDirtyInt = 1
-	}
-
-	// Note: dirty_files and base_commit_sha are deprecated (redundant with codebase_state_hash)
+func (w *SQLiteWriter) RecordRun(runID, workflowName, commitSHA, executionMode string) error {
+	// Note: is_dirty, dirty_files, base_commit_sha, codebase_state_hash are deprecated
+	// We now require clean commits before running, so is_dirty is always 0
 	query := `
 		INSERT INTO runs (run_id, workflow_name, commit_sha, execution_mode, started_at, is_dirty)
-		VALUES (?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, 0)
 	`
 
-	_, err := w.db.Exec(query, runID, workflowName, commitSHA, executionMode, time.Now().Unix(), isDirtyInt)
+	_, err := w.db.Exec(query, runID, workflowName, commitSHA, executionMode, time.Now().Unix())
 	if err != nil {
 		return fmt.Errorf("failed to record run: %w", err)
 	}
@@ -344,38 +349,17 @@ func (w *SQLiteWriter) RecordRun(runID, workflowName, commitSHA, executionMode s
 	return nil
 }
 
-// SetCodebaseStateHash updates a run with the computed codebase state hash.
-// This should be called after dirty file hashes are computed.
-func (w *SQLiteWriter) SetCodebaseStateHash(runID, stateHash string) error {
-	query := `UPDATE runs SET codebase_state_hash = ? WHERE run_id = ?`
+// GetRunByCommit finds a run by its commit SHA (for deduplication)
+// Since we now require clean commits, the commit SHA uniquely identifies the codebase state.
+func (w *SQLiteWriter) GetRunByCommit(commitSHA string) (runID string, found bool, err error) {
+	query := `SELECT run_id FROM runs WHERE commit_sha = ? ORDER BY started_at DESC LIMIT 1`
 
-	result, err := w.db.Exec(query, stateHash, runID)
-	if err != nil {
-		return fmt.Errorf("failed to set codebase state hash: %w", err)
-	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to get rows affected: %w", err)
-	}
-
-	if rowsAffected == 0 {
-		return fmt.Errorf("run not found: %s", runID)
-	}
-
-	return nil
-}
-
-// GetRunByStateHash finds a run by its codebase state hash (for deduplication)
-func (w *SQLiteWriter) GetRunByStateHash(stateHash string) (runID string, found bool, err error) {
-	query := `SELECT run_id FROM runs WHERE codebase_state_hash = ? ORDER BY started_at DESC LIMIT 1`
-
-	err = w.db.QueryRow(query, stateHash).Scan(&runID)
+	err = w.db.QueryRow(query, commitSHA).Scan(&runID)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return "", false, nil
 		}
-		return "", false, fmt.Errorf("failed to query run by state hash: %w", err)
+		return "", false, fmt.Errorf("failed to query run by commit: %w", err)
 	}
 
 	return runID, true, nil

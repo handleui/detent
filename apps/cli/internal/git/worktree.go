@@ -3,147 +3,180 @@ package git
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
-	"runtime"
 	"strings"
-
-	"golang.org/x/sync/errgroup"
+	"syscall"
+	"time"
 )
+
+const (
+	// cleanupTimeout is the maximum time allowed for cleanup operations
+	cleanupTimeout = 30 * time.Second
+
+	// maxTmpDiskUsagePct is the maximum percentage of disk usage allowed in /tmp
+	// before we refuse to create a worktree (prevents filling the disk)
+	maxTmpDiskUsagePct = 80
+)
+
+// checkTmpDiskSpace validates that the temporary directory has sufficient space.
+// Returns an error if disk usage exceeds maxTmpDiskUsagePct.
+func checkTmpDiskSpace() error {
+	tmpDir := os.TempDir()
+
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(tmpDir, &stat); err != nil {
+		return fmt.Errorf("checking disk space in %s: %w", tmpDir, err)
+	}
+
+	// Calculate usage percentage
+	// Use Bavail (available to non-root) for more accurate free space
+	totalBlocks := stat.Blocks
+	availBlocks := stat.Bavail
+	if totalBlocks == 0 {
+		return nil // Can't calculate, allow operation
+	}
+
+	usedPct := float64(totalBlocks-availBlocks) / float64(totalBlocks) * 100
+
+	if usedPct > maxTmpDiskUsagePct {
+		return fmt.Errorf("insufficient disk space in %s: %.1f%% used (max %d%%)",
+			tmpDir, usedPct, maxTmpDiskUsagePct)
+	}
+
+	return nil
+}
 
 // WorktreeInfo contains metadata about the created worktree
 type WorktreeInfo struct {
-	Path           string   // Absolute path to worktree directory
-	BaseCommitSHA  string   // Commit SHA that worktree is based on
-	IsDirty        bool     // Whether working directory had uncommitted changes
-	DirtyFiles     []string // List of files with uncommitted changes (relative paths)
-	WorktreeCommit string   // Commit SHA in worktree after committing dirty changes
+	Path      string // Absolute path to worktree directory
+	CommitSHA string // Commit SHA that worktree is based on
 }
 
 // PrepareWorktree creates a temporary git worktree for isolated workflow execution.
+// The worktree is created from the current HEAD commit.
 // Returns worktree info, cleanup function, and error.
+//
+// Note: This requires a clean worktree. Call ValidateCleanWorktree() before this.
 func PrepareWorktree(ctx context.Context, repoRoot, runID string) (*WorktreeInfo, func(), error) {
+	// 0. Check disk space before allocating resources
+	if err := checkTmpDiskSpace(); err != nil {
+		return nil, nil, err
+	}
+
 	// 1. Get current commit SHA from repoRoot
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
+	cmd := exec.CommandContext(ctx, "git", "-c", "core.hooksPath=/dev/null", "rev-parse", "HEAD")
 	cmd.Dir = repoRoot
+	cmd.Env = safeGitEnv()
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, nil, fmt.Errorf("getting current commit SHA: %w", err)
 	}
-	baseCommitSHA := strings.TrimSpace(string(output))
+	commitSHA := strings.TrimSpace(string(output))
 
-	// 2. Detect dirty state
-	isDirty, dirtyFiles, err := detectDirtyState(repoRoot)
+	// 2. Create temp directory atomically - prevents TOCTOU attacks
+	worktreeDir, err := os.MkdirTemp("", "detent-worktree-")
 	if err != nil {
-		return nil, nil, fmt.Errorf("detecting dirty state: %w", err)
+		return nil, nil, fmt.Errorf("creating temp directory: %w", err)
 	}
 
-	// 3. Create worktree path
-	worktreePath := filepath.Join(os.TempDir(), fmt.Sprintf("detent-%s", runID))
+	// Defense in depth: verify not a symlink
+	info, err := os.Lstat(worktreeDir)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 {
+		_ = os.RemoveAll(worktreeDir)
+		return nil, nil, fmt.Errorf("temp directory security check failed")
+	}
 
-	// 4. Create worktree in detached HEAD state
-	if err := createWorktree(ctx, repoRoot, worktreePath, baseCommitSHA); err != nil {
+	// 3. Create worktree in detached HEAD state
+	if err := createWorktree(ctx, repoRoot, worktreeDir, commitSHA); err != nil {
+		_ = os.RemoveAll(worktreeDir)
+		pruneWorktrees(ctx, repoRoot)
 		return nil, nil, fmt.Errorf("creating worktree: %w", err)
 	}
 
-	// 5. If dirty, copy changes and commit
-	worktreeCommit := baseCommitSHA
-	if isDirty {
-		if copyErr := copyDirtyFiles(repoRoot, worktreePath, dirtyFiles); copyErr != nil {
-			_ = removeWorktree(repoRoot, worktreePath)
-			return nil, nil, fmt.Errorf("copying dirty files: %w", copyErr)
-		}
-
-		var commitErr error
-		worktreeCommit, commitErr = commitDirtyChanges(ctx, worktreePath)
-		if commitErr != nil {
-			_ = removeWorktree(repoRoot, worktreePath)
-			return nil, nil, fmt.Errorf("committing dirty changes: %w", commitErr)
-		}
+	worktreeInfo := &WorktreeInfo{
+		Path:      worktreeDir,
+		CommitSHA: commitSHA,
 	}
 
-	info := &WorktreeInfo{
-		Path:           worktreePath,
-		BaseCommitSHA:  baseCommitSHA,
-		IsDirty:        isDirty,
-		DirtyFiles:     dirtyFiles,
-		WorktreeCommit: worktreeCommit,
-	}
-
-	// 6. Return cleanup function
+	// 4. Return cleanup function with its own timeout context
 	cleanup := func() {
-		if err := removeWorktree(repoRoot, worktreePath); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to remove worktree at %s: %v\n", worktreePath, err)
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+		defer cancel()
+		if err := removeWorktree(cleanupCtx, repoRoot, worktreeDir); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to remove worktree at %s: %v\n", worktreeDir, err)
 		}
 	}
 
-	return info, cleanup, nil
+	return worktreeInfo, cleanup, nil
 }
 
-// detectDirtyState checks for uncommitted changes using git status --porcelain
-func detectDirtyState(repoRoot string) (bool, []string, error) {
-	// Use -uall to show all untracked files, not just directories
-	cmd := exec.Command("git", "status", "--porcelain", "-uall")
-	cmd.Dir = repoRoot
-
-	output, err := cmd.Output()
-	if err != nil {
-		return false, nil, fmt.Errorf("running git status: %w", err)
+// safeGitEnv returns a minimal, safe environment for executing git commands.
+// Uses an allowlist approach to prevent inheritance of dangerous GIT_* variables like:
+// - GIT_OBJECT_DIRECTORY, GIT_ALTERNATE_OBJECT_DIRECTORIES (arbitrary file access)
+// - GIT_AUTHOR_NAME/EMAIL, GIT_COMMITTER_NAME/EMAIL (identity manipulation)
+// - GIT_WORK_TREE, GIT_DIR (repository path manipulation)
+// - GIT_INDEX_FILE (index manipulation)
+// - etc.
+//
+// This function:
+// 1. Starts with ONLY essential system variables (PATH, HOME, USER, TMPDIR, etc.)
+// 2. Adds secure git overrides to harden against config injection
+// 3. Does NOT inherit ANY GIT_* variables from parent environment
+func safeGitEnv() []string {
+	// Essential system environment variables (allowlist)
+	essentialVars := []string{
+		"PATH",    // Required to find git and other executables
+		"HOME",    // Required for git to find default config locations
+		"USER",    // Used by git for default author/committer info
+		"TMPDIR",  // Temp directory location
+		"TEMP",    // Windows temp directory
+		"TMP",     // Alternative temp directory
+		"LANG",    // Locale settings for proper output encoding
+		"LC_ALL",  // Locale override
+		"LC_CTYPE", // Character type locale
+		"SHELL",   // Shell for git pager and commands
+		"TERM",    // Terminal type
 	}
 
-	// Don't trim the output before splitting - git status format depends on exact spacing
-	outputStr := string(output)
-	if strings.TrimSpace(outputStr) == "" {
-		return false, nil, nil // No changes
-	}
+	env := make([]string, 0, len(essentialVars)+8)
 
-	lines := strings.Split(outputStr, "\n")
-
-	dirtyFiles := make([]string, 0, len(lines))
-	for _, line := range lines {
-		if line == "" {
-			continue
-		}
-		if len(line) < 3 {
-			continue
-		}
-
-		// Git status --porcelain format: XY filename
-		// Where X is index status, Y is working tree status
-		// Position 0-1: status codes
-		// Position 2: always a space
-		// Position 3+: filename
-		// Examples: " M file.txt", "?? file.txt", " D file.txt", "MM file.txt"
-		filename := strings.TrimSpace(line[3:])
-
-		// Handle renames: "R  old -> new"
-		if strings.Contains(filename, " -> ") {
-			parts := strings.Split(filename, " -> ")
-			if len(parts) == 2 {
-				filename = parts[1]
-			}
-		}
-
-		// Skip directory entries (git status shows untracked directories with trailing /)
-		// We only want files, not directories themselves
-		if strings.HasSuffix(filename, "/") {
-			continue
-		}
-
-		if filename != "" {
-			dirtyFiles = append(dirtyFiles, filename)
+	// Add essential variables from current environment (if set)
+	for _, key := range essentialVars {
+		if value, exists := os.LookupEnv(key); exists {
+			env = append(env, fmt.Sprintf("%s=%s", key, value))
 		}
 	}
 
-	return len(dirtyFiles) > 0, dirtyFiles, nil
+	// Add secure git overrides
+	env = append(env,
+		// Ignore system and global git configuration
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_NOGLOBAL=1",
+
+		// Never prompt for credentials or input
+		"GIT_TERMINAL_PROMPT=0",
+
+		// Prevent SSH credential prompts and MITM attacks
+		"GIT_SSH_COMMAND=ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new",
+
+		// Disable credential/editor prompts with no-op executables
+		"GIT_ASKPASS=/bin/true",
+		"GIT_EDITOR=/bin/true",
+		"GIT_PAGER=cat",
+
+		// Ignore system gitattributes
+		"GIT_ATTR_NOSYSTEM=1",
+	)
+
+	return env
 }
 
 // createWorktree creates a new worktree at the specified path
 func createWorktree(ctx context.Context, repoRoot, worktreePath, commitSHA string) error {
-	cmd := exec.CommandContext(ctx, "git", "worktree", "add", "-d", worktreePath, commitSHA)
+	cmd := exec.CommandContext(ctx, "git", "-c", "core.hooksPath=/dev/null", "worktree", "add", "-d", worktreePath, commitSHA)
 	cmd.Dir = repoRoot
+	cmd.Env = safeGitEnv()
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -153,135 +186,12 @@ func createWorktree(ctx context.Context, repoRoot, worktreePath, commitSHA strin
 	return nil
 }
 
-// copyDirtyFiles copies uncommitted changes from source repo to worktree in parallel
-func copyDirtyFiles(repoRoot, worktreePath string, dirtyFiles []string) error {
-	// Determine worker pool size: use number of CPUs, capped between 4-8
-	numWorkers := runtime.NumCPU()
-	if numWorkers < 4 {
-		numWorkers = 4
-	}
-	if numWorkers > 8 {
-		numWorkers = 8
-	}
-
-	// Create errgroup for coordinated goroutine execution
-	g := new(errgroup.Group)
-	g.SetLimit(numWorkers)
-
-	// Process each file in parallel
-	for _, relPath := range dirtyFiles {
-		// Capture loop variable for goroutine
-		relPath := relPath
-
-		g.Go(func() error {
-			srcPath := filepath.Join(repoRoot, relPath)
-			dstPath := filepath.Join(worktreePath, relPath)
-
-			// Create destination directory if needed
-			dstDir := filepath.Dir(dstPath)
-			if err := os.MkdirAll(dstDir, 0o700); err != nil {
-				return fmt.Errorf("creating directory %s: %w", dstDir, err)
-			}
-
-			// Check if source exists and get its info
-			// #nosec G304 -- srcPath is derived from git status output and repoRoot, controlled by the application
-			srcInfo, err := os.Stat(srcPath)
-			if os.IsNotExist(err) {
-				// Source file deleted - remove from worktree too
-				_ = os.Remove(dstPath)
-				return nil
-			} else if err != nil {
-				return fmt.Errorf("stat %s: %w", relPath, err)
-			}
-
-			// Skip directories - we only copy files
-			if srcInfo.IsDir() {
-				return nil
-			}
-
-			// Copy file
-			if err := copyFile(srcPath, dstPath); err != nil {
-				return fmt.Errorf("copying %s: %w", relPath, err)
-			}
-
-			return nil
-		})
-	}
-
-	// Wait for all goroutines to complete and return first error if any
-	return g.Wait()
-}
-
-// copyFile copies a single file from src to dst
-func copyFile(src, dst string) error {
-	// #nosec G304 -- src and dst paths are derived from git status output and controlled by the application
-	srcFile, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if closeErr := srcFile.Close(); closeErr != nil {
-			// Log close error but don't override return value
-			fmt.Fprintf(os.Stderr, "Warning: failed to close source file %s: %v\n", src, closeErr)
-		}
-	}()
-
-	srcInfo, err := srcFile.Stat()
-	if err != nil {
-		return err
-	}
-
-	// #nosec G304 -- dst path is derived from git status output and controlled by the application
-	dstFile, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, srcInfo.Mode())
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if closeErr := dstFile.Close(); closeErr != nil {
-			// Log close error but don't override return value
-			fmt.Fprintf(os.Stderr, "Warning: failed to close destination file %s: %v\n", dst, closeErr)
-		}
-	}()
-
-	_, err = io.Copy(dstFile, srcFile)
-	return err
-}
-
-// commitDirtyChanges commits all changes in worktree with --no-verify
-func commitDirtyChanges(ctx context.Context, worktreePath string) (string, error) {
-	// Stage all changes
-	addCmd := exec.CommandContext(ctx, "git", "add", "-A")
-	addCmd.Dir = worktreePath
-
-	if output, err := addCmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("git add failed: %w (output: %s)", err, string(output))
-	}
-
-	// Commit with --no-verify
-	commitMsg := "[detent] temporary commit for worktree isolation"
-	commitCmd := exec.CommandContext(ctx, "git", "commit", "--no-verify", "-m", commitMsg)
-	commitCmd.Dir = worktreePath
-
-	if output, err := commitCmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("git commit failed: %w (output: %s)", err, string(output))
-	}
-
-	// Get commit SHA
-	shaCmd := exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
-	shaCmd.Dir = worktreePath
-
-	output, err := shaCmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("getting commit SHA: %w", err)
-	}
-
-	return strings.TrimSpace(string(output)), nil
-}
-
-// removeWorktree removes the worktree using git worktree remove --force
-func removeWorktree(repoRoot, worktreePath string) error {
-	cmd := exec.Command("git", "worktree", "remove", "--force", worktreePath)
+// removeWorktree removes the worktree using git worktree remove --force.
+// Uses context for cancellation and timeout support.
+func removeWorktree(ctx context.Context, repoRoot, worktreePath string) error {
+	cmd := exec.CommandContext(ctx, "git", "-c", "core.hooksPath=/dev/null", "worktree", "remove", "--force", worktreePath)
 	cmd.Dir = repoRoot
+	cmd.Env = safeGitEnv()
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -289,4 +199,16 @@ func removeWorktree(repoRoot, worktreePath string) error {
 	}
 
 	return nil
+}
+
+// pruneWorktrees cleans up orphaned git worktree metadata.
+// Uses context for cancellation and wraps it with a cleanup timeout.
+func pruneWorktrees(ctx context.Context, repoRoot string) {
+	// Wrap context with cleanup timeout to ensure bounded execution
+	ctx, cancel := context.WithTimeout(ctx, cleanupTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", "-c", "core.hooksPath=/dev/null", "-C", repoRoot, "worktree", "prune")
+	cmd.Env = safeGitEnv()
+	_ = cmd.Run() // Best effort
 }

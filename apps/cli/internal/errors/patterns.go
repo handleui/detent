@@ -59,8 +59,14 @@ var (
 	// Act job context pattern: [workflow/job] | message
 	actContextPattern = regexp.MustCompile(`^\[([^\]]+)\]`)
 
-	// Exit code pattern
+	// Metadata patterns: workflow infrastructure messages (not code errors)
+	// These patterns match act/GitHub Actions metadata and should be categorized separately
+
+	// Exit code pattern: "exit code 1", "exitcode '1': failure"
 	exitCodePattern = regexp.MustCompile(`(?i)exit(?:ed)?\s+(?:with\s+)?(?:code\s+)?(\d+)`)
+
+	// Job/workflow status patterns
+	jobFailedPattern = regexp.MustCompile(`(?i)(?:job|workflow)\s+['"]?([^'"]+)['"]?\s+failed`)
 
 	// File path pattern: matches standalone file paths (for ESLint multi-line format)
 	filePathPattern = regexp.MustCompile(`^([^\s:]+\.(ts|tsx|js|jsx|go|py|rs|java|c|cpp|h|hpp))$`)

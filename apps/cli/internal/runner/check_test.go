@@ -134,9 +134,9 @@ func TestCheckRunner_Prepare(t *testing.T) {
 	}
 }
 
-// TestCheckRunner_PrepareCleanupOnError tests cleanup when worktree creation fails
+// TestCheckRunner_PrepareCleanupOnError tests that preflight checks fail early in non-git directory
 func TestCheckRunner_PrepareCleanupOnError(t *testing.T) {
-	// Use non-git directory to trigger worktree creation failure
+	// Use non-git directory to trigger preflight check failure
 	tmpDir := t.TempDir()
 
 	cfg := &RunConfig{
@@ -147,7 +147,7 @@ func TestCheckRunner_PrepareCleanupOnError(t *testing.T) {
 		RunID:        "12345678-1234-1234-1234-123456789abc",
 	}
 
-	// Create workflow directory and file so workflow preparation succeeds
+	// Create workflow directory and file (won't be used due to early preflight failure)
 	workflowDir := filepath.Join(tmpDir, ".github", "workflows")
 	if err := os.MkdirAll(workflowDir, 0o750); err != nil {
 		t.Fatalf("Failed to create workflow directory: %v", err)
@@ -175,13 +175,13 @@ jobs:
 		t.Fatal("Prepare() should fail in non-git directory")
 	}
 
-	if !strings.Contains(err.Error(), "worktree") {
-		t.Errorf("Error should mention 'worktree', got: %v", err)
+	if !strings.Contains(err.Error(), "not a git repository") {
+		t.Errorf("Error should mention 'not a git repository', got: %v", err)
 	}
 
-	// Verify tmpDir was created (workflow preparation succeeded)
-	if runner.tmpDir == "" {
-		t.Error("tmpDir should be set even when worktree creation fails")
+	// Verify tmpDir was NOT created (preflight checks failed before workflow preparation)
+	if runner.tmpDir != "" {
+		t.Error("tmpDir should not be set when preflight checks fail")
 	}
 
 	// After Cleanup, tmpDir should be removed
@@ -451,12 +451,12 @@ func TestCheckRunner_extractAndProcessErrors(t *testing.T) {
 		{
 			name: "with errors in output",
 			actResult: &act.RunResult{
-				Stdout:   "main.go:10:5: error: undefined variable 'x'",
-				Stderr:   "Error: Process completed with exit code 1",
+				Stdout:   "main.go:10:5: undefined: x\n",
+				Stderr:   "Error: Process completed with exit code 1\n",
 				ExitCode: 1,
 				Duration: 3 * time.Second,
 			},
-			wantExtractedLen: 1,
+			wantExtractedLen: 2, // Go error + exit code metadata
 			wantErrorCount:   true,
 		},
 		{

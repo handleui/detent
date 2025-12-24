@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,12 +9,51 @@ import (
 	"github.com/goccy/go-yaml"
 )
 
+const (
+	// maxWorkflowSizeBytes is the maximum allowed size for a workflow file (1MB)
+	// This prevents resource exhaustion from maliciously large files
+	maxWorkflowSizeBytes = 1 * 1024 * 1024
+)
+
+// validateWorkflowContent checks for potentially malicious or malformed content.
+// This provides defense-in-depth against crafted workflow files.
+func validateWorkflowContent(data []byte) error {
+	// Size limit to prevent resource exhaustion
+	if len(data) > maxWorkflowSizeBytes {
+		return fmt.Errorf("workflow file exceeds maximum size of %d bytes", maxWorkflowSizeBytes)
+	}
+
+	// Null bytes indicate binary content disguised as YAML
+	if bytes.Contains(data, []byte{0x00}) {
+		return fmt.Errorf("workflow file contains null bytes (binary content not allowed)")
+	}
+
+	// Check for excessive control characters (excluding newline, carriage return, tab)
+	// This catches malformed files that might exploit YAML parser edge cases
+	controlCount := 0
+	for _, b := range data {
+		if b < 32 && b != '\n' && b != '\r' && b != '\t' {
+			controlCount++
+		}
+	}
+	if controlCount > 10 {
+		return fmt.Errorf("workflow file contains excessive control characters (%d found)", controlCount)
+	}
+
+	return nil
+}
+
 // ParseWorkflowFile reads and parses a single workflow YAML file.
 // The path must be validated by the caller to be within an expected directory.
 func ParseWorkflowFile(path string) (*Workflow, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // path validated by caller via DiscoverWorkflows
 	if err != nil {
 		return nil, fmt.Errorf("reading workflow file: %w", err)
+	}
+
+	// Validate content before parsing (defense-in-depth)
+	if err := validateWorkflowContent(data); err != nil {
+		return nil, err
 	}
 
 	var wf Workflow

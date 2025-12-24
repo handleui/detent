@@ -12,12 +12,15 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/detent/cli/internal/act"
+	"github.com/detent/cli/internal/commands"
+	"github.com/detent/cli/internal/docker"
 	internalerrors "github.com/detent/cli/internal/errors"
 	"github.com/detent/cli/internal/git"
 	"github.com/detent/cli/internal/persistence"
 	"github.com/detent/cli/internal/preflight"
 	"github.com/detent/cli/internal/tui"
 	"github.com/detent/cli/internal/workflow"
+	"golang.org/x/sync/errgroup"
 )
 
 // sendToTUI sends a message to the TUI program in a non-blocking manner.
@@ -65,6 +68,7 @@ type CheckRunner struct {
 	worktreeInfo     *git.WorktreeInfo // Worktree metadata including path and commit info
 	cleanupWorkflows func()            // Cleanup function for workflow temp directory
 	cleanupWorktree  func()            // Cleanup function for worktree
+	stashInfo        *git.StashInfo    // Tracks if changes were stashed during preflight
 
 	// Execution state - set during Run phase
 	startTime time.Time  // When execution started
@@ -88,29 +92,115 @@ func New(config *RunConfig) *CheckRunner {
 }
 
 // Prepare sets up the execution environment including:
-// - Workflow file preparation (continue-on-error and timeout injection)
-// - Worktree creation for isolated execution
+// - Parallel preflight validation (git repository, act availability, docker availability)
+// - Validation that worktree is clean (no uncommitted changes)
+// - Parallel preparation (workflow files and worktree creation)
 //
 // This must be called before Run. All resources are tracked for cleanup.
 // Returns error if preparation fails. On error, partial resources are cleaned up.
 func (r *CheckRunner) Prepare(ctx context.Context) error {
-	// Prepare workflows with continue-on-error injection
-	tmpDir, cleanupWorkflows, err := workflow.PrepareWorkflows(r.config.WorkflowPath, r.config.WorkflowFile)
-	if err != nil {
-		return fmt.Errorf("preparing workflows: %w", err)
-	}
-	r.tmpDir = tmpDir
-	r.cleanupWorkflows = cleanupWorkflows
+	// Phase 1: Run parallel preflight checks
+	// These checks are independent and can run concurrently
+	g, gctx := errgroup.WithContext(ctx)
 
-	// Create isolated worktree for execution
-	worktreeInfo, cleanupWorktree, err := git.PrepareWorktree(ctx, r.config.RepoRoot, r.config.RunID)
-	if err != nil {
-		// Cleanup workflows before returning error
-		cleanupWorkflows()
-		return fmt.Errorf("creating worktree: %w", err)
+	g.Go(func() error {
+		return git.ValidateGitRepository(gctx, r.config.RepoRoot)
+	})
+
+	g.Go(commands.CheckAct)
+
+	g.Go(func() error {
+		return docker.IsAvailable(gctx)
+	})
+
+	if err := g.Wait(); err != nil {
+		return err
 	}
-	r.worktreeInfo = worktreeInfo
-	r.cleanupWorktree = cleanupWorktree
+
+	// Phase 2: Sequential validations (require git repository to be confirmed)
+
+	// Best-effort cleanup of orphaned worktrees from previous runs (SIGKILL recovery)
+	_, _ = git.CleanupOrphanedWorktrees(ctx, r.config.RepoRoot)
+
+	// Validate clean worktree
+	if err := git.ValidateCleanWorktree(ctx, r.config.RepoRoot); err != nil {
+		return err
+	}
+
+	// Validate no submodules (not yet supported)
+	if err := git.ValidateNoSubmodules(r.config.RepoRoot); err != nil {
+		return err
+	}
+
+	// Validate symlinks don't escape repository (security check)
+	if err := git.ValidateNoEscapingSymlinks(ctx, r.config.RepoRoot); err != nil {
+		return err
+	}
+
+	// Phase 3: Run parallel preparation tasks
+	// These operations create resources that need to be cleaned up on failure
+	type workflowResult struct {
+		tmpDir           string
+		cleanupWorkflows func()
+		err              error
+	}
+
+	type worktreeResult struct {
+		worktreeInfo    *git.WorktreeInfo
+		cleanupWorktree func()
+		err             error
+	}
+
+	workflowChan := make(chan workflowResult, 1)
+	worktreeChan := make(chan worktreeResult, 1)
+
+	// Prepare workflows in parallel
+	go func() {
+		tmpDir, cleanupWorkflows, err := workflow.PrepareWorkflows(r.config.WorkflowPath, r.config.WorkflowFile)
+		workflowChan <- workflowResult{
+			tmpDir:           tmpDir,
+			cleanupWorkflows: cleanupWorkflows,
+			err:              err,
+		}
+	}()
+
+	// Prepare worktree in parallel
+	go func() {
+		worktreeInfo, cleanupWorktree, err := git.PrepareWorktree(ctx, r.config.RepoRoot, r.config.RunID)
+		worktreeChan <- worktreeResult{
+			worktreeInfo:    worktreeInfo,
+			cleanupWorktree: cleanupWorktree,
+			err:             err,
+		}
+	}()
+
+	// Collect results
+	workflowRes := <-workflowChan
+	worktreeRes := <-worktreeChan
+
+	// Handle errors with proper cleanup
+	if workflowRes.err != nil {
+		// Cleanup worktree if it succeeded but workflow failed
+		if worktreeRes.cleanupWorktree != nil {
+			worktreeRes.cleanupWorktree()
+		}
+		return fmt.Errorf("preparing workflows: %w", workflowRes.err)
+	}
+
+	if worktreeRes.err != nil {
+		// Cleanup workflow if it succeeded but worktree failed
+		if workflowRes.cleanupWorkflows != nil {
+			workflowRes.cleanupWorkflows()
+		}
+		return fmt.Errorf("creating worktree: %w", worktreeRes.err)
+	}
+
+	// Store results
+	r.tmpDir = workflowRes.tmpDir
+	r.cleanupWorkflows = workflowRes.cleanupWorkflows
+	r.worktreeInfo = worktreeRes.worktreeInfo
+	r.cleanupWorktree = worktreeRes.cleanupWorktree
+	// Note: Non-TUI prepare doesn't set stashInfo (interactive prompt only in TUI mode)
 
 	return nil
 }
@@ -132,6 +222,7 @@ func (r *CheckRunner) PrepareWithTUI(ctx context.Context) error {
 	r.worktreeInfo = result.WorktreeInfo
 	r.cleanupWorkflows = result.CleanupWorkflows
 	r.cleanupWorktree = result.CleanupWorktree
+	r.stashInfo = result.StashInfo
 
 	return nil
 }
@@ -244,7 +335,7 @@ func (r *CheckRunner) RunWithTUI(ctx context.Context, logChan chan string, progr
 		ExitCode:     tuiRes.result.ExitCode,
 	}
 
-	defer cancel()
+	// Wait for goroutines to complete before returning
 	wg.Wait()
 
 	return wasCancelled, nil
@@ -346,7 +437,7 @@ func (r *CheckRunner) extractAndProcessErrors(actResult *act.RunResult) ([]*inte
 // Persist saves the check run results to the database.
 // This writes the complete run result including:
 // - Run metadata (ID, timing, exit code)
-// - Worktree information (base commit, dirty state)
+// - Worktree information (commit SHA)
 // - Extracted errors with full context
 //
 // Returns error if persistence fails. This should be called after Run/RunWithTUI
@@ -375,9 +466,8 @@ func (r *CheckRunner) Persist() error {
 	recorder, err := persistence.NewRecorder(
 		r.config.RepoRoot,
 		workflowName,
-		r.worktreeInfo.BaseCommitSHA,
+		r.worktreeInfo.CommitSHA,
 		execMode,
-		r.worktreeInfo.IsDirty,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to initialize persistence storage at %s/.detent: %w", r.config.RepoRoot, err)
@@ -397,20 +487,19 @@ func (r *CheckRunner) Persist() error {
 }
 
 // Cleanup releases all resources allocated during Prepare.
-// This includes:
-// - Temporary workflow directory (via cleanupWorkflows)
-// - Git worktree (via cleanupWorktree)
-//
-// This should be called via defer after creating the runner to ensure cleanup
-// happens even if preparation or execution fails. Cleanup is idempotent and
-// safe to call multiple times.
+// Order matters: workflow temp files should be removed before the git worktree
+// to ensure consistent state during cleanup.
+// If changes were stashed during preflight, they are restored here.
 func (r *CheckRunner) Cleanup() {
-	if r.cleanupWorktree != nil {
-		r.cleanupWorktree()
-	}
 	if r.cleanupWorkflows != nil {
 		r.cleanupWorkflows()
 	}
+	if r.cleanupWorktree != nil {
+		r.cleanupWorktree()
+	}
+
+	// Restore stashed changes if we stashed them during preflight
+	git.RestoreStashIfNeeded(r.config.RepoRoot, r.stashInfo)
 }
 
 // GetResult returns the complete result of the check run.
@@ -425,9 +514,9 @@ func (r *CheckRunner) GetResult() *RunResult {
 // buildActConfig constructs an act.RunConfig with appropriate settings.
 // When logChan is nil, StreamOutput is enabled (for non-TUI mode).
 // When logChan is provided, output is streamed to the channel (for TUI mode).
+//
+// This method assumes the worktree has been validated by the caller (Run/RunWithTUI).
 func (r *CheckRunner) buildActConfig(logChan chan string) *act.RunConfig {
-	git.RequireWorktreeInitialized(r.worktreeInfo)
-
 	return &act.RunConfig{
 		WorkflowPath: r.tmpDir,
 		Event:        r.config.Event,

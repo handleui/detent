@@ -10,7 +10,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const brandingColor = "#808080"
+const (
+	brandingColor = "42"  // Green - matches colorSuccess in TUI
+	commandColor  = "15"  // Pure white for command name
+)
 
 var (
 	// Global flags shared across commands
@@ -18,8 +21,12 @@ var (
 	workflowFile string
 )
 
-var brandingStyle = lipgloss.NewStyle().
-	Foreground(lipgloss.Color(brandingColor))
+var (
+	brandingStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color(brandingColor))
+	commandStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color(commandColor))
+)
 
 var rootCmd = &cobra.Command{
 	Use:   "detent",
@@ -36,7 +43,10 @@ Requirements:
   - act (nektos/act - automatically invoked)`,
 	Version: Version,
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
-		fmt.Println(brandingStyle.Render(fmt.Sprintf("Detent v%s", Version)))
+		fmt.Println()
+		versionText := brandingStyle.Render(fmt.Sprintf("Detent v%s", Version))
+		commandText := commandStyle.Render(cmd.Name())
+		fmt.Printf("%s %s\n", versionText, commandText)
 	},
 }
 

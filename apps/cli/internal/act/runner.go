@@ -16,6 +16,13 @@ import (
 
 const gracefulShutdownTimeout = 5 * time.Second
 
+// killProcessGroup sends a signal to an entire process group.
+// Using negative PID sends the signal to all processes in the group.
+// This ensures child processes (spawned by act/Docker) are also terminated.
+func killProcessGroup(pgid int, sig syscall.Signal) error {
+	return syscall.Kill(-pgid, sig)
+}
+
 // RunConfig configures the act execution.
 // ActBinary should only be set by trusted code paths (defaults to "act").
 type RunConfig struct {
@@ -123,10 +130,16 @@ func Run(ctx context.Context, cfg *RunConfig) (*RunResult, error) {
 	case err = <-done:
 		// Process finished normally
 	case <-ctx.Done():
-		// Context cancelled - attempt graceful shutdown
+		// Context cancelled - attempt graceful shutdown of entire process group
 		if cmd.Process != nil {
-			// Try SIGTERM first for graceful shutdown
-			_ = cmd.Process.Signal(syscall.SIGTERM)
+			// Try SIGTERM to entire process group first for graceful shutdown
+			// This ensures child processes (spawned by act/Docker) are also signaled
+			if pgid, pgidErr := syscall.Getpgid(cmd.Process.Pid); pgidErr == nil {
+				_ = killProcessGroup(pgid, syscall.SIGTERM)
+			} else {
+				// Fallback to single process if we can't get process group
+				_ = cmd.Process.Signal(syscall.SIGTERM)
+			}
 
 			// Wait for graceful shutdown
 			gracefulTimeout := time.After(gracefulShutdownTimeout)
@@ -134,8 +147,11 @@ func Run(ctx context.Context, cfg *RunConfig) (*RunResult, error) {
 			case err = <-done:
 				// Gracefully exited
 			case <-gracefulTimeout:
-				// Force kill if still running
-				_ = cmd.Process.Kill()
+				// Force kill entire process group if still running
+				if pgid, pgidErr := syscall.Getpgid(cmd.Process.Pid); pgidErr == nil {
+					_ = killProcessGroup(pgid, syscall.SIGKILL)
+				}
+				_ = cmd.Process.Kill() // Also kill main process directly as fallback
 				err = <-done
 			}
 		} else {
@@ -185,6 +201,7 @@ func buildArgs(cfg *RunConfig) ([]string, error) {
 	// ALWAYS use verbose mode to capture step output for error extraction
 	// Use medium-sized images to avoid interactive prompt on first run
 	// Docker-resilient flags to prevent container buildup and failures
+	// Container security hardening: drop dangerous capabilities
 	args = append(args,
 		"-v", // Always verbose (regardless of whether user wants to see it)
 		"-P", "ubuntu-latest=catthehacker/ubuntu:act-latest",
@@ -192,6 +209,11 @@ func buildArgs(cfg *RunConfig) ([]string, error) {
 		"-P", "ubuntu-20.04=catthehacker/ubuntu:act-20.04",
 		"--rm",              // Remove containers after execution
 		"--no-cache-server", // Disable cache server (can cause hangs/failures)
+		// Security: drop dangerous capabilities rarely needed for CI workflows
+		"--container-cap-drop", "SYS_ADMIN",  // Prevents container escapes via mount
+		"--container-cap-drop", "NET_ADMIN",  // Prevents network manipulation
+		"--container-cap-drop", "SYS_PTRACE", // Prevents process debugging/injection
+		"--container-cap-drop", "MKNOD",      // Prevents device node creation
 	)
 
 	return args, nil

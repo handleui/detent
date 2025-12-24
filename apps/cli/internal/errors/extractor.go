@@ -17,23 +17,6 @@ const (
 	SeverityError = "error"
 	// SeverityWarning is the interned constant for "warning" severity level
 	SeverityWarning = "warning"
-
-	// SourceESLint is the source identifier for ESLint
-	SourceESLint = "eslint"
-	// SourceTypeScript is the source identifier for TypeScript
-	SourceTypeScript = "typescript"
-	// SourceGo is the source identifier for Go
-	SourceGo = "go"
-	// SourceGoTest is the source identifier for Go tests
-	SourceGoTest = "go-test"
-	// SourcePython is the source identifier for Python
-	SourcePython = "python"
-	// SourceRust is the source identifier for Rust
-	SourceRust = "rust"
-	// SourceDocker is the source identifier for Docker
-	SourceDocker = "docker"
-	// SourceNodeJS is the source identifier for Node.js
-	SourceNodeJS = "nodejs"
 )
 
 // Extractor processes act output and extracts structured errors.
@@ -262,6 +245,38 @@ func (e *Extractor) isStackTraceContinuation(line string) bool {
 	return false
 }
 
+// extractMetadata checks if the line is workflow metadata (not a code error).
+// Metadata includes exit codes, job status messages, and other infrastructure messages.
+// Returns nil if the line is not metadata.
+func (e *Extractor) extractMetadata(line string) *ExtractedError {
+	// Job status patterns: "Job 'build' failed", "Error: Job 'build' failed"
+	if match := jobFailedPattern.FindStringSubmatch(line); match != nil {
+		return &ExtractedError{
+			Message:  fmt.Sprintf("Job '%s' failed", match[1]),
+			Category: CategoryMetadata,
+			Source:   SourceMetadata,
+			Raw:      line,
+		}
+	}
+
+	// Exit code patterns: "exit code 1", "exitcode '1': failure"
+	// Only treat as metadata if it doesn't have file/line context (actual errors have that)
+	if match := exitCodePattern.FindStringSubmatch(line); match != nil {
+		code, _ := strconv.Atoi(match[1])
+		// Only non-zero exit codes are issues
+		if code != 0 {
+			return &ExtractedError{
+				Message:  "Exit code " + match[1],
+				Category: CategoryMetadata,
+				Source:   SourceMetadata,
+				Raw:      line,
+			}
+		}
+	}
+
+	return nil
+}
+
 func (e *Extractor) extractFromLine(line string) *ExtractedError {
 	// Check if we're continuing a stack trace
 	if e.isStackTraceContinuation(line) {
@@ -279,6 +294,12 @@ func (e *Extractor) extractFromLine(line string) *ExtractedError {
 			e.stackTraceOwner = nil
 			return err
 		}
+	}
+
+	// METADATA PATTERNS FIRST - Check for workflow infrastructure messages
+	// These should be identified before code error patterns to prevent false categorization
+	if metadataErr := e.extractMetadata(line); metadataErr != nil {
+		return metadataErr
 	}
 
 	// Check for Python traceback start
@@ -520,16 +541,6 @@ func (e *Extractor) extractFromLine(line string) *ExtractedError {
 		return err
 	}
 
-	if match := exitCodePattern.FindStringSubmatch(line); match != nil {
-		code, _ := strconv.Atoi(match[1])
-		if code != 0 {
-			return &ExtractedError{
-				Message:  "Exit code " + match[1],
-				Category: CategoryRuntime,
-				Raw:      line,
-			}
-		}
-	}
-
+	// Exit code and job failures are now handled in extractMetadata() above
 	return nil
 }
