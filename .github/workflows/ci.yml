@@ -140,7 +140,7 @@ jobs:
             ${{ runner.os }}-turbo-lint-
 
       - name: Run lint
-        run: turbo run lint
+        run: bun run turbo lint
 
   web-typecheck:
     name: "[Web] Type Check"

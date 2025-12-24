@@ -19,14 +19,6 @@ linters:
     - unparam        # Report unused function parameters
     - nakedret       # Find naked returns in long functions
 
-  exclusions:
-    rules:
-      - path: '(.+)_test\.go'
-        linters:
-          - gosec
-          - govet
-          - staticcheck
-
   settings:
     govet:
       enable:
@@ -64,24 +56,25 @@ linters:
     nakedret:
       max-func-lines: 30
 
+  exclusions:
+    rules:
+      # Exclude some linters from running on test files
+      - path: _test\.go
+        linters:
+          - gosec
+          - errcheck
+          - gocritic
+          - govet
+          - staticcheck
+
+      # Allow longer lines in generated code
+      - path: \.pb\.go
+        linters:
+          - lll
+
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
-
-  exclude-rules:
-    # Exclude some linters from running on test files
-    - path: _test\.go
-      linters:
-        - gosec
-        - errcheck
-        - gocritic
-        - govet
-        - staticcheck
-
-    # Allow longer lines in generated code
-    - path: \.pb\.go
-      linters:
-        - lll
 
 run:
   timeout: 5m
@@ -93,4 +86,3 @@ output:
     text:
       print-linter-name: true
       print-issued-lines: true
-  sort-results: true
