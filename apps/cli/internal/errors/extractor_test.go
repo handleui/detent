@@ -183,8 +183,9 @@ ValueError: invalid literal for int() with base 10: 'abc'`,
 			expected: []*ExtractedError{
 				{
 					Message:  "Exit code 1",
-					Severity: "error",
-					Category: CategoryRuntime,
+					Severity: "",
+					Category: CategoryMetadata,
+					Source:   SourceMetadata,
 				},
 			},
 		},

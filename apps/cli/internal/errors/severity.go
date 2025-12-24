@@ -10,6 +10,7 @@ package errors
 // - CategoryTest → "error" (test failures indicate broken functionality)
 // - CategoryRuntime → "error" (runtime errors indicate broken execution)
 // - CategoryLint → "warning" by default (linting is advisory, unless tool marks as error)
+// - CategoryMetadata → "" (empty, not counted as problems - workflow infrastructure messages)
 // - CategoryUnknown → "warning" (conservative default)
 // - Docker errors → "error" (infrastructure failures block execution)
 func InferSeverity(err *ExtractedError) string {
@@ -32,6 +33,10 @@ func InferSeverity(err *ExtractedError) string {
 		// Linters typically report warnings unless explicitly marked as errors
 		// (ESLint already sets severity explicitly, so this is a fallback)
 		return "warning"
+	case CategoryMetadata:
+		// Metadata errors (exit codes, job failures) are not code problems
+		// Return empty string so they're not counted in error/warning totals
+		return ""
 	case CategoryUnknown:
 		// Conservative default: treat unknown issues as warnings
 		return "warning"

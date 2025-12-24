@@ -15,7 +15,21 @@ const (
 	CategoryTest      ErrorCategory = "test"
 	CategoryCompile   ErrorCategory = "compile"
 	CategoryRuntime   ErrorCategory = "runtime"
+	CategoryMetadata  ErrorCategory = "metadata"
 	CategoryUnknown   ErrorCategory = "unknown"
+)
+
+// Error sources for attribution and filtering
+const (
+	SourceESLint     = "eslint"
+	SourceTypeScript = "typescript"
+	SourceGo         = "go"
+	SourceGoTest     = "go-test"
+	SourcePython     = "python"
+	SourceRust       = "rust"
+	SourceDocker     = "docker"
+	SourceNodeJS     = "nodejs"
+	SourceMetadata   = "metadata"
 )
 
 // WorkflowContext captures GitHub Actions workflow execution context
