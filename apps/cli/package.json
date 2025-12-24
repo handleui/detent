@@ -47,9 +47,7 @@
     "adm-zip": "^0.5.16"
   },
   "publishConfig": {
-    "access": "public",
-    "provenance": true,
-    "registry": "https://registry.npmjs.org/"
+    "access": "public"
   },
   "goBinary": {
     "name": "dt",

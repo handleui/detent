@@ -258,7 +258,7 @@ func commitDirtyChanges(ctx context.Context, worktreePath string) (string, error
 	}
 
 	// Commit with --no-verify
-	commitMsg := "[detent] Temporary commit for worktree isolation"
+	commitMsg := "[detent] temporary commit for worktree isolation"
 	commitCmd := exec.CommandContext(ctx, "git", "commit", "--no-verify", "-m", commitMsg)
 	commitCmd.Dir = worktreePath
 
