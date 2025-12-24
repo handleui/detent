@@ -133,6 +133,7 @@ func (p *preflightChecker) executeWorktreePrep(checkName string, checkFunc func(
 // It verifies system requirements, prepares workflows, and creates an isolated worktree.
 func RunPreflightChecks(ctx context.Context, workflowPath, repoRoot, runID, workflowFile string) (*Result, error) {
 	checks := []string{
+		"Checking for uncommitted changes",
 		"Checking act installation",
 		"Checking Docker availability",
 		"Preparing workflows (injecting continue-on-error)",
@@ -148,21 +149,28 @@ func RunPreflightChecks(ctx context.Context, workflowPath, repoRoot, runID, work
 		transitionDelay: preflightTransitionDelay,
 	}
 
-	// Check 1: Act installation (uses visual delay for first check)
+	// Check 1: Clean worktree (uses visual delay for first check)
 	checker.transitionDelay = preflightVisualDelay
-	if err := checker.executeCheck("Checking act installation", commands.CheckAct); err != nil {
+	if err := checker.executeCheck("Checking for uncommitted changes", func() error {
+		return git.ValidateCleanWorktree(ctx, repoRoot)
+	}); err != nil {
 		return nil, err
 	}
 	checker.transitionDelay = preflightTransitionDelay
 
-	// Check 2: Docker availability
+	// Check 2: Act installation
+	if err := checker.executeCheck("Checking act installation", commands.CheckAct); err != nil {
+		return nil, err
+	}
+
+	// Check 3: Docker availability
 	if err := checker.executeCheck("Checking Docker availability", func() error {
 		return docker.IsAvailable(ctx)
 	}); err != nil {
 		return nil, fmt.Errorf("docker is not available: %w", err)
 	}
 
-	// Check 3: Prepare workflows
+	// Check 4: Prepare workflows
 	workflowResult, err := checker.executeWorkflowPrep(
 		"Preparing workflows (injecting continue-on-error)",
 		[]string{"Creating temporary workspace"},
@@ -178,7 +186,7 @@ func RunPreflightChecks(ctx context.Context, workflowPath, repoRoot, runID, work
 		return nil, err
 	}
 
-	// Check 4: Create worktree
+	// Check 5: Create worktree
 	worktreeResult, err := checker.executeWorktreePrep(
 		"Creating isolated worktree",
 		func() (worktreePrepResult, error) {
