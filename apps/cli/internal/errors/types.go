@@ -99,6 +99,18 @@ func (g *GroupedErrors) HasErrors() bool {
 	return g.hasErrors
 }
 
+// Flatten reconstructs a linear list of errors from the grouped structure.
+// This is useful for persistence where you need all errors in a single slice.
+// The method combines errors from all file groups with ungrouped errors.
+func (g *GroupedErrors) Flatten() []*ExtractedError {
+	result := make([]*ExtractedError, 0, g.Total)
+	for _, errs := range g.ByFile {
+		result = append(result, errs...)
+	}
+	result = append(result, g.NoFile...)
+	return result
+}
+
 // makeRelative converts an absolute path to relative if it starts with basePath
 func makeRelative(path, basePath string) string {
 	if basePath == "" || !filepath.IsAbs(path) {

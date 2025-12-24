@@ -34,8 +34,8 @@ func ParseActProgress(line string) *ProgressMsg {
 
 		return &ProgressMsg{
 			Status:      status,
-			CurrentStep: 0,
-			TotalSteps:  0,
+			CurrentStep: 0, // TODO: Parse step numbers from act output when format is stable
+			TotalSteps:  0, // TODO: Count total steps from workflow definition
 		}
 	}
 
