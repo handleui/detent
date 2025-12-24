@@ -13,6 +13,7 @@ Add preflight checks with git validation and interactive cleanup
 - Update branding with green color scheme
 
 UX improvements:
+
 - Add default commit message so pressing Enter immediately commits
 - Use subtle grey text for option hints instead of parentheses
 - Add commit message validation for control characters
