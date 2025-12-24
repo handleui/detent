@@ -1,0 +1,59 @@
+{
+  "name": "@detent/cli",
+  "version": "0.0.0",
+  "description": "Run GitHub Actions locally, intelligently parse errors, and troubleshoot with parallel Claude iterations",
+  "author": "handleui",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/handleui/detent.git",
+    "directory": "apps/cli"
+  },
+  "bugs": {
+    "url": "https://github.com/handleui/detent/issues"
+  },
+  "homepage": "https://github.com/handleui/detent#readme",
+  "keywords": [
+    "cli",
+    "github-actions",
+    "local-runner",
+    "error-parsing",
+    "ai-troubleshooting",
+    "claude",
+    "detent"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "bin": {
+    "dt": "bin.js"
+  },
+  "files": [
+    "bin.js",
+    "install.js",
+    "uninstall.js",
+    "bin/",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "sh -c 'VERSION=$(node -p \"require(\\\"./package.json\\\").version\") && go build -ldflags \"-X github.com/detent/cli/cmd.Version=$VERSION\" -o dist/dt'",
+    "clean": "rm -rf dist bin",
+    "prepare-release": "npm run clean && mkdir -p bin",
+    "postinstall": "node ./install.js",
+    "preuninstall": "node ./uninstall.js"
+  },
+  "dependencies": {
+    "tar-fs": "^3.0.6",
+    "adm-zip": "^0.5.16"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true,
+    "registry": "https://registry.npmjs.org/"
+  },
+  "goBinary": {
+    "name": "dt",
+    "path": "./bin",
+    "url": "https://github.com/handleui/detent/releases/download/v{{version}}/dt-{{platform}}-{{arch}}.{{ext}}"
+  }
+}

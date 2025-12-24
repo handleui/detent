@@ -1,0 +1,88 @@
+# golangci-lint configuration for Detent CLI
+# See https://golangci-lint.run/docs/configuration/file
+
+version: "2"
+
+linters:
+  # Use standard default linters as baseline
+  default: standard
+
+  # Additional linters per project requirements
+  enable:
+    - gosec          # Security-focused linter
+    - gocritic       # Provides diagnostics for common code issues
+    - misspell       # Spell checker for comments
+    - errname        # Check error names follow conventions
+    - exhaustive     # Check exhaustiveness of enum switch statements
+    - revive         # Fast, configurable, extensible linter
+    - unconvert      # Remove unnecessary type conversions
+    - unparam        # Report unused function parameters
+    - nakedret       # Find naked returns in long functions
+
+  settings:
+    govet:
+      enable:
+        - shadow      # Report shadowed variables
+        - nilness     # Check for redundant or impossible nil comparisons
+
+    errcheck:
+      check-type-assertions: true
+      check-blank: false
+
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - style
+        - performance
+      disabled-checks:
+        - unnamedResult
+        - hugeParam
+
+    gosec:
+      excludes:
+        - G104  # Audit errors not checked (covered by errcheck)
+        - G307  # Deferring unsafe method (covered by gocritic)
+
+    revive:
+      rules:
+        - name: exported
+          disabled: false
+        - name: unexported-return
+          disabled: true
+
+    exhaustive:
+      default-signifies-exhaustive: true
+
+    nakedret:
+      max-func-lines: 30
+
+  exclusions:
+    rules:
+      # Exclude some linters from running on test files
+      - path: _test\.go
+        linters:
+          - gosec
+          - errcheck
+          - gocritic
+          - govet
+          - staticcheck
+
+      # Allow longer lines in generated code
+      - path: \.pb\.go
+        linters:
+          - lll
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+run:
+  timeout: 5m
+  tests: true
+  modules-download-mode: readonly
+
+output:
+  formats:
+    text:
+      print-linter-name: true
+      print-issued-lines: true

@@ -1,0 +1,67 @@
+name: Changesets
+
+on:
+  push:
+    branches:
+      - main
+
+concurrency: ${{ github.workflow }}-${{ github.ref }}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  version:
+    name: Version Packages
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Create Release Pull Request or Create Tags
+        id: changesets
+        uses: changesets/action@v1
+        with:
+          version: npm run version
+          commit: 'chore: version packages'
+          title: 'chore: version packages'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create git tags
+        if: steps.changesets.outputs.hasChangesets == 'false'
+        run: |
+          # Get all package.json files in the workspace
+          PACKAGES=$(find apps packages -name "package.json" -not -path "*/node_modules/*")
+
+          for pkg in $PACKAGES; do
+            PKG_NAME=$(node -p "require('./$pkg').name")
+            PKG_VERSION=$(node -p "require('./$pkg').version")
+
+            # Only create tags for @detent/cli (the main publishable package)
+            if [ "$PKG_NAME" = "@detent/cli" ]; then
+              TAG_NAME="v${PKG_VERSION}"
+
+              # Check if tag already exists
+              if git rev-parse "$TAG_NAME" >/dev/null 2>&1; then
+                echo "Tag $TAG_NAME already exists, skipping"
+              else
+                echo "Creating tag $TAG_NAME for $PKG_NAME"
+                git tag "$TAG_NAME"
+                git push origin "$TAG_NAME"
+                echo "Created and pushed tag: $TAG_NAME"
+              fi
+            fi
+          done

@@ -1,0 +1,209 @@
+// Package preflight provides orchestration logic for pre-flight checks
+// before running GitHub Actions workflows locally. This includes verifying
+// act installation, Docker availability, preparing workflows, and creating
+// isolated worktrees for execution.
+package preflight
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"time"
+
+	"github.com/detent/cli/internal/commands"
+	"github.com/detent/cli/internal/docker"
+	"github.com/detent/cli/internal/git"
+	"github.com/detent/cli/internal/tui"
+	"github.com/detent/cli/internal/workflow"
+)
+
+const (
+	// preflightVisualDelay allows the spinner to render before check execution begins.
+	// This improves perceived responsiveness in the TUI by giving users visual feedback
+	// that the tool is working before any actual work starts.
+	preflightVisualDelay = 200 * time.Millisecond
+
+	// preflightTransitionDelay creates a brief pause between checks to prevent
+	// visual "flashing" and give users time to process each check result before
+	// moving to the next one. This improves the UX of the sequential check display.
+	preflightTransitionDelay = 100 * time.Millisecond
+
+	// preflightCompletionPause provides a final pause after all checks pass to
+	// display the success state and give visual confirmation before proceeding
+	// to the main workflow execution.
+	preflightCompletionPause = 300 * time.Millisecond
+)
+
+// Result contains the results and cleanup functions from preflight checks.
+type Result struct {
+	TmpDir           string
+	WorktreeInfo     *git.WorktreeInfo
+	CleanupWorkflows func()
+	CleanupWorktree  func()
+}
+
+// workflowPrepResult holds the results from workflow preparation.
+type workflowPrepResult struct {
+	tmpDir  string
+	cleanup func()
+}
+
+// worktreePrepResult holds the results from worktree preparation.
+type worktreePrepResult struct {
+	info    *git.WorktreeInfo
+	cleanup func()
+}
+
+// Cleanup executes both cleanup functions in the correct order (worktree first, then workflows).
+func (r *Result) Cleanup() {
+	if r.CleanupWorktree != nil {
+		r.CleanupWorktree()
+	}
+	if r.CleanupWorkflows != nil {
+		r.CleanupWorkflows()
+	}
+}
+
+// preflightChecker helps execute individual preflight checks with consistent error handling.
+type preflightChecker struct {
+	display         *tui.PreflightDisplay
+	transitionDelay time.Duration
+}
+
+// executeCheck runs a single check with standardized error handling and UI updates.
+// It updates the display to show "running", executes the check function, and updates
+// the display to show "success" or "error" depending on the result.
+func (p *preflightChecker) executeCheck(checkName string, checkFunc func() error) error {
+	time.Sleep(p.transitionDelay)
+	p.display.UpdateCheck(checkName, "running", nil)
+	p.display.Render()
+
+	err := checkFunc()
+	if err != nil {
+		p.display.UpdateCheck(checkName, "error", err)
+		p.display.RenderFinal()
+		return err
+	}
+
+	p.display.UpdateCheck(checkName, "success", nil)
+	p.display.Render()
+	return nil
+}
+
+// executeWorkflowPrep runs the workflow preparation check with standardized error handling.
+func (p *preflightChecker) executeWorkflowPrep(checkName string, additionalSuccessChecks []string, checkFunc func() (workflowPrepResult, error)) (workflowPrepResult, error) {
+	time.Sleep(p.transitionDelay)
+	p.display.UpdateCheck(checkName, "running", nil)
+	p.display.Render()
+
+	result, err := checkFunc()
+	if err != nil {
+		p.display.UpdateCheck(checkName, "error", err)
+		p.display.RenderFinal()
+		return workflowPrepResult{}, err
+	}
+
+	p.display.UpdateCheck(checkName, "success", nil)
+	for _, check := range additionalSuccessChecks {
+		p.display.UpdateCheck(check, "success", nil)
+	}
+	p.display.Render()
+	return result, nil
+}
+
+// executeWorktreePrep runs the worktree preparation check with standardized error handling.
+func (p *preflightChecker) executeWorktreePrep(checkName string, checkFunc func() (worktreePrepResult, error)) (worktreePrepResult, error) {
+	time.Sleep(p.transitionDelay)
+	p.display.UpdateCheck(checkName, "running", nil)
+	p.display.Render()
+
+	result, err := checkFunc()
+	if err != nil {
+		p.display.UpdateCheck(checkName, "error", err)
+		p.display.RenderFinal()
+		return worktreePrepResult{}, err
+	}
+
+	p.display.UpdateCheck(checkName, "success", nil)
+	p.display.Render()
+	return result, nil
+}
+
+// RunPreflightChecks performs and displays pre-flight checks before running act.
+// It verifies system requirements, prepares workflows, and creates an isolated worktree.
+func RunPreflightChecks(ctx context.Context, workflowPath, repoRoot, runID, workflowFile string) (*Result, error) {
+	checks := []string{
+		"Checking act installation",
+		"Checking Docker availability",
+		"Preparing workflows (injecting continue-on-error)",
+		"Creating temporary workspace",
+		"Creating isolated worktree",
+	}
+
+	display := tui.NewPreflightDisplay(checks)
+	display.Render()
+
+	checker := &preflightChecker{
+		display:         display,
+		transitionDelay: preflightTransitionDelay,
+	}
+
+	// Check 1: Act installation (uses visual delay for first check)
+	checker.transitionDelay = preflightVisualDelay
+	if err := checker.executeCheck("Checking act installation", commands.CheckAct); err != nil {
+		return nil, err
+	}
+	checker.transitionDelay = preflightTransitionDelay
+
+	// Check 2: Docker availability
+	if err := checker.executeCheck("Checking Docker availability", func() error {
+		return docker.IsAvailable(ctx)
+	}); err != nil {
+		return nil, fmt.Errorf("docker is not available: %w", err)
+	}
+
+	// Check 3: Prepare workflows
+	workflowResult, err := checker.executeWorkflowPrep(
+		"Preparing workflows (injecting continue-on-error)",
+		[]string{"Creating temporary workspace"},
+		func() (workflowPrepResult, error) {
+			tmpDir, cleanup, prepErr := workflow.PrepareWorkflows(workflowPath, workflowFile)
+			if prepErr != nil {
+				return workflowPrepResult{}, fmt.Errorf("preparing workflows: %w", prepErr)
+			}
+			return workflowPrepResult{tmpDir: tmpDir, cleanup: cleanup}, nil
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	// Check 4: Create worktree
+	worktreeResult, err := checker.executeWorktreePrep(
+		"Creating isolated worktree",
+		func() (worktreePrepResult, error) {
+			info, cleanup, wtErr := git.PrepareWorktree(ctx, repoRoot, runID)
+			if wtErr != nil {
+				workflowResult.cleanup()
+				return worktreePrepResult{}, fmt.Errorf("creating worktree: %w", wtErr)
+			}
+			return worktreePrepResult{info: info, cleanup: cleanup}, nil
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	// Small pause to show all checks passed
+	time.Sleep(preflightCompletionPause)
+
+	// Add a blank line before TUI starts
+	fmt.Fprintln(os.Stderr)
+
+	return &Result{
+		TmpDir:           workflowResult.tmpDir,
+		WorktreeInfo:     worktreeResult.info,
+		CleanupWorkflows: workflowResult.cleanup,
+		CleanupWorktree:  worktreeResult.cleanup,
+	}, nil
+}
