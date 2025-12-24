@@ -76,13 +76,13 @@ func PrepareWorkflows(srcDir, specificWorkflow string) (tmpDir string, cleanup f
 	var workflows []string
 
 	if specificWorkflow != "" {
-		// Clean and validate the specific workflow path to prevent path traversal
-		cleanWorkflow := filepath.Clean(specificWorkflow)
-
-		// Reject paths with parent directory references
-		if filepath.IsAbs(cleanWorkflow) || cleanWorkflow != "" && (cleanWorkflow[0] == '.' || cleanWorkflow == ".." || len(cleanWorkflow) >= 3 && cleanWorkflow[:3] == ".."+string(filepath.Separator)) {
+		// Validate path BEFORE cleaning to catch patterns like ./file
+		if filepath.IsAbs(specificWorkflow) || specificWorkflow != "" && specificWorkflow[0] == '.' {
 			return "", nil, fmt.Errorf("workflow path must be relative and cannot reference parent directories")
 		}
+
+		// Clean the path after validation
+		cleanWorkflow := filepath.Clean(specificWorkflow)
 
 		// Get absolute paths for validation
 		absSrcDir, absErr := filepath.Abs(srcDir)

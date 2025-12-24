@@ -63,7 +63,6 @@ jobs:
           file: ./apps/cli/coverage.out
           flags: cli
           fail_ci_if_error: false
-        continue-on-error: true
 
   cli-build:
     name: "[CLI] Build"

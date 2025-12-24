@@ -619,6 +619,10 @@ func TestPrepareWorkflows_PathValidation(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(subdir, "bar.yml"), []byte("name: test\njobs:\n  test:\n    runs-on: ubuntu-latest"), 0o600); err != nil {
 				t.Fatalf("Failed to create workflow: %v", err)
 			}
+			// Also create bar.yml in root for the "foo/../bar.yml" test case
+			if err := os.WriteFile(filepath.Join(dir, "bar.yml"), []byte("name: test\njobs:\n  test:\n    runs-on: ubuntu-latest"), 0o600); err != nil {
+				t.Fatalf("Failed to create workflow: %v", err)
+			}
 
 			_, cleanup, err := PrepareWorkflows(dir, tt.specificWorkflow)
 			if cleanup != nil {
@@ -764,6 +768,54 @@ jobs:
 	}
 }
 
+// timeoutEquals compares two timeout values of type any, handling type conversions
+func timeoutEquals(a, b any) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+
+	// Convert both values to int64 for comparison
+	var aInt, bInt int64
+	switch v := a.(type) {
+	case int:
+		aInt = int64(v)
+	case int64:
+		aInt = v
+	case int32:
+		aInt = int64(v)
+	case uint:
+		aInt = int64(v)
+	case uint64:
+		aInt = int64(v)
+	case uint32:
+		aInt = int64(v)
+	default:
+		return false
+	}
+
+	switch v := b.(type) {
+	case int:
+		bInt = int64(v)
+	case int64:
+		bInt = v
+	case int32:
+		bInt = int64(v)
+	case uint:
+		bInt = int64(v)
+	case uint64:
+		bInt = int64(v)
+	case uint32:
+		bInt = int64(v)
+	default:
+		return false
+	}
+
+	return aInt == bInt
+}
+
 // TestPrepareWorkflows_Integration tests the full integration with real workflow files
 func TestPrepareWorkflows_Integration(t *testing.T) {
 	dir := t.TempDir()
@@ -876,7 +928,7 @@ jobs:
 			if tt.wantJobTimeout {
 				if job.TimeoutMinutes == nil {
 					t.Errorf("Job %s: TimeoutMinutes should be set", tt.jobName)
-				} else if tt.originalTimeout != nil && job.TimeoutMinutes != tt.originalTimeout {
+				} else if tt.originalTimeout != nil && !timeoutEquals(job.TimeoutMinutes, tt.originalTimeout) {
 					t.Errorf("Job %s: TimeoutMinutes = %v, want %v", tt.jobName, job.TimeoutMinutes, tt.originalTimeout)
 				}
 			}
@@ -891,7 +943,7 @@ jobs:
 				if step.TimeoutMinutes == nil {
 					t.Errorf("Job %s, step %d: TimeoutMinutes should be set", tt.jobName, i)
 				} else if i == tt.stepWithTimeout && tt.stepOriginalTimeout != nil {
-					if step.TimeoutMinutes != tt.stepOriginalTimeout {
+					if !timeoutEquals(step.TimeoutMinutes, tt.stepOriginalTimeout) {
 						t.Errorf("Job %s, step %d: TimeoutMinutes = %v, want %v", tt.jobName, i, step.TimeoutMinutes, tt.stepOriginalTimeout)
 					}
 				}
