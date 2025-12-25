@@ -372,3 +372,122 @@ func TestRecorder_RecordFinding_WithoutFile(t *testing.T) {
 		t.Errorf("errorCounts should be empty, got %d entries", len(recorder.errorCounts))
 	}
 }
+
+// TestRecorder_RecordFinding_PopulatesFileHash tests that file hashes are computed and cached
+func TestRecorder_RecordFinding_PopulatesFileHash(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create a real file to hash
+	testFile := filepath.Join(tmpDir, "test.go")
+	if err := os.WriteFile(testFile, []byte("package main"), 0o644); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	recorder, err := NewRecorder(tmpDir, "test", "abc123", "github")
+	if err != nil {
+		t.Fatalf("Failed to create recorder: %v", err)
+	}
+	defer func() { _ = recorder.Finalize(0) }()
+
+	// Record error with relative path
+	err = recorder.RecordFinding(&errors.ExtractedError{
+		Message:  "test error",
+		File:     "test.go", // Relative path
+		Line:     1,
+		Severity: "error",
+		Category: errors.CategoryCompile,
+	})
+	if err != nil {
+		t.Fatalf("RecordFinding() error = %v", err)
+	}
+
+	// Verify hash was computed and cached (cache uses absolute path as key)
+	absPath := filepath.Join(tmpDir, "test.go")
+	if recorder.fileHashCache[absPath] == "" {
+		t.Error("Expected file hash to be cached")
+	}
+
+	// Verify hash is consistent (caching works)
+	firstHash := recorder.fileHashCache[absPath]
+
+	// Record another error for same file
+	err = recorder.RecordFinding(&errors.ExtractedError{
+		Message:  "another error",
+		File:     "test.go",
+		Line:     2,
+		Severity: "error",
+		Category: errors.CategoryCompile,
+	})
+	if err != nil {
+		t.Fatalf("RecordFinding() error = %v", err)
+	}
+
+	// Verify same hash (from cache)
+	if recorder.fileHashCache[absPath] != firstHash {
+		t.Error("File hash should be cached and consistent")
+	}
+}
+
+// TestRecorder_RecordFinding_MissingFileNoHash tests that missing files don't cause errors
+func TestRecorder_RecordFinding_MissingFileNoHash(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	recorder, err := NewRecorder(tmpDir, "test", "abc123", "github")
+	if err != nil {
+		t.Fatalf("Failed to create recorder: %v", err)
+	}
+	defer func() { _ = recorder.Finalize(0) }()
+
+	// Record error for non-existent file
+	err = recorder.RecordFinding(&errors.ExtractedError{
+		Message:  "error in missing file",
+		File:     "nonexistent.go",
+		Line:     1,
+		Severity: "error",
+		Category: errors.CategoryCompile,
+	})
+	if err != nil {
+		t.Fatalf("RecordFinding() should not error for missing file: %v", err)
+	}
+
+	// Verify no hash was cached (file doesn't exist)
+	absPath := filepath.Join(tmpDir, "nonexistent.go")
+	if recorder.fileHashCache[absPath] != "" {
+		t.Error("Expected no hash for missing file")
+	}
+}
+
+// TestRecorder_RecordFinding_PathTraversalBlocked tests that path traversal is blocked
+func TestRecorder_RecordFinding_PathTraversalBlocked(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create a file outside the repo root
+	outsideFile := filepath.Join(filepath.Dir(tmpDir), "outside.txt")
+	if err := os.WriteFile(outsideFile, []byte("sensitive"), 0o644); err != nil {
+		t.Fatalf("Failed to create outside file: %v", err)
+	}
+	defer os.Remove(outsideFile)
+
+	recorder, err := NewRecorder(tmpDir, "test", "abc123", "github")
+	if err != nil {
+		t.Fatalf("Failed to create recorder: %v", err)
+	}
+	defer func() { _ = recorder.Finalize(0) }()
+
+	// Try to record error with path traversal
+	err = recorder.RecordFinding(&errors.ExtractedError{
+		Message:  "error with traversal path",
+		File:     "../outside.txt",
+		Line:     1,
+		Severity: "error",
+		Category: errors.CategoryCompile,
+	})
+	if err != nil {
+		t.Fatalf("RecordFinding() should not error: %v", err)
+	}
+
+	// Verify no hash was computed (path traversal blocked)
+	if len(recorder.fileHashCache) != 0 {
+		t.Error("Expected no hash for path traversal attempt")
+	}
+}

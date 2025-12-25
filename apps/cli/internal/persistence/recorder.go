@@ -2,6 +2,8 @@ package persistence
 
 import (
 	"fmt"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/detent/cli/internal/errors"
@@ -22,6 +24,7 @@ type Recorder struct {
 	fileMetadata  map[string]*ScannedFile // keyed by file path
 	errorCounts   map[string]int          // error count per file
 	warningCounts map[string]int          // warning count per file
+	fileHashCache map[string]string       // cache computed file hashes
 
 	// Run metadata
 	workflowName string
@@ -58,6 +61,7 @@ func NewRecorder(repoRoot, workflowName, commitSHA, execMode string) (*Recorder,
 		fileMetadata:  make(map[string]*ScannedFile),
 		errorCounts:   make(map[string]int),
 		warningCounts: make(map[string]int),
+		fileHashCache: make(map[string]string),
 		workflowName:  workflowName,
 		commitSHA:     commitSHA,
 		execMode:      execMode,
@@ -77,6 +81,7 @@ func (r *Recorder) RecordFindings(findings []*errors.ExtractedError) error {
 			Timestamp:  time.Now(),
 			RunID:      r.runID,
 			FilePath:   err.File,
+			FileHash:   r.computeFileHash(err.File),
 			Message:    err.Message,
 			Line:       err.Line,
 			Column:     err.Column,
@@ -126,6 +131,7 @@ func (r *Recorder) RecordFinding(err *errors.ExtractedError) error {
 		Timestamp:  time.Now(),
 		RunID:      r.runID,
 		FilePath:   err.File,
+		FileHash:   r.computeFileHash(err.File),
 		Message:    err.Message,
 		Line:       err.Line,
 		Column:     err.Column,
@@ -185,4 +191,40 @@ func (r *Recorder) Finalize(exitCode int) error {
 // GetOutputPath returns the path to the SQLite database file
 func (r *Recorder) GetOutputPath() string {
 	return r.sqlite.Path()
+}
+
+// computeFileHash returns the cached or freshly computed hash for a file.
+// Returns empty string if file doesn't exist, is outside repo, or can't be hashed.
+func (r *Recorder) computeFileHash(filePath string) string {
+	if filePath == "" {
+		return ""
+	}
+
+	// Build absolute path (error files are relative to repo root)
+	absPath := filePath
+	if !filepath.IsAbs(filePath) {
+		absPath = filepath.Join(r.repoRoot, filePath)
+	}
+	absPath = filepath.Clean(absPath)
+
+	// Security: validate path stays within repo root (prevent path traversal)
+	repoRootClean := filepath.Clean(r.repoRoot)
+	if !strings.HasPrefix(absPath, repoRootClean+string(filepath.Separator)) && absPath != repoRootClean {
+		return ""
+	}
+
+	// Use absolute path as cache key for consistency
+	if hash, ok := r.fileHashCache[absPath]; ok {
+		return hash
+	}
+
+	// Compute hash (silently skip if file doesn't exist)
+	hash, err := ComputeFileHash(absPath)
+	if err != nil {
+		return ""
+	}
+
+	// Cache for future lookups using absolute path
+	r.fileHashCache[absPath] = hash
+	return hash
 }
