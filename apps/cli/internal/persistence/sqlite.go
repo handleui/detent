@@ -19,7 +19,7 @@ const (
 	detentDBName = "detent.db"
 	batchSize    = 500 // Batch size for error inserts
 
-	currentSchemaVersion = 7 // Current database schema version
+	currentSchemaVersion = 8 // Current database schema version
 )
 
 // createDirIfNotExists creates a directory if it doesn't exist
@@ -291,6 +291,15 @@ func (w *SQLiteWriter) applyMigrations(fromVersion int) error {
 			DROP INDEX IF EXISTS idx_runs_codebase_state_hash;
 			`,
 		},
+		{
+			version: 8,
+			name:    "restore_run_id_index_for_cache",
+			sql: `
+			-- Restore idx_errors_run_id for cache lookups (GetErrorsByRunID)
+			-- This was dropped in v6 but is now needed for efficient cache retrieval
+			CREATE INDEX IF NOT EXISTS idx_errors_run_id ON errors(run_id);
+			`,
+		},
 	}
 
 	// Apply each migration in a transaction
@@ -363,6 +372,138 @@ func (w *SQLiteWriter) GetRunByCommit(commitSHA string) (runID string, found boo
 	}
 
 	return runID, true, nil
+}
+
+// RunRecord represents a workflow run stored in the database
+type RunRecord struct {
+	RunID         string
+	WorkflowName  string
+	CommitSHA     string
+	ExecutionMode string
+	StartedAt     time.Time
+	CompletedAt   time.Time
+	TotalErrors   int
+}
+
+// ErrorRecord represents an error stored in the database
+type ErrorRecord struct {
+	ErrorID     string
+	RunID       string
+	FilePath    string
+	LineNumber  int
+	ErrorType   string
+	Message     string
+	StackTrace  string
+	FileHash    string
+	ContentHash string
+	FirstSeenAt time.Time
+	LastSeenAt  time.Time
+	SeenCount   int
+	Status      string
+}
+
+// GetRunByID retrieves a run by its ID
+func (w *SQLiteWriter) GetRunByID(runID string) (*RunRecord, error) {
+	query := `
+		SELECT run_id, workflow_name, commit_sha, execution_mode,
+			started_at, completed_at, total_errors
+		FROM runs WHERE run_id = ?
+	`
+
+	var run RunRecord
+	var startedAt, completedAt sql.NullInt64
+	var totalErrors sql.NullInt64
+
+	err := w.db.QueryRow(query, runID).Scan(
+		&run.RunID,
+		&run.WorkflowName,
+		&run.CommitSHA,
+		&run.ExecutionMode,
+		&startedAt,
+		&completedAt,
+		&totalErrors,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get run: %w", err)
+	}
+
+	if startedAt.Valid {
+		run.StartedAt = time.Unix(startedAt.Int64, 0)
+	}
+	if completedAt.Valid {
+		run.CompletedAt = time.Unix(completedAt.Int64, 0)
+	}
+	if totalErrors.Valid {
+		run.TotalErrors = int(totalErrors.Int64)
+	}
+
+	return &run, nil
+}
+
+// GetErrorsByRunID retrieves all errors for a given run
+func (w *SQLiteWriter) GetErrorsByRunID(runID string) ([]*ErrorRecord, error) {
+	query := `
+		SELECT error_id, run_id, file_path, line_number, error_type, message,
+			stack_trace, file_hash, content_hash, first_seen_at, last_seen_at,
+			seen_count, status
+		FROM errors WHERE run_id = ?
+		ORDER BY file_path, line_number
+	`
+
+	rows, err := w.db.Query(query, runID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query errors: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var errors []*ErrorRecord
+	for rows.Next() {
+		var e ErrorRecord
+		var filePath, stackTrace, fileHash, contentHash, status sql.NullString
+		var firstSeenAt, lastSeenAt sql.NullInt64
+
+		err := rows.Scan(
+			&e.ErrorID,
+			&e.RunID,
+			&filePath,
+			&e.LineNumber,
+			&e.ErrorType,
+			&e.Message,
+			&stackTrace,
+			&fileHash,
+			&contentHash,
+			&firstSeenAt,
+			&lastSeenAt,
+			&e.SeenCount,
+			&status,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan error: %w", err)
+		}
+
+		e.FilePath = filePath.String
+		e.StackTrace = stackTrace.String
+		e.FileHash = fileHash.String
+		e.ContentHash = contentHash.String
+		e.Status = status.String
+		if firstSeenAt.Valid {
+			e.FirstSeenAt = time.Unix(firstSeenAt.Int64, 0)
+		}
+		if lastSeenAt.Valid {
+			e.LastSeenAt = time.Unix(lastSeenAt.Int64, 0)
+		}
+
+		errors = append(errors, &e)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating errors: %w", err)
+	}
+
+	return errors, nil
 }
 
 // RecordFindings adds multiple findings in a single batch operation

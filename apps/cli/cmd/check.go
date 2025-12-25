@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/detent/cli/internal/cache"
 	internalerrors "github.com/detent/cli/internal/errors"
 	"github.com/detent/cli/internal/output"
 	"github.com/detent/cli/internal/runner"
@@ -26,6 +27,7 @@ var (
 	// Command-specific flags
 	outputFormat string
 	event        string
+	forceRun     bool
 )
 
 var checkCmd = &cobra.Command{
@@ -68,6 +70,7 @@ Results are persisted to .detent/ for future analysis and comparison.`,
 func init() {
 	checkCmd.Flags().StringVarP(&outputFormat, "output", "o", "text", "output format (text, json, json-detailed)")
 	checkCmd.Flags().StringVarP(&event, "event", "e", "push", "GitHub event type (push, pull_request, etc.)")
+	checkCmd.Flags().BoolVarP(&forceRun, "force", "f", false, "force fresh run, ignoring cached results")
 }
 
 // buildRunConfig validates flags, resolves paths, generates UUID, and builds a RunConfig.
@@ -157,15 +160,25 @@ func checkWorkflowStatus(result *runner.RunResult) error {
 // runCheck orchestrates the workflow execution and error reporting.
 // It performs these steps in sequence:
 // 1. Setup and validate environment configuration
-// 2. Prepare workflow files and worktree
-// 3. Execute workflow with appropriate UI mode
-// 4. Process and persist results
-// 5. Display output and return status
+// 2. Check cache for prior run (skip if --force)
+// 3. Prepare workflow files and worktree
+// 4. Execute workflow with appropriate UI mode
+// 5. Process and persist results
+// 6. Display output and return status
 func runCheck(cmd *cobra.Command, args []string) error {
 	// Setup: validate flags and build config
 	cfg, err := buildRunConfig()
 	if err != nil {
 		return err
+	}
+
+	// Check cache for prior run (skip if --force)
+	if !forceRun {
+		result, cacheErr := cache.Check(cfg.RepoRoot, outputFormat)
+		if result.Hit {
+			return cacheErr // Return error if cached run had errors, nil otherwise
+		}
+		// If cache check fails or no hit, continue with fresh run
 	}
 
 	// Create context with timeout
