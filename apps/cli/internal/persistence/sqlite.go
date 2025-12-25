@@ -22,7 +22,6 @@ const (
 	currentSchemaVersion = 8 // Current database schema version
 )
 
-// createDirIfNotExists creates a directory if it doesn't exist
 func createDirIfNotExists(path string) error {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		// #nosec G301 - standard permissions for app data directory
@@ -42,7 +41,6 @@ type SQLiteWriter struct {
 
 // NewSQLiteWriter creates a new SQLite writer and initializes the database schema
 func NewSQLiteWriter(repoRoot string) (*SQLiteWriter, error) {
-	// Create .detent directory
 	detentPath := filepath.Join(repoRoot, detentDir)
 
 	// #nosec G301 - standard permissions for app data directory
@@ -50,7 +48,6 @@ func NewSQLiteWriter(repoRoot string) (*SQLiteWriter, error) {
 		return nil, fmt.Errorf("failed to create .detent directory: %w", err)
 	}
 
-	// Open SQLite database
 	dbPath := filepath.Join(detentPath, detentDBName)
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {

@@ -30,12 +30,10 @@ type WorktreeInfo struct {
 //
 // Note: This requires a clean worktree. Call ValidateCleanWorktree() before this.
 func PrepareWorktree(ctx context.Context, repoRoot, runID string) (*WorktreeInfo, func(), error) {
-	// 0. Check disk space before allocating resources
 	if err := checkTmpDiskSpace(); err != nil {
 		return nil, nil, err
 	}
 
-	// 1. Get current commit SHA from repoRoot
 	cmd := exec.CommandContext(ctx, "git", "-c", "core.hooksPath=/dev/null", "rev-parse", "HEAD")
 	cmd.Dir = repoRoot
 	cmd.Env = safeGitEnv()
@@ -45,7 +43,7 @@ func PrepareWorktree(ctx context.Context, repoRoot, runID string) (*WorktreeInfo
 	}
 	commitSHA := strings.TrimSpace(string(output))
 
-	// 2. Create temp directory atomically - prevents TOCTOU attacks
+	// Prevents TOCTOU attacks
 	worktreeDir, err := os.MkdirTemp("", "detent-worktree-")
 	if err != nil {
 		return nil, nil, fmt.Errorf("creating temp directory: %w", err)
@@ -58,7 +56,6 @@ func PrepareWorktree(ctx context.Context, repoRoot, runID string) (*WorktreeInfo
 		return nil, nil, fmt.Errorf("temp directory security check failed")
 	}
 
-	// 3. Create worktree in detached HEAD state
 	if err := createWorktree(ctx, repoRoot, worktreeDir, commitSHA); err != nil {
 		_ = os.RemoveAll(worktreeDir)
 		pruneWorktrees(ctx, repoRoot)
@@ -70,7 +67,6 @@ func PrepareWorktree(ctx context.Context, repoRoot, runID string) (*WorktreeInfo
 		CommitSHA: commitSHA,
 	}
 
-	// 4. Return cleanup function with its own timeout context
 	cleanup := func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 		defer cancel()
