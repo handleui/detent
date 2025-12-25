@@ -11,7 +11,7 @@
     "prepare": "lefthook install",
     "changeset": "changeset",
     "version": "changeset version",
-    "release": "npm run build-binaries -w apps/cli && changeset publish"
+    "release": "changeset publish"
   },
   "devDependencies": {
     "@biomejs/biome": "2.3.10",

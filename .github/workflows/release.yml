@@ -52,6 +52,23 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_CONFIG_PROVENANCE: true
 
+      - name: Create Git Tag for CLI Release
+        if: steps.changesets.outputs.published == 'true'
+        run: |
+          CLI_VERSION=$(node -p "require('./apps/cli/package.json').version")
+          TAG="v${CLI_VERSION}"
+
+          # Check if tag already exists
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists, skipping"
+          else
+            echo "Creating tag $TAG"
+            git tag "$TAG"
+            git push origin "$TAG"
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Add labels to release PR
         if: steps.changesets.outputs.pullRequestNumber != ''
         run: |

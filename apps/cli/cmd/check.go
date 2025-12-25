@@ -304,16 +304,14 @@ func runCheckDryRun(ctx context.Context, cfg *runner.RunConfig) error {
 }
 
 // simulateDryRunPreflight displays the preflight checks UI with simulated success.
-// Uses the same PreflightDisplay and timing as the real preflight checks.
+// Uses simplified checks for dry-run while maintaining the same visual flow.
 func simulateDryRunPreflight() {
 	checks := []string{
 		"Checking for uncommitted changes",
 		"Validating repository security",
-		"Checking act installation",
-		"Checking Docker availability",
-		"Preparing workflows (injecting continue-on-error)",
-		"Creating temporary workspace",
-		"Creating isolated worktree",
+		"Checking prerequisites",
+		"Preparing workflows",
+		"Creating isolated workspace",
 	}
 
 	display := tui.NewPreflightDisplay(checks)
@@ -324,35 +322,23 @@ func simulateDryRunPreflight() {
 
 	// Simulate each check passing sequentially
 	for i, check := range checks {
-		// Show running state
 		display.UpdateCheck(check, "running", nil)
 		display.Render()
 
-		// Simulate check execution time (varies by check type)
-		switch i {
-		case 4: // Preparing workflows - also marks "Creating temporary workspace" as success
-			time.Sleep(150 * time.Millisecond)
-			display.UpdateCheck(check, "success", nil)
-			display.UpdateCheck("Creating temporary workspace", "success", nil)
-			display.Render()
-		case 5: // Creating temporary workspace - already marked above, skip
-			continue
-		default:
-			time.Sleep(100 * time.Millisecond)
-			display.UpdateCheck(check, "success", nil)
-			display.Render()
-		}
+		time.Sleep(100 * time.Millisecond)
+		display.UpdateCheck(check, "success", nil)
+		display.Render()
 
-		// Transition delay between checks (same as real preflight)
+		// Transition delay between checks
 		if i < len(checks)-1 {
 			time.Sleep(dryRunPreflightTransitionDelay)
 		}
 	}
 
-	// Completion pause to show all checks passed (same as real preflight)
+	// Completion pause to show all checks passed
 	time.Sleep(dryRunPreflightCompletionPause)
 
-	// Blank line before main TUI starts (same as real preflight)
+	// Blank line before main TUI starts
 	_, _ = fmt.Fprintln(os.Stderr)
 }
 
@@ -361,9 +347,8 @@ func simulateDryRunPreflight() {
 func simulateDryRunProgress(ctx context.Context, logChan chan string, program *tea.Program) {
 	defer close(logChan)
 
-	// Simulated workflow execution matching real act output format.
-	// Status messages match how the TUI parser extracts progress from act output.
-	// Logs match real act output format: "[job/step] message" or "🚀  Running job..."
+	// Simulated workflow steps - uses [dry-run] prefix for logs to indicate mock data.
+	// Status messages match the real TUI parser format for authentic progress display.
 	steps := []struct {
 		status string
 		logs   []string
@@ -372,62 +357,49 @@ func simulateDryRunProgress(ctx context.Context, logChan chan string, program *t
 		{
 			status: "build: Set up job",
 			logs: []string{
-				"🚀  Running build",
-				"[build/Set up job] Pulling image: node:18-alpine",
-				"[build/Set up job] Creating container...",
-				"[build/Set up job] Starting container",
-			},
-			delay: 600 * time.Millisecond,
-		},
-		{
-			status: "build: Checkout",
-			logs: []string{
-				"[build/Checkout] Checking out repository",
-				"[build/Checkout] Using actions/checkout@v4",
-				"[build/Checkout] ✅  Checkout complete",
-			},
-			delay: 400 * time.Millisecond,
-		},
-		{
-			status: "build: Install dependencies",
-			logs: []string{
-				"[build/Install dependencies] npm ci",
-				"[build/Install dependencies] added 847 packages in 12s",
-			},
-			delay: 800 * time.Millisecond,
-		},
-		{
-			status: "build: Type check",
-			logs: []string{
-				"[build/Type check] tsc --noEmit",
-				"[build/Type check] src/app.ts:42:5 - error TS2322: Type 'string' is not assignable to type 'number'.",
-				"[build/Type check]   42 |   const count: number = getUserId();",
-				"[build/Type check]      |         ^^^^^",
-				"[build/Type check] Found 1 error.",
-			},
-			delay: 600 * time.Millisecond,
-		},
-		{
-			status: "build: Lint",
-			logs: []string{
-				"[build/Lint] eslint .",
-				"[build/Lint] src/utils.ts",
-				"[build/Lint]   18:10  warning  'temp' is defined but never used  @typescript-eslint/no-unused-vars",
-				"[build/Lint] src/index.ts",
-				"[build/Lint]   7:1  error  Missing semicolon  semi",
-				"[build/Lint] ✖ 2 problems (1 error, 1 warning)",
+				"[dry-run] Starting container...",
+				"[dry-run] Pulling image: node:18-alpine",
 			},
 			delay: 500 * time.Millisecond,
 		},
 		{
+			status: "build: Checkout",
+			logs: []string{
+				"[dry-run] Checking out repository",
+			},
+			delay: 300 * time.Millisecond,
+		},
+		{
+			status: "build: Install dependencies",
+			logs: []string{
+				"[dry-run] npm ci",
+				"[dry-run] Installing packages...",
+			},
+			delay: 600 * time.Millisecond,
+		},
+		{
+			status: "build: Type check",
+			logs: []string{
+				"[dry-run] tsc --noEmit",
+				"[dry-run] Simulated type error in src/app.ts:42",
+			},
+			delay: 400 * time.Millisecond,
+		},
+		{
+			status: "build: Lint",
+			logs: []string{
+				"[dry-run] eslint .",
+				"[dry-run] Simulated lint errors found",
+			},
+			delay: 400 * time.Millisecond,
+		},
+		{
 			status: "build: Build",
 			logs: []string{
-				"[build/Build] npm run build",
-				"[build/Build] > project@1.0.0 build",
-				"[build/Build] > tsc",
-				"[build/Build] ✅  Build complete",
+				"[dry-run] npm run build",
+				"[dry-run] Build complete",
 			},
-			delay: 700 * time.Millisecond,
+			delay: 500 * time.Millisecond,
 		},
 	}
 
@@ -457,20 +429,6 @@ func simulateDryRunProgress(ctx context.Context, logChan chan string, program *t
 
 		time.Sleep(step.delay)
 	}
-
-	// Placeholder log showing where real logs would continue
-	select {
-	case logChan <- "":
-	case <-ctx.Done():
-		return
-	}
-	select {
-	case logChan <- "[This is a dry-run preview. Real workflow logs would appear here.]":
-	case <-ctx.Done():
-		return
-	}
-
-	time.Sleep(300 * time.Millisecond)
 
 	// Send completion with mock errors (demonstrates error report display)
 	mockExtracted := []*internalerrors.ExtractedError{
@@ -505,7 +463,7 @@ func simulateDryRunProgress(ctx context.Context, logChan chan string, program *t
 	mockErrors := internalerrors.GroupByFile(mockExtracted)
 
 	program.Send(tui.DoneMsg{
-		Duration: 4200 * time.Millisecond,
+		Duration: 2700 * time.Millisecond,
 		ExitCode: 1,
 		Errors:   mockErrors,
 	})
