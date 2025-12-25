@@ -39,6 +39,9 @@ type RunConfig struct {
 
 	// RunID is a unique identifier for this run (UUID)
 	RunID string
+
+	// DryRun skips actual workflow execution and shows simulated UI
+	DryRun bool
 }
 
 // Validate checks that all required fields are set and sets defaults for optional fields.

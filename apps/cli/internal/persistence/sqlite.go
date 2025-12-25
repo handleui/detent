@@ -2,6 +2,7 @@ package persistence
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,7 +20,14 @@ const (
 	detentDBName = "detent.db"
 	batchSize    = 500 // Batch size for error inserts
 
-	currentSchemaVersion = 9 // Current database schema version
+	currentSchemaVersion = 10 // Current database schema version
+
+	// healSelectColumns is the standard column list for heal queries (must match scanHealFromScanner order)
+	healSelectColumns = `heal_id, error_id, run_id, diff_content, diff_content_hash, file_path, file_hash,
+		model_id, prompt_hash, input_tokens, output_tokens,
+		cache_read_tokens, cache_write_tokens, cost_usd,
+		status, created_at, applied_at, verified_at, verification_result,
+		attempt_number, parent_heal_id, failure_reason`
 )
 
 func createDirIfNotExists(path string) error {
@@ -305,6 +313,14 @@ func (w *SQLiteWriter) applyMigrations(fromVersion int) error {
 			CREATE INDEX IF NOT EXISTS idx_heals_file_hash ON heals(file_hash);
 			`,
 		},
+		{
+			version: 10,
+			name:    "add_composite_index_for_heal_cache_lookup",
+			sql: `
+			CREATE INDEX IF NOT EXISTS idx_heals_cache_lookup
+			ON heals(file_path, file_hash, status, created_at DESC);
+			`,
+		},
 	}
 
 	// Apply each migration in a transaction
@@ -464,7 +480,7 @@ func (w *SQLiteWriter) GetErrorsByRunID(runID string) ([]*ErrorRecord, error) {
 	}
 	defer func() { _ = rows.Close() }()
 
-	var errors []*ErrorRecord
+	var records []*ErrorRecord
 	for rows.Next() {
 		var e ErrorRecord
 		var filePath, stackTrace, fileHash, contentHash, status sql.NullString
@@ -501,14 +517,14 @@ func (w *SQLiteWriter) GetErrorsByRunID(runID string) ([]*ErrorRecord, error) {
 			e.LastSeenAt = time.Unix(lastSeenAt.Int64, 0)
 		}
 
-		errors = append(errors, &e)
+		records = append(records, &e)
 	}
 
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("error iterating errors: %w", err)
 	}
 
-	return errors, nil
+	return records, nil
 }
 
 // RecordFindings adds multiple findings in a single batch operation
@@ -597,16 +613,18 @@ func (w *SQLiteWriter) flushBatch() (err error) {
 
 	now := time.Now().Unix()
 
-	// Compute content hashes for all findings and build lookup map
+	// Compute content hashes once per finding (avoid recomputing in second loop)
+	findingHashes := make(map[*FindingRecord]string, len(w.batch))
 	contentHashes := make([]string, 0, len(w.batch))
-	hashToFindings := make(map[string][]*FindingRecord)
+	seenHashes := make(map[string]bool)
 
 	for _, finding := range w.batch {
 		contentHash := ComputeContentHash(finding.Message)
-		if _, exists := hashToFindings[contentHash]; !exists {
+		findingHashes[finding] = contentHash
+		if !seenHashes[contentHash] {
 			contentHashes = append(contentHashes, contentHash)
+			seenHashes[contentHash] = true
 		}
-		hashToFindings[contentHash] = append(hashToFindings[contentHash], finding)
 	}
 
 	// Batch lookup existing errors using WHERE IN clause
@@ -626,7 +644,7 @@ func (w *SQLiteWriter) flushBatch() (err error) {
 			SELECT content_hash, error_id
 			FROM errors
 			WHERE content_hash IN (%s)
-		`, joinStrings(placeholders, ","))
+		`, strings.Join(placeholders, ","))
 
 		rows, queryErr := tx.Query(query, args...)
 		if queryErr != nil {
@@ -657,9 +675,9 @@ func (w *SQLiteWriter) flushBatch() (err error) {
 		}
 	}
 
-	// Process all findings using the batched lookup results
+	// Process all findings using cached hashes (avoid recomputing)
 	for _, finding := range w.batch {
-		contentHash := ComputeContentHash(finding.Message)
+		contentHash := findingHashes[finding]
 
 		if existingID, exists := existingErrors[contentHash]; exists {
 			// Update existing error
@@ -865,16 +883,7 @@ func (w *SQLiteWriter) RecordHealVerification(healID string, result Verification
 
 // GetHealsForError retrieves all heals for a given error, ordered by attempt number
 func (w *SQLiteWriter) GetHealsForError(errorID string) ([]*HealRecord, error) {
-	query := `
-		SELECT heal_id, error_id, run_id, diff_content, diff_content_hash, file_path, file_hash,
-			model_id, prompt_hash, input_tokens, output_tokens,
-			cache_read_tokens, cache_write_tokens, cost_usd,
-			status, created_at, applied_at, verified_at, verification_result,
-			attempt_number, parent_heal_id, failure_reason
-		FROM heals
-		WHERE error_id = ?
-		ORDER BY attempt_number ASC
-	`
+	query := `SELECT ` + healSelectColumns + ` FROM heals WHERE error_id = ? ORDER BY attempt_number ASC`
 
 	rows, err := w.db.Query(query, errorID)
 	if err != nil {
@@ -900,22 +909,12 @@ func (w *SQLiteWriter) GetHealsForError(errorID string) ([]*HealRecord, error) {
 
 // GetLatestHealForError retrieves the most recent heal for a given error
 func (w *SQLiteWriter) GetLatestHealForError(errorID string) (*HealRecord, error) {
-	query := `
-		SELECT heal_id, error_id, run_id, diff_content, diff_content_hash, file_path, file_hash,
-			model_id, prompt_hash, input_tokens, output_tokens,
-			cache_read_tokens, cache_write_tokens, cost_usd,
-			status, created_at, applied_at, verified_at, verification_result,
-			attempt_number, parent_heal_id, failure_reason
-		FROM heals
-		WHERE error_id = ?
-		ORDER BY attempt_number DESC
-		LIMIT 1
-	`
+	query := `SELECT ` + healSelectColumns + ` FROM heals WHERE error_id = ? ORDER BY attempt_number DESC LIMIT 1`
 
 	row := w.db.QueryRow(query, errorID)
 	heal, err := scanHealRowSingle(row)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("failed to get latest heal: %w", err)
@@ -926,24 +925,14 @@ func (w *SQLiteWriter) GetLatestHealForError(errorID string) (*HealRecord, error
 
 // GetPendingHealByFileHash finds a reusable pending heal for the given file and hash
 func (w *SQLiteWriter) GetPendingHealByFileHash(filePath, fileHash string) (*HealRecord, error) {
-	query := `
-		SELECT heal_id, error_id, run_id, diff_content, diff_content_hash, file_path, file_hash,
-			model_id, prompt_hash, input_tokens, output_tokens,
-			cache_read_tokens, cache_write_tokens, cost_usd,
-			status, created_at, applied_at, verified_at, verification_result,
-			attempt_number, parent_heal_id, failure_reason
-		FROM heals
-		WHERE file_path = ?
-		  AND file_hash = ?
-		  AND status = 'pending'
-		ORDER BY created_at DESC
-		LIMIT 1
-	`
+	query := `SELECT ` + healSelectColumns + ` FROM heals
+		WHERE file_path = ? AND file_hash = ? AND status = 'pending'
+		ORDER BY created_at DESC LIMIT 1`
 
 	row := w.db.QueryRow(query, filePath, fileHash)
 	heal, err := scanHealRowSingle(row)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("failed to get pending heal: %w", err)
@@ -952,8 +941,13 @@ func (w *SQLiteWriter) GetPendingHealByFileHash(filePath, fileHash string) (*Hea
 	return heal, nil
 }
 
-// scanHealRow scans a heal row from sql.Rows
-func scanHealRow(rows *sql.Rows) (*HealRecord, error) {
+// healScanner abstracts sql.Row and sql.Rows for shared scanning logic
+type healScanner interface {
+	Scan(dest ...any) error
+}
+
+// scanHealFromScanner scans a heal record from any scanner (sql.Row or sql.Rows)
+func scanHealFromScanner(s healScanner) (*HealRecord, error) {
 	var heal HealRecord
 	var runID, diffContentHash, filePath, fileHash, modelID, promptHash sql.NullString
 	var appliedAt, verifiedAt sql.NullInt64
@@ -961,7 +955,7 @@ func scanHealRow(rows *sql.Rows) (*HealRecord, error) {
 	var createdAtUnix int64
 	var status string
 
-	err := rows.Scan(
+	err := s.Scan(
 		&heal.HealID,
 		&heal.ErrorID,
 		&runID,
@@ -1019,71 +1013,14 @@ func scanHealRow(rows *sql.Rows) (*HealRecord, error) {
 	return &heal, nil
 }
 
+// scanHealRow scans a heal row from sql.Rows
+func scanHealRow(rows *sql.Rows) (*HealRecord, error) {
+	return scanHealFromScanner(rows)
+}
+
 // scanHealRowSingle scans a heal row from sql.Row
 func scanHealRowSingle(row *sql.Row) (*HealRecord, error) {
-	var heal HealRecord
-	var runID, diffContentHash, filePath, fileHash, modelID, promptHash sql.NullString
-	var appliedAt, verifiedAt sql.NullInt64
-	var verificationResult, parentHealID, failureReason sql.NullString
-	var createdAtUnix int64
-	var status string
-
-	err := row.Scan(
-		&heal.HealID,
-		&heal.ErrorID,
-		&runID,
-		&heal.DiffContent,
-		&diffContentHash,
-		&filePath,
-		&fileHash,
-		&modelID,
-		&promptHash,
-		&heal.InputTokens,
-		&heal.OutputTokens,
-		&heal.CacheReadTokens,
-		&heal.CacheWriteTokens,
-		&heal.CostUSD,
-		&status,
-		&createdAtUnix,
-		&appliedAt,
-		&verifiedAt,
-		&verificationResult,
-		&heal.AttemptNumber,
-		&parentHealID,
-		&failureReason,
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	heal.RunID = runID.String
-	heal.DiffContentHash = diffContentHash.String
-	heal.FilePath = filePath.String
-	heal.FileHash = fileHash.String
-	heal.ModelID = modelID.String
-	heal.PromptHash = promptHash.String
-	heal.Status = HealStatus(status)
-	heal.CreatedAt = time.Unix(createdAtUnix, 0)
-
-	if appliedAt.Valid {
-		t := time.Unix(appliedAt.Int64, 0)
-		heal.AppliedAt = &t
-	}
-	if verifiedAt.Valid {
-		t := time.Unix(verifiedAt.Int64, 0)
-		heal.VerifiedAt = &t
-	}
-	if verificationResult.Valid {
-		heal.VerificationResult = VerificationResult(verificationResult.String)
-	}
-	if parentHealID.Valid {
-		heal.ParentHealID = &parentHealID.String
-	}
-	if failureReason.Valid {
-		heal.FailureReason = &failureReason.String
-	}
-
-	return &heal, nil
+	return scanHealFromScanner(row)
 }
 
 // RecordErrorLocation records or updates an error location
@@ -1202,9 +1139,4 @@ func (w *SQLiteWriter) Close() error {
 // Path returns the absolute path to the SQLite database file
 func (w *SQLiteWriter) Path() string {
 	return w.path
-}
-
-// joinStrings is a simple string join helper
-func joinStrings(strs []string, sep string) string {
-	return strings.Join(strs, sep)
 }
