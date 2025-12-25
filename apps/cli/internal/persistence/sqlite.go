@@ -19,7 +19,7 @@ const (
 	detentDBName = "detent.db"
 	batchSize    = 500 // Batch size for error inserts
 
-	currentSchemaVersion = 8 // Current database schema version
+	currentSchemaVersion = 9 // Current database schema version
 )
 
 func createDirIfNotExists(path string) error {
@@ -295,6 +295,14 @@ func (w *SQLiteWriter) applyMigrations(fromVersion int) error {
 			-- Restore idx_errors_run_id for cache lookups (GetErrorsByRunID)
 			-- This was dropped in v6 but is now needed for efficient cache retrieval
 			CREATE INDEX IF NOT EXISTS idx_errors_run_id ON errors(run_id);
+			`,
+		},
+		{
+			version: 9,
+			name:    "add_file_hash_to_heals",
+			sql: `
+			ALTER TABLE heals ADD COLUMN file_hash TEXT;
+			CREATE INDEX IF NOT EXISTS idx_heals_file_hash ON heals(file_hash);
 			`,
 		},
 	}
@@ -744,12 +752,12 @@ func (w *SQLiteWriter) GetErrorCount() int {
 func (w *SQLiteWriter) RecordHeal(heal *HealRecord) error {
 	query := `
 		INSERT INTO heals (
-			heal_id, error_id, run_id, diff_content, diff_content_hash, file_path,
+			heal_id, error_id, run_id, diff_content, diff_content_hash, file_path, file_hash,
 			model_id, prompt_hash, input_tokens, output_tokens,
 			cache_read_tokens, cache_write_tokens, cost_usd,
 			status, created_at, applied_at, verified_at, verification_result,
 			attempt_number, parent_heal_id, failure_reason
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 
 	var appliedAt, verifiedAt *int64
@@ -768,7 +776,6 @@ func (w *SQLiteWriter) RecordHeal(heal *HealRecord) error {
 		verificationResult = &s
 	}
 
-	// Compute diff content hash if not provided
 	diffContentHash := heal.DiffContentHash
 	if diffContentHash == "" && heal.DiffContent != "" {
 		diffContentHash = ComputeContentHash(heal.DiffContent)
@@ -781,6 +788,7 @@ func (w *SQLiteWriter) RecordHeal(heal *HealRecord) error {
 		heal.DiffContent,
 		diffContentHash,
 		heal.FilePath,
+		heal.FileHash,
 		heal.ModelID,
 		heal.PromptHash,
 		heal.InputTokens,
@@ -858,7 +866,7 @@ func (w *SQLiteWriter) RecordHealVerification(healID string, result Verification
 // GetHealsForError retrieves all heals for a given error, ordered by attempt number
 func (w *SQLiteWriter) GetHealsForError(errorID string) ([]*HealRecord, error) {
 	query := `
-		SELECT heal_id, error_id, run_id, diff_content, diff_content_hash, file_path,
+		SELECT heal_id, error_id, run_id, diff_content, diff_content_hash, file_path, file_hash,
 			model_id, prompt_hash, input_tokens, output_tokens,
 			cache_read_tokens, cache_write_tokens, cost_usd,
 			status, created_at, applied_at, verified_at, verification_result,
@@ -893,7 +901,7 @@ func (w *SQLiteWriter) GetHealsForError(errorID string) ([]*HealRecord, error) {
 // GetLatestHealForError retrieves the most recent heal for a given error
 func (w *SQLiteWriter) GetLatestHealForError(errorID string) (*HealRecord, error) {
 	query := `
-		SELECT heal_id, error_id, run_id, diff_content, diff_content_hash, file_path,
+		SELECT heal_id, error_id, run_id, diff_content, diff_content_hash, file_path, file_hash,
 			model_id, prompt_hash, input_tokens, output_tokens,
 			cache_read_tokens, cache_write_tokens, cost_usd,
 			status, created_at, applied_at, verified_at, verification_result,
@@ -916,10 +924,38 @@ func (w *SQLiteWriter) GetLatestHealForError(errorID string) (*HealRecord, error
 	return heal, nil
 }
 
+// GetPendingHealByFileHash finds a reusable pending heal for the given file and hash
+func (w *SQLiteWriter) GetPendingHealByFileHash(filePath, fileHash string) (*HealRecord, error) {
+	query := `
+		SELECT heal_id, error_id, run_id, diff_content, diff_content_hash, file_path, file_hash,
+			model_id, prompt_hash, input_tokens, output_tokens,
+			cache_read_tokens, cache_write_tokens, cost_usd,
+			status, created_at, applied_at, verified_at, verification_result,
+			attempt_number, parent_heal_id, failure_reason
+		FROM heals
+		WHERE file_path = ?
+		  AND file_hash = ?
+		  AND status = 'pending'
+		ORDER BY created_at DESC
+		LIMIT 1
+	`
+
+	row := w.db.QueryRow(query, filePath, fileHash)
+	heal, err := scanHealRowSingle(row)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get pending heal: %w", err)
+	}
+
+	return heal, nil
+}
+
 // scanHealRow scans a heal row from sql.Rows
 func scanHealRow(rows *sql.Rows) (*HealRecord, error) {
 	var heal HealRecord
-	var runID, diffContentHash, filePath, modelID, promptHash sql.NullString
+	var runID, diffContentHash, filePath, fileHash, modelID, promptHash sql.NullString
 	var appliedAt, verifiedAt sql.NullInt64
 	var verificationResult, parentHealID, failureReason sql.NullString
 	var createdAtUnix int64
@@ -932,6 +968,7 @@ func scanHealRow(rows *sql.Rows) (*HealRecord, error) {
 		&heal.DiffContent,
 		&diffContentHash,
 		&filePath,
+		&fileHash,
 		&modelID,
 		&promptHash,
 		&heal.InputTokens,
@@ -955,6 +992,7 @@ func scanHealRow(rows *sql.Rows) (*HealRecord, error) {
 	heal.RunID = runID.String
 	heal.DiffContentHash = diffContentHash.String
 	heal.FilePath = filePath.String
+	heal.FileHash = fileHash.String
 	heal.ModelID = modelID.String
 	heal.PromptHash = promptHash.String
 	heal.Status = HealStatus(status)
@@ -984,7 +1022,7 @@ func scanHealRow(rows *sql.Rows) (*HealRecord, error) {
 // scanHealRowSingle scans a heal row from sql.Row
 func scanHealRowSingle(row *sql.Row) (*HealRecord, error) {
 	var heal HealRecord
-	var runID, diffContentHash, filePath, modelID, promptHash sql.NullString
+	var runID, diffContentHash, filePath, fileHash, modelID, promptHash sql.NullString
 	var appliedAt, verifiedAt sql.NullInt64
 	var verificationResult, parentHealID, failureReason sql.NullString
 	var createdAtUnix int64
@@ -997,6 +1035,7 @@ func scanHealRowSingle(row *sql.Row) (*HealRecord, error) {
 		&heal.DiffContent,
 		&diffContentHash,
 		&filePath,
+		&fileHash,
 		&modelID,
 		&promptHash,
 		&heal.InputTokens,
@@ -1020,6 +1059,7 @@ func scanHealRowSingle(row *sql.Row) (*HealRecord, error) {
 	heal.RunID = runID.String
 	heal.DiffContentHash = diffContentHash.String
 	heal.FilePath = filePath.String
+	heal.FileHash = fileHash.String
 	heal.ModelID = modelID.String
 	heal.PromptHash = promptHash.String
 	heal.Status = HealStatus(status)

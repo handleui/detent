@@ -567,3 +567,340 @@ func TestSQLiteWriter_SchemaMigration(t *testing.T) {
 		t.Errorf("Schema version after reopen = %d, want %d", version2, currentSchemaVersion)
 	}
 }
+
+// TestSQLiteWriter_GetPendingHealByFileHash tests heal caching lookup by file hash
+func TestSQLiteWriter_GetPendingHealByFileHash(t *testing.T) {
+	tmpDir := t.TempDir()
+	writer, err := NewSQLiteWriter(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create writer: %v", err)
+	}
+	defer func() { _ = writer.Close() }()
+
+	runID := "heal-cache-test"
+	if err := writer.RecordRun(runID, "test", "abc123", "github"); err != nil {
+		t.Fatalf("Failed to record run: %v", err)
+	}
+
+	// Record an error and get its error_id
+	finding := &FindingRecord{
+		RunID:    runID,
+		Message:  "test error for heal caching",
+		FilePath: "/app/main.go",
+		Line:     42,
+		Category: "compile",
+		FileHash: "filehash123",
+	}
+	if err := writer.RecordError(finding); err != nil {
+		t.Fatalf("RecordError() failed: %v", err)
+	}
+	if err := writer.FlushBatch(); err != nil {
+		t.Fatalf("FlushBatch() failed: %v", err)
+	}
+
+	// Get the error_id
+	contentHash := ComputeContentHash(finding.Message)
+	var errorID string
+	err = writer.db.QueryRow("SELECT error_id FROM errors WHERE content_hash = ?", contentHash).Scan(&errorID)
+	if err != nil {
+		t.Fatalf("Failed to get error_id: %v", err)
+	}
+
+	// Record a pending heal with file_hash
+	heal := &HealRecord{
+		HealID:        "heal-001",
+		ErrorID:       errorID,
+		RunID:         runID,
+		DiffContent:   "--- a/main.go\n+++ b/main.go\n@@ -42,1 +42,1 @@\n-bad code\n+good code",
+		FilePath:      "/app/main.go",
+		FileHash:      "filehash123",
+		Status:        HealStatusPending,
+		CreatedAt:     time.Now(),
+		AttemptNumber: 1,
+	}
+	if err := writer.RecordHeal(heal); err != nil {
+		t.Fatalf("RecordHeal() failed: %v", err)
+	}
+
+	// Test: query returns heal when file_hash matches
+	result, err := writer.GetPendingHealByFileHash("/app/main.go", "filehash123")
+	if err != nil {
+		t.Fatalf("GetPendingHealByFileHash() error = %v", err)
+	}
+	if result == nil {
+		t.Fatal("Expected heal to be returned, got nil")
+	}
+	if result.HealID != "heal-001" {
+		t.Errorf("HealID = %v, want 'heal-001'", result.HealID)
+	}
+	if result.FileHash != "filehash123" {
+		t.Errorf("FileHash = %v, want 'filehash123'", result.FileHash)
+	}
+	if result.Status != HealStatusPending {
+		t.Errorf("Status = %v, want 'pending'", result.Status)
+	}
+
+	// Test: query returns nil when file_hash differs
+	result, err = writer.GetPendingHealByFileHash("/app/main.go", "differenthash")
+	if err != nil {
+		t.Fatalf("GetPendingHealByFileHash() error = %v", err)
+	}
+	if result != nil {
+		t.Errorf("Expected nil for different file_hash, got heal_id=%s", result.HealID)
+	}
+
+	// Test: query returns nil when file_path differs
+	result, err = writer.GetPendingHealByFileHash("/app/other.go", "filehash123")
+	if err != nil {
+		t.Fatalf("GetPendingHealByFileHash() error = %v", err)
+	}
+	if result != nil {
+		t.Errorf("Expected nil for different file_path, got heal_id=%s", result.HealID)
+	}
+}
+
+// TestSQLiteWriter_GetPendingHealByFileHash_StatusFilter tests that only pending heals are returned
+func TestSQLiteWriter_GetPendingHealByFileHash_StatusFilter(t *testing.T) {
+	tmpDir := t.TempDir()
+	writer, err := NewSQLiteWriter(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create writer: %v", err)
+	}
+	defer func() { _ = writer.Close() }()
+
+	runID := "status-filter-test"
+	if err := writer.RecordRun(runID, "test", "abc123", "github"); err != nil {
+		t.Fatalf("Failed to record run: %v", err)
+	}
+
+	// Create an error
+	finding := &FindingRecord{
+		RunID:    runID,
+		Message:  "status filter test error",
+		FilePath: "/app/status.go",
+		Line:     10,
+		Category: "compile",
+	}
+	if err := writer.RecordError(finding); err != nil {
+		t.Fatalf("RecordError() failed: %v", err)
+	}
+	if err := writer.FlushBatch(); err != nil {
+		t.Fatalf("FlushBatch() failed: %v", err)
+	}
+
+	contentHash := ComputeContentHash(finding.Message)
+	var errorID string
+	err = writer.db.QueryRow("SELECT error_id FROM errors WHERE content_hash = ?", contentHash).Scan(&errorID)
+	if err != nil {
+		t.Fatalf("Failed to get error_id: %v", err)
+	}
+
+	// Record an applied heal (not pending)
+	appliedHeal := &HealRecord{
+		HealID:        "heal-applied",
+		ErrorID:       errorID,
+		RunID:         runID,
+		DiffContent:   "diff content",
+		FilePath:      "/app/status.go",
+		FileHash:      "statushash",
+		Status:        HealStatusApplied,
+		CreatedAt:     time.Now(),
+		AttemptNumber: 1,
+	}
+	if err := writer.RecordHeal(appliedHeal); err != nil {
+		t.Fatalf("RecordHeal() failed: %v", err)
+	}
+
+	// Test: query returns nil for applied heal
+	result, err := writer.GetPendingHealByFileHash("/app/status.go", "statushash")
+	if err != nil {
+		t.Fatalf("GetPendingHealByFileHash() error = %v", err)
+	}
+	if result != nil {
+		t.Errorf("Expected nil for applied heal, got heal_id=%s", result.HealID)
+	}
+
+	// Record a pending heal
+	pendingHeal := &HealRecord{
+		HealID:        "heal-pending",
+		ErrorID:       errorID,
+		RunID:         runID,
+		DiffContent:   "pending diff",
+		FilePath:      "/app/status.go",
+		FileHash:      "statushash",
+		Status:        HealStatusPending,
+		CreatedAt:     time.Now(),
+		AttemptNumber: 2,
+	}
+	if err := writer.RecordHeal(pendingHeal); err != nil {
+		t.Fatalf("RecordHeal() failed: %v", err)
+	}
+
+	// Test: query now returns the pending heal
+	result, err = writer.GetPendingHealByFileHash("/app/status.go", "statushash")
+	if err != nil {
+		t.Fatalf("GetPendingHealByFileHash() error = %v", err)
+	}
+	if result == nil {
+		t.Fatal("Expected pending heal to be returned")
+	}
+	if result.HealID != "heal-pending" {
+		t.Errorf("HealID = %v, want 'heal-pending'", result.HealID)
+	}
+}
+
+// TestSQLiteWriter_GetPendingHealByFileHash_MostRecent tests that the most recent pending heal is returned
+func TestSQLiteWriter_GetPendingHealByFileHash_MostRecent(t *testing.T) {
+	tmpDir := t.TempDir()
+	writer, err := NewSQLiteWriter(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create writer: %v", err)
+	}
+	defer func() { _ = writer.Close() }()
+
+	runID := "most-recent-test"
+	if err := writer.RecordRun(runID, "test", "abc123", "github"); err != nil {
+		t.Fatalf("Failed to record run: %v", err)
+	}
+
+	// Create an error
+	finding := &FindingRecord{
+		RunID:    runID,
+		Message:  "most recent test error",
+		FilePath: "/app/recent.go",
+		Line:     20,
+		Category: "lint",
+	}
+	if err := writer.RecordError(finding); err != nil {
+		t.Fatalf("RecordError() failed: %v", err)
+	}
+	if err := writer.FlushBatch(); err != nil {
+		t.Fatalf("FlushBatch() failed: %v", err)
+	}
+
+	contentHash := ComputeContentHash(finding.Message)
+	var errorID string
+	err = writer.db.QueryRow("SELECT error_id FROM errors WHERE content_hash = ?", contentHash).Scan(&errorID)
+	if err != nil {
+		t.Fatalf("Failed to get error_id: %v", err)
+	}
+
+	// Record first pending heal
+	heal1 := &HealRecord{
+		HealID:        "heal-old",
+		ErrorID:       errorID,
+		RunID:         runID,
+		DiffContent:   "old diff",
+		FilePath:      "/app/recent.go",
+		FileHash:      "recenthash",
+		Status:        HealStatusPending,
+		CreatedAt:     time.Now().Add(-time.Hour),
+		AttemptNumber: 1,
+	}
+	if err := writer.RecordHeal(heal1); err != nil {
+		t.Fatalf("RecordHeal() failed: %v", err)
+	}
+
+	// Record second (more recent) pending heal
+	heal2 := &HealRecord{
+		HealID:        "heal-new",
+		ErrorID:       errorID,
+		RunID:         runID,
+		DiffContent:   "new diff",
+		FilePath:      "/app/recent.go",
+		FileHash:      "recenthash",
+		Status:        HealStatusPending,
+		CreatedAt:     time.Now(),
+		AttemptNumber: 2,
+	}
+	if err := writer.RecordHeal(heal2); err != nil {
+		t.Fatalf("RecordHeal() failed: %v", err)
+	}
+
+	// Test: should return the most recent pending heal
+	result, err := writer.GetPendingHealByFileHash("/app/recent.go", "recenthash")
+	if err != nil {
+		t.Fatalf("GetPendingHealByFileHash() error = %v", err)
+	}
+	if result == nil {
+		t.Fatal("Expected heal to be returned")
+	}
+	if result.HealID != "heal-new" {
+		t.Errorf("HealID = %v, want 'heal-new' (most recent)", result.HealID)
+	}
+}
+
+// TestSQLiteWriter_RecordHeal_WithFileHash tests that file_hash is properly stored
+func TestSQLiteWriter_RecordHeal_WithFileHash(t *testing.T) {
+	tmpDir := t.TempDir()
+	writer, err := NewSQLiteWriter(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create writer: %v", err)
+	}
+	defer func() { _ = writer.Close() }()
+
+	runID := "file-hash-test"
+	if err := writer.RecordRun(runID, "test", "abc123", "github"); err != nil {
+		t.Fatalf("Failed to record run: %v", err)
+	}
+
+	// Create an error
+	finding := &FindingRecord{
+		RunID:    runID,
+		Message:  "file hash storage test",
+		FilePath: "/app/hash.go",
+		Line:     5,
+		Category: "type-check",
+	}
+	if err := writer.RecordError(finding); err != nil {
+		t.Fatalf("RecordError() failed: %v", err)
+	}
+	if err := writer.FlushBatch(); err != nil {
+		t.Fatalf("FlushBatch() failed: %v", err)
+	}
+
+	contentHash := ComputeContentHash(finding.Message)
+	var errorID string
+	err = writer.db.QueryRow("SELECT error_id FROM errors WHERE content_hash = ?", contentHash).Scan(&errorID)
+	if err != nil {
+		t.Fatalf("Failed to get error_id: %v", err)
+	}
+
+	// Record heal with file_hash
+	heal := &HealRecord{
+		HealID:        "heal-with-hash",
+		ErrorID:       errorID,
+		RunID:         runID,
+		DiffContent:   "fix content",
+		FilePath:      "/app/hash.go",
+		FileHash:      "sha256abcdef1234567890",
+		Status:        HealStatusPending,
+		CreatedAt:     time.Now(),
+		AttemptNumber: 1,
+	}
+	if err := writer.RecordHeal(heal); err != nil {
+		t.Fatalf("RecordHeal() failed: %v", err)
+	}
+
+	// Verify file_hash was stored correctly
+	var storedFileHash string
+	err = writer.db.QueryRow("SELECT file_hash FROM heals WHERE heal_id = ?", heal.HealID).Scan(&storedFileHash)
+	if err != nil {
+		t.Fatalf("Failed to query heal: %v", err)
+	}
+	if storedFileHash != heal.FileHash {
+		t.Errorf("file_hash = %v, want %v", storedFileHash, heal.FileHash)
+	}
+
+	// Verify it's returned correctly via GetHealsForError
+	heals, err := writer.GetHealsForError(errorID)
+	if err != nil {
+		t.Fatalf("GetHealsForError() error = %v", err)
+	}
+	if len(heals) != 1 {
+		t.Fatalf("Expected 1 heal, got %d", len(heals))
+	}
+	if heals[0].FileHash != heal.FileHash {
+		t.Errorf("Retrieved heal FileHash = %v, want %v", heals[0].FileHash, heal.FileHash)
+	}
+}
