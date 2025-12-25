@@ -8,7 +8,11 @@ import (
 // FormatDuration formats a duration in a human-readable way
 func FormatDuration(d time.Duration) string {
 	if d < time.Minute {
-		return fmt.Sprintf("%d seconds", int(d.Seconds()))
+		seconds := int(d.Seconds())
+		if seconds == 1 {
+			return "1 second"
+		}
+		return fmt.Sprintf("%d seconds", seconds)
 	}
 	if d < time.Hour {
 		return fmt.Sprintf("%d minutes", int(d.Minutes()))
