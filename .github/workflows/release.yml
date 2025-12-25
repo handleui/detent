@@ -1,4 +1,4 @@
-name: Changesets
+name: Release
 
 on:
   push:
@@ -44,53 +44,35 @@ jobs:
         uses: changesets/action@v1
         with:
           version: npm run version
+          publish: npm run release
           commit: "chore: version packages"
           title: "chore: version packages"
           createGithubReleases: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_CONFIG_PROVENANCE: true
 
-      - name: Add labels and reviewer to changesets PR
+      - name: Create Git Tag for CLI Release
+        if: steps.changesets.outputs.published == 'true'
+        run: |
+          CLI_VERSION=$(node -p "require('./apps/cli/package.json').version")
+          TAG="v${CLI_VERSION}"
+
+          # Check if tag already exists
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists, skipping"
+          else
+            echo "Creating tag $TAG"
+            git tag "$TAG"
+            git push origin "$TAG"
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Add labels to release PR
         if: steps.changesets.outputs.pullRequestNumber != ''
         run: |
           gh pr edit ${{ steps.changesets.outputs.pullRequestNumber }} --add-label "release"
           gh pr edit ${{ steps.changesets.outputs.pullRequestNumber }} --add-reviewer handleui
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and Publish to npm
-        if: steps.changesets.outputs.hasChangesets == 'false' && steps.changesets.outputs.pullRequestNumber == ''
-        working-directory: apps/cli
-        run: |
-          echo "Building Go binaries for all platforms..."
-
-          VERSION=$(node -p "require('./package.json').version")
-
-          # Prepare release directory
-          npm run prepare-release
-
-          # Build for all platforms
-          platforms=("linux/amd64" "darwin/arm64" "windows/amd64")
-
-          for platform in "${platforms[@]}"; do
-            GOOS="${platform%/*}"
-            GOARCH="${platform#*/}"
-            OUTPUT="bin/dt-${GOOS}-${GOARCH}"
-
-            if [ "$GOOS" = "windows" ]; then
-              OUTPUT="${OUTPUT}.exe"
-            fi
-
-            echo "Building for $GOOS/$GOARCH..."
-            CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH go build \
-              -trimpath \
-              -ldflags "-s -w -X github.com/detent/cli/cmd.Version=$VERSION" \
-              -o "$OUTPUT"
-
-            ls -lh "$OUTPUT"
-          done
-
-          echo "Publishing to npm with OIDC trusted publishing..."
-          npm publish
-
-          echo "Successfully published @detent/cli@$VERSION"

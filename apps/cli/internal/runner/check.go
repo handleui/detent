@@ -99,8 +99,6 @@ func New(config *RunConfig) *CheckRunner {
 // This must be called before Run. All resources are tracked for cleanup.
 // Returns error if preparation fails. On error, partial resources are cleaned up.
 func (r *CheckRunner) Prepare(ctx context.Context) error {
-	// Phase 1: Run parallel preflight checks
-	// These checks are independent and can run concurrently
 	g, gctx := errgroup.WithContext(ctx)
 
 	g.Go(func() error {
@@ -116,8 +114,6 @@ func (r *CheckRunner) Prepare(ctx context.Context) error {
 	if err := g.Wait(); err != nil {
 		return err
 	}
-
-	// Phase 2: Sequential validations (require git repository to be confirmed)
 
 	// Best-effort cleanup of orphaned worktrees from previous runs (SIGKILL recovery)
 	_, _ = git.CleanupOrphanedWorktrees(ctx, r.config.RepoRoot)
@@ -137,8 +133,6 @@ func (r *CheckRunner) Prepare(ctx context.Context) error {
 		return err
 	}
 
-	// Phase 3: Run parallel preparation tasks
-	// These operations create resources that need to be cleaned up on failure
 	type workflowResult struct {
 		tmpDir           string
 		cleanupWorkflows func()

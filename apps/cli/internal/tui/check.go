@@ -291,29 +291,27 @@ func (m *CheckModel) renderExpandedView() string {
 func (m *CheckModel) renderCompletionView() string {
 	var b strings.Builder
 
-	// Determine status message
-	statusIcon := "✓"
-	statusColor := lipgloss.Color(checkStatusGreen)
-	statusText := "Check passed"
+	hasIssues := m.errors != nil && m.errors.Total > 0
+	workflowFailed := m.exitCode != 0
 
-	if m.exitCode != 0 {
-		statusIcon = "✗"
-		statusColor = lipgloss.Color(checkStatusRed)
-		statusText = "Check failed"
-	}
-
-	headerStyle := lipgloss.NewStyle().
-		Foreground(statusColor).
-		Bold(true)
-
-	// Print status header
-	b.WriteString(headerStyle.Render(fmt.Sprintf("%s %s in %s\n", statusIcon, statusText, m.duration)))
-
-	// If we have errors, format and display them
-	if m.errors != nil {
+	switch {
+	case hasIssues:
+		// Show error report directly (it has its own header with problem count)
 		var errBuf bytes.Buffer
 		output.FormatText(&errBuf, m.errors)
 		b.WriteString(errBuf.String())
+	case workflowFailed:
+		// Workflow failed but no issues extracted - actual failure
+		headerStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(checkStatusRed)).
+			Bold(true)
+		b.WriteString(headerStyle.Render(fmt.Sprintf("✗ Check failed in %s\n", m.duration)))
+	default:
+		// All good - no issues found
+		headerStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(checkStatusGreen)).
+			Bold(true)
+		b.WriteString(headerStyle.Render(fmt.Sprintf("✓ Check passed in %s\n", m.duration)))
 	}
 
 	return b.String()

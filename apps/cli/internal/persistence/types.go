@@ -72,6 +72,7 @@ type HealRecord struct {
 	DiffContent        string             `json:"diff_content"`
 	DiffContentHash    string             `json:"diff_content_hash,omitempty"`
 	FilePath           string             `json:"file_path,omitempty"`
+	FileHash           string             `json:"file_hash,omitempty"`
 	ModelID            string             `json:"model_id,omitempty"`
 	PromptHash         string             `json:"prompt_hash,omitempty"`
 	InputTokens        int                `json:"input_tokens"`

@@ -2,9 +2,8 @@
 name: Feature request
 about: Got an idea?
 title: "[FEAT]"
-labels: ''
+labels: ""
 assignees: handleui
-
 ---
 
 **Describe the solution you'd like**

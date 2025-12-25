@@ -39,6 +39,7 @@
     "build": "sh -c 'VERSION=$(node -p \"require(\\\"./package.json\\\").version\") && go build -ldflags \"-X github.com/detent/cli/cmd.Version=$VERSION\" -o dist/dt'",
     "clean": "rm -rf dist bin",
     "prepare-release": "npm run clean && mkdir -p bin",
+    "build-binaries": "sh -c 'npm run prepare-release && VERSION=$(node -p \"require(\\\"./package.json\\\").version\") && for platform in linux/amd64 darwin/arm64 windows/amd64; do GOOS=${platform%/*} GOARCH=${platform#*/} OUTPUT=bin/dt-${platform%/*}-${platform#*/}; [ \"${platform%/*}\" = \"windows\" ] && OUTPUT=\"${OUTPUT}.exe\"; echo \"Building for $platform...\"; CGO_ENABLED=0 GOOS=${platform%/*} GOARCH=${platform#*/} go build -trimpath -ldflags \"-s -w -X github.com/detent/cli/cmd.Version=$VERSION\" -o \"$OUTPUT\"; done'",
     "postinstall": "node ./install.js",
     "preuninstall": "node ./uninstall.js"
   },

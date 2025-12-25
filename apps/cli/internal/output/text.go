@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 
 	"github.com/detent/cli/internal/errors"
 )
@@ -19,6 +20,14 @@ const (
 	colorBold   = "\033[1m"
 )
 
+// dividerWidth is the standard width for section dividers
+const dividerWidth = 60
+
+// divider returns a horizontal line of the specified width
+func divider(width int) string {
+	return strings.Repeat("─", width)
+}
+
 // FormatText formats error groups as human-readable text output.
 // It displays errors grouped by file with colored severity indicators
 // and summary statistics at the end.
@@ -30,7 +39,7 @@ func FormatText(w io.Writer, grouped *errors.GroupedErrors) {
 
 	if errorCount > 0 || warningCount > 0 {
 		totalProblems := errorCount + warningCount
-		problemText := fmt.Sprintf("%d problem%s", totalProblems, plural(totalProblems))
+		problemText := fmt.Sprintf("Found %d problem%s", totalProblems, plural(totalProblems))
 		detailText := fmt.Sprintf("(%s%d error%s, %d warning%s)%s",
 			colorRed, errorCount, plural(errorCount), warningCount, plural(warningCount), colorReset)
 
@@ -43,6 +52,7 @@ func FormatText(w io.Writer, grouped *errors.GroupedErrors) {
 			_, _ = fmt.Fprintf(w, "%s> %s✖ %s %s%s\n", colorBold, colorRed, problemText, detailText, colorReset)
 		}
 		_, _ = fmt.Fprintf(w, "%s  Run 'detent heal' to auto-fix or fix manually and re-run%s\n\n", colorGray, colorReset)
+		_, _ = fmt.Fprintf(w, "%s%s%s\n\n", colorGray, divider(dividerWidth), colorReset)
 	}
 
 	if len(grouped.ByFile) > 0 {
