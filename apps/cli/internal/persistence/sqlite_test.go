@@ -10,8 +10,26 @@ import (
 // TestNewSQLiteWriter tests the creation of a new SQLite writer
 func TestNewSQLiteWriter(t *testing.T) {
 	tmpDir := t.TempDir()
-	writer, err := NewSQLiteWriter(tmpDir)
 
+	// Set XDG_CACHE_HOME to tmpDir to control where database is created
+	originalXDG := os.Getenv("XDG_CACHE_HOME")
+	cacheDir := filepath.Join(tmpDir, "cache")
+	t.Setenv("XDG_CACHE_HOME", cacheDir)
+	defer func() {
+		if originalXDG != "" {
+			os.Setenv("XDG_CACHE_HOME", originalXDG)
+		} else {
+			os.Unsetenv("XDG_CACHE_HOME")
+		}
+	}()
+
+	// Create a git repo in tmpDir for ComputeRepoID to work
+	repoDir := filepath.Join(tmpDir, "repo")
+	if err := os.MkdirAll(repoDir, 0o755); err != nil {
+		t.Fatalf("Failed to create repo dir: %v", err)
+	}
+
+	writer, err := NewSQLiteWriter(repoDir)
 	if err != nil {
 		t.Fatalf("NewSQLiteWriter() error = %v", err)
 	}
@@ -26,21 +44,21 @@ func TestNewSQLiteWriter(t *testing.T) {
 		}
 	}()
 
-	// Verify .detent directory was created
-	detentPath := filepath.Join(tmpDir, detentDir)
-	if _, err := os.Stat(detentPath); os.IsNotExist(err) {
-		t.Error(".detent directory was not created")
+	// Verify cache directory was created under XDG_CACHE_HOME
+	detentCacheDir := filepath.Join(cacheDir, "detent")
+	if _, err := os.Stat(detentCacheDir); os.IsNotExist(err) {
+		t.Error("detent cache directory was not created")
 	}
 
-	// Verify database file was created
-	dbPath := filepath.Join(detentPath, detentDBName)
+	// Verify database file was created (path includes repo-id subdirectory)
+	dbPath := writer.Path()
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
-		t.Error("Database file was not created")
+		t.Errorf("Database file was not created at %s", dbPath)
 	}
 
-	// Verify path is correct
-	if writer.Path() != dbPath {
-		t.Errorf("Path() = %v, want %v", writer.Path(), dbPath)
+	// Verify path is under the cache directory
+	if !filepath.HasPrefix(dbPath, detentCacheDir) {
+		t.Errorf("Path() = %v, expected to be under %v", dbPath, detentCacheDir)
 	}
 }
 
@@ -97,7 +115,7 @@ func TestSQLiteWriter_RecordRun(t *testing.T) {
 	defer func() { _ = writer.Close() }()
 
 	runID := "run-123"
-	err = writer.RecordRun(runID, "CI", "abc123", "github")
+	err = writer.RecordRun(runID, "CI", "abc123", "tree123", "github")
 	if err != nil {
 		t.Fatalf("RecordRun() error = %v", err)
 	}
@@ -135,7 +153,7 @@ func TestSQLiteWriter_RecordError_WithFlush(t *testing.T) {
 	defer func() { _ = writer.Close() }()
 
 	runID := "test-run"
-	if err := writer.RecordRun(runID, "test", "abc123", "github"); err != nil {
+	if err := writer.RecordRun(runID, "test", "abc123", "", "github"); err != nil {
 		t.Fatalf("Failed to record run: %v", err)
 	}
 
@@ -180,7 +198,7 @@ func TestSQLiteWriter_RecordError_Deduplication(t *testing.T) {
 	defer func() { _ = writer.Close() }()
 
 	runID := "test-run"
-	if err := writer.RecordRun(runID, "test", "abc123", "github"); err != nil {
+	if err := writer.RecordRun(runID, "test", "abc123", "", "github"); err != nil {
 		t.Fatalf("Failed to record run: %v", err)
 	}
 
@@ -235,7 +253,7 @@ func TestSQLiteWriter_FinalizeRun(t *testing.T) {
 	defer func() { _ = writer.Close() }()
 
 	runID := "run-with-errors"
-	if err := writer.RecordRun(runID, "test", "abc123", "github"); err != nil {
+	if err := writer.RecordRun(runID, "test", "abc123", "", "github"); err != nil {
 		t.Fatalf("Failed to record run: %v", err)
 	}
 
@@ -285,7 +303,7 @@ func TestSQLiteWriter_ErrorFields(t *testing.T) {
 	defer func() { _ = writer.Close() }()
 
 	runID := "test-run"
-	if err := writer.RecordRun(runID, "test", "abc123", "github"); err != nil {
+	if err := writer.RecordRun(runID, "test", "abc123", "", "github"); err != nil {
 		t.Fatalf("Failed to record run: %v", err)
 	}
 
@@ -368,7 +386,7 @@ func TestSQLiteWriter_FlushBatch(t *testing.T) {
 	defer func() { _ = writer.Close() }()
 
 	runID := "test-run"
-	if err := writer.RecordRun(runID, "test", "abc123", "github"); err != nil {
+	if err := writer.RecordRun(runID, "test", "abc123", "", "github"); err != nil {
 		t.Fatalf("Failed to record run: %v", err)
 	}
 
@@ -420,7 +438,7 @@ func TestSQLiteWriter_LastSeenAtUpdates(t *testing.T) {
 	defer func() { _ = writer.Close() }()
 
 	runID := "timestamp-test"
-	if err := writer.RecordRun(runID, "test", "abc123", "github"); err != nil {
+	if err := writer.RecordRun(runID, "test", "abc123", "", "github"); err != nil {
 		t.Fatalf("Failed to record run: %v", err)
 	}
 
@@ -531,7 +549,7 @@ func TestSQLiteWriter_SchemaMigration(t *testing.T) {
 	// Verify is_dirty column exists in runs table (always 0 now since we require clean commits)
 	var isDirty int
 	runID := "migration-test"
-	err = writer.RecordRun(runID, "test", "abc123", "github")
+	err = writer.RecordRun(runID, "test", "abc123", "", "github")
 	if err != nil {
 		t.Fatalf("Failed to record run: %v", err)
 	}
@@ -578,7 +596,7 @@ func TestSQLiteWriter_GetPendingHealByFileHash(t *testing.T) {
 	defer func() { _ = writer.Close() }()
 
 	runID := "heal-cache-test"
-	if err := writer.RecordRun(runID, "test", "abc123", "github"); err != nil {
+	if err := writer.RecordRun(runID, "test", "abc123", "", "github"); err != nil {
 		t.Fatalf("Failed to record run: %v", err)
 	}
 
@@ -669,7 +687,7 @@ func TestSQLiteWriter_GetPendingHealByFileHash_StatusFilter(t *testing.T) {
 	defer func() { _ = writer.Close() }()
 
 	runID := "status-filter-test"
-	if err := writer.RecordRun(runID, "test", "abc123", "github"); err != nil {
+	if err := writer.RecordRun(runID, "test", "abc123", "", "github"); err != nil {
 		t.Fatalf("Failed to record run: %v", err)
 	}
 
@@ -759,7 +777,7 @@ func TestSQLiteWriter_GetPendingHealByFileHash_MostRecent(t *testing.T) {
 	defer func() { _ = writer.Close() }()
 
 	runID := "most-recent-test"
-	if err := writer.RecordRun(runID, "test", "abc123", "github"); err != nil {
+	if err := writer.RecordRun(runID, "test", "abc123", "", "github"); err != nil {
 		t.Fatalf("Failed to record run: %v", err)
 	}
 
@@ -840,7 +858,7 @@ func TestSQLiteWriter_RecordHeal_WithFileHash(t *testing.T) {
 	defer func() { _ = writer.Close() }()
 
 	runID := "file-hash-test"
-	if err := writer.RecordRun(runID, "test", "abc123", "github"); err != nil {
+	if err := writer.RecordRun(runID, "test", "abc123", "", "github"); err != nil {
 		t.Fatalf("Failed to record run: %v", err)
 	}
 

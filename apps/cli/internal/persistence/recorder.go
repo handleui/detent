@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/detent/cli/internal/errors"
+	"github.com/detent/cli/internal/git"
 	"github.com/detent/cli/internal/util"
 )
 
@@ -40,7 +41,14 @@ func NewRecorder(repoRoot, workflowName, commitSHA, execMode string) (*Recorder,
 		return nil, fmt.Errorf("failed to create SQLite writer: %w", err)
 	}
 
-	if err := sqlite.RecordRun(runID, workflowName, commitSHA, execMode); err != nil {
+	// Get tree hash for better cache identity
+	treeHash, err := git.GetCurrentTreeHash(repoRoot)
+	if err != nil {
+		// Non-fatal: tree hash is optional, continue without it
+		treeHash = ""
+	}
+
+	if err := sqlite.RecordRun(runID, workflowName, commitSHA, treeHash, execMode); err != nil {
 		_ = sqlite.Close()
 		return nil, fmt.Errorf("failed to record run: %w", err)
 	}

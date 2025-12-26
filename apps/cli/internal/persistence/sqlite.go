@@ -1,9 +1,12 @@
 package persistence
 
 import (
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,15 +15,16 @@ import (
 
 	_ "github.com/ncruces/go-sqlite3/driver"
 	_ "github.com/ncruces/go-sqlite3/embed"
+	"github.com/detent/cli/internal/git"
 	"github.com/detent/cli/internal/util"
 )
 
 const (
-	detentDir    = ".detent"
-	detentDBName = "detent.db"
-	batchSize    = 500 // Batch size for error inserts
+	legacyDetentDir = ".detent"
+	detentDBName    = "detent.db"
+	batchSize       = 500 // Batch size for error inserts
 
-	currentSchemaVersion = 10 // Current database schema version
+	currentSchemaVersion = 12 // Current database schema version
 
 	// healSelectColumns is the standard column list for heal queries (must match scanHealFromScanner order)
 	healSelectColumns = `heal_id, error_id, run_id, diff_content, diff_content_hash, file_path, file_hash,
@@ -30,13 +34,238 @@ const (
 		attempt_number, parent_heal_id, failure_reason`
 )
 
+// repoIDCache caches computed repository IDs to avoid repeated git subprocess calls.
+// Key: absolute repo root path, Value: computed repo ID string.
+var repoIDCache sync.Map
+
 func createDirIfNotExists(path string) error {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		// #nosec G301 - standard permissions for app data directory
-		return os.MkdirAll(path, 0o755)
+		// #nosec G301 - restrictive permissions for cache directory (owner-only access)
+		return os.MkdirAll(path, 0o700)
 	}
 	return nil
 }
+
+// getDetentCacheDir returns the global cache directory for detent data.
+// Follows XDG Base Directory spec: uses $XDG_CACHE_HOME if set and absolute,
+// otherwise ~/.cache/detent. Relative XDG paths are invalid per spec and ignored.
+func getDetentCacheDir() (string, error) {
+	if xdg := os.Getenv("XDG_CACHE_HOME"); xdg != "" && filepath.IsAbs(xdg) {
+		return filepath.Join(xdg, "detent"), nil
+	}
+	return getDefaultCacheDir()
+}
+
+// getDefaultCacheDir returns the default cache directory (~/.cache/detent).
+func getDefaultCacheDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("failed to get user home directory: %w", err)
+	}
+
+	// Use ~/.cache/detent on all platforms (XDG convention)
+	// Even on macOS, modern CLI tools prefer XDG over ~/Library/Caches
+	return filepath.Join(home, ".cache", "detent"), nil
+}
+
+// ComputeRepoID computes a stable identifier for a repository.
+// Priority: 1) git remote URL, 2) first commit SHA, 3) repo path
+// Returns a 16-character hex string suitable for directory names.
+// Results are cached to avoid repeated git subprocess calls.
+func ComputeRepoID(repoRoot string) (string, error) {
+	// Normalize path for consistent cache key
+	absPath, err := filepath.Abs(repoRoot)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve repo path: %w", err)
+	}
+
+	// Check cache first
+	if cached, ok := repoIDCache.Load(absPath); ok {
+		if repoID, valid := cached.(string); valid {
+			return repoID, nil
+		}
+	}
+
+	// Compute the repo ID
+	repoID := computeRepoIDUncached(absPath)
+
+	// Store in cache
+	repoIDCache.Store(absPath, repoID)
+	return repoID, nil
+}
+
+// computeRepoIDUncached performs the actual repo ID computation without caching.
+func computeRepoIDUncached(absPath string) string {
+	// Priority 1: git remote origin URL (works across machines)
+	remoteURL, err := git.GetRemoteURL(absPath)
+	if err == nil && remoteURL != "" {
+		// Normalize: strip .git suffix for consistent IDs
+		remoteURL = strings.TrimSuffix(remoteURL, ".git")
+		return hashToID(remoteURL)
+	}
+
+	// Priority 2: first commit SHA (immutable, works offline)
+	firstCommit, err := git.GetFirstCommitSHA(absPath)
+	if err == nil && firstCommit != "" {
+		return hashToID(firstCommit)
+	}
+
+	// Priority 3: repo path (last resort - breaks if repo moves)
+	return hashToID(absPath)
+}
+
+// hashToID computes a SHA256 hash and returns the first 20 hex characters (80 bits).
+func hashToID(input string) string {
+	h := sha256.Sum256([]byte(input))
+	return hex.EncodeToString(h[:])[:20]
+}
+
+// GetDatabasePath returns the path to the SQLite database for a given repo.
+// Uses the global cache directory: ~/.cache/detent/<repo-id>/detent.db
+func GetDatabasePath(repoRoot string) (string, error) {
+	cacheDir, err := getDetentCacheDir()
+	if err != nil {
+		return "", err
+	}
+
+	repoID, err := ComputeRepoID(repoRoot)
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.Join(cacheDir, repoID, detentDBName), nil
+}
+
+// migrateLegacyDatabase moves database from .detent/detent.db to the new global location.
+// Returns the path to use (new location if migrated, or new location if no legacy exists).
+func migrateLegacyDatabase(repoRoot, newDBPath string) error {
+	legacyDBPath := filepath.Join(repoRoot, legacyDetentDir, detentDBName)
+
+	// Security: Use Lstat to detect symlinks (prevents symlink attacks)
+	legacyInfo, err := os.Lstat(legacyDBPath)
+	if os.IsNotExist(err) {
+		return nil // No legacy database, nothing to migrate
+	}
+	if err != nil {
+		return fmt.Errorf("failed to stat legacy database: %w", err)
+	}
+
+	// Security: Refuse to migrate symlinks (prevents symlink attacks)
+	if legacyInfo.Mode()&os.ModeSymlink != 0 {
+		fmt.Fprintf(os.Stderr, "Warning: legacy database is a symlink, refusing migration for security\n")
+		return nil
+	}
+
+	// Security: Validate that legacy path resolves within repoRoot (prevents path traversal)
+	resolvedLegacyPath, err := filepath.EvalSymlinks(filepath.Dir(legacyDBPath))
+	if err != nil {
+		return fmt.Errorf("failed to resolve legacy database path: %w", err)
+	}
+	resolvedRepoRoot, err := filepath.EvalSymlinks(repoRoot)
+	if err != nil {
+		return fmt.Errorf("failed to resolve repo root path: %w", err)
+	}
+	// Ensure resolved path is within repo root (add separator to prevent prefix attacks like /repo-evil matching /repo)
+	if !strings.HasPrefix(resolvedLegacyPath+string(filepath.Separator), resolvedRepoRoot+string(filepath.Separator)) {
+		fmt.Fprintf(os.Stderr, "Warning: legacy database path escapes repo root, refusing migration for security\n")
+		return nil
+	}
+
+	// Check if new location already has a database
+	if _, err := os.Stat(newDBPath); err == nil {
+		// New location already exists, just clean up legacy
+		if err := removeLegacyDetentDir(repoRoot); err != nil {
+			// Non-fatal: log but continue
+			fmt.Fprintf(os.Stderr, "Warning: failed to remove legacy .detent directory: %v\n", err)
+		}
+		return nil
+	}
+
+	// Create new directory
+	newDir := filepath.Dir(newDBPath)
+	if err := createDirIfNotExists(newDir); err != nil {
+		return fmt.Errorf("failed to create cache directory: %w", err)
+	}
+
+	// Data integrity: Checkpoint WAL before copying to ensure database is self-contained
+	if err := checkpointWAL(legacyDBPath); err != nil {
+		return fmt.Errorf("failed to checkpoint WAL before migration: %w", err)
+	}
+
+	// Copy database file (not move, in case of failure)
+	// After checkpoint, we only need the main .db file (WAL/SHM are empty or can be recreated)
+	if err := copyFile(legacyDBPath, newDBPath); err != nil {
+		return fmt.Errorf("failed to migrate database: %w", err)
+	}
+
+	// Remove legacy directory
+	if err := removeLegacyDetentDir(repoRoot); err != nil {
+		// Non-fatal: log but continue
+		fmt.Fprintf(os.Stderr, "Warning: failed to remove legacy .detent directory: %v\n", err)
+	}
+
+	fmt.Fprintf(os.Stderr, "Migrated database to %s\n", newDBPath)
+	return nil
+}
+
+// checkpointWAL flushes WAL file contents to the main database file.
+// This ensures the database file is self-contained before copying.
+func checkpointWAL(dbPath string) error {
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		return fmt.Errorf("failed to open database for checkpoint: %w", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	// TRUNCATE mode: checkpoint and then truncate the WAL file to zero bytes
+	// This ensures the .db file is completely self-contained
+	_, err = db.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
+	if err != nil {
+		return fmt.Errorf("failed to checkpoint WAL: %w", err)
+	}
+
+	return nil
+}
+
+// removeLegacyDetentDir removes the old .detent directory from the repo.
+func removeLegacyDetentDir(repoRoot string) error {
+	legacyDir := filepath.Join(repoRoot, legacyDetentDir)
+	return os.RemoveAll(legacyDir)
+}
+
+// copyFile copies a file from src to dst with fsync for durability.
+func copyFile(src, dst string) error {
+	// #nosec G304 - src is from known location
+	sourceFile, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = sourceFile.Close() }()
+
+	// #nosec G304 - dst is constructed from cache dir
+	destFile, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = destFile.Close() }()
+
+	if _, copyErr := io.Copy(destFile, sourceFile); copyErr != nil {
+		return copyErr
+	}
+
+	// Sync to disk for durability before considering copy complete
+	if syncErr := destFile.Sync(); syncErr != nil {
+		return syncErr
+	}
+
+	// Preserve permissions
+	info, statErr := os.Stat(src)
+	if statErr != nil {
+		return statErr
+	}
+	return os.Chmod(dst, info.Mode())
+}
+
 
 // SQLiteWriter handles writing scan results to SQLite database
 type SQLiteWriter struct {
@@ -49,14 +278,23 @@ type SQLiteWriter struct {
 
 // NewSQLiteWriter creates a new SQLite writer and initializes the database schema
 func NewSQLiteWriter(repoRoot string) (*SQLiteWriter, error) {
-	detentPath := filepath.Join(repoRoot, detentDir)
-
-	// #nosec G301 - standard permissions for app data directory
-	if err := createDirIfNotExists(detentPath); err != nil {
-		return nil, fmt.Errorf("failed to create .detent directory: %w", err)
+	// Get the new global database path
+	dbPath, err := GetDatabasePath(repoRoot)
+	if err != nil {
+		return nil, fmt.Errorf("failed to compute database path: %w", err)
 	}
 
-	dbPath := filepath.Join(detentPath, detentDBName)
+	// Migrate from legacy .detent/ location if needed
+	if migrateErr := migrateLegacyDatabase(repoRoot, dbPath); migrateErr != nil {
+		return nil, fmt.Errorf("failed to migrate legacy database: %w", migrateErr)
+	}
+
+	// Create cache directory
+	cacheDir := filepath.Dir(dbPath)
+	if mkdirErr := createDirIfNotExists(cacheDir); mkdirErr != nil {
+		return nil, fmt.Errorf("failed to create cache directory: %w", mkdirErr)
+	}
+
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open SQLite database: %w", err)
@@ -321,6 +559,32 @@ func (w *SQLiteWriter) applyMigrations(fromVersion int) error {
 			ON heals(file_path, file_hash, status, created_at DESC);
 			`,
 		},
+		{
+			version: 11,
+			name:    "add_tree_hash_to_runs",
+			sql: `
+			-- Tree hash represents exact file state, independent of commit metadata
+			-- Useful for cache identity across rebases and future cross-machine sync
+			ALTER TABLE runs ADD COLUMN tree_hash TEXT;
+			CREATE INDEX IF NOT EXISTS idx_runs_tree_hash ON runs(tree_hash);
+			`,
+		},
+		{
+			version: 12,
+			name:    "add_commit_sha_index_drop_unused",
+			sql: `
+			-- Add missing index for GetRunByCommit lookups
+			CREATE INDEX IF NOT EXISTS idx_runs_commit_sha ON runs(commit_sha);
+
+			-- Drop unused indices (tree_hash and sync_status never queried)
+			DROP INDEX IF EXISTS idx_runs_tree_hash;
+			DROP INDEX IF EXISTS idx_runs_sync_status;
+			DROP INDEX IF EXISTS idx_heals_sync_status;
+
+			-- idx_heals_file_hash is redundant with idx_heals_cache_lookup composite
+			DROP INDEX IF EXISTS idx_heals_file_hash;
+			`,
+		},
 	}
 
 	// Apply each migration in a transaction
@@ -363,15 +627,15 @@ func (w *SQLiteWriter) applyMigrations(fromVersion int) error {
 }
 
 // RecordRun inserts a new run record into the database
-func (w *SQLiteWriter) RecordRun(runID, workflowName, commitSHA, executionMode string) error {
+func (w *SQLiteWriter) RecordRun(runID, workflowName, commitSHA, treeHash, executionMode string) error {
 	// Note: is_dirty, dirty_files, base_commit_sha, codebase_state_hash are deprecated
 	// We now require clean commits before running, so is_dirty is always 0
 	query := `
-		INSERT INTO runs (run_id, workflow_name, commit_sha, execution_mode, started_at, is_dirty)
-		VALUES (?, ?, ?, ?, ?, 0)
+		INSERT INTO runs (run_id, workflow_name, commit_sha, tree_hash, execution_mode, started_at, is_dirty)
+		VALUES (?, ?, ?, ?, ?, ?, 0)
 	`
 
-	_, err := w.db.Exec(query, runID, workflowName, commitSHA, executionMode, time.Now().Unix())
+	_, err := w.db.Exec(query, runID, workflowName, commitSHA, treeHash, executionMode, time.Now().Unix())
 	if err != nil {
 		return fmt.Errorf("failed to record run: %w", err)
 	}

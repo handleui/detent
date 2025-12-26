@@ -13,7 +13,17 @@ import (
 // TestNewRecorder tests recorder creation
 func TestNewRecorder(t *testing.T) {
 	tmpDir := t.TempDir()
-	recorder, err := NewRecorder(tmpDir, "CI", "abc123", "github")
+
+	// Set XDG_CACHE_HOME to control where database is created
+	cacheDir := filepath.Join(tmpDir, "cache")
+	t.Setenv("XDG_CACHE_HOME", cacheDir)
+
+	repoDir := filepath.Join(tmpDir, "repo")
+	if err := os.MkdirAll(repoDir, 0o755); err != nil {
+		t.Fatalf("Failed to create repo dir: %v", err)
+	}
+
+	recorder, err := NewRecorder(repoDir, "CI", "abc123", "github")
 
 	if err != nil {
 		t.Fatalf("NewRecorder() error = %v", err)
@@ -33,8 +43,8 @@ func TestNewRecorder(t *testing.T) {
 	if recorder.runID == "" {
 		t.Error("runID should not be empty")
 	}
-	if recorder.repoRoot != tmpDir {
-		t.Errorf("repoRoot = %v, want %v", recorder.repoRoot, tmpDir)
+	if recorder.repoRoot != repoDir {
+		t.Errorf("repoRoot = %v, want %v", recorder.repoRoot, repoDir)
 	}
 	if recorder.workflowName != "CI" {
 		t.Errorf("workflowName = %v, want 'CI'", recorder.workflowName)
@@ -49,10 +59,14 @@ func TestNewRecorder(t *testing.T) {
 		t.Error("SQLite writer should not be nil")
 	}
 
-	// Verify run was recorded in database
-	dbPath := filepath.Join(tmpDir, detentDir, detentDBName)
+	// Verify database was created under cache directory
+	dbPath := recorder.GetOutputPath()
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
 		t.Error("Database file was not created")
+	}
+	detentCacheDir := filepath.Join(cacheDir, "detent")
+	if !filepath.HasPrefix(dbPath, detentCacheDir) {
+		t.Errorf("Database path %v should be under %v", dbPath, detentCacheDir)
 	}
 }
 
@@ -185,17 +199,28 @@ func TestRecorder_Finalize(t *testing.T) {
 // TestRecorder_GetOutputPath tests output path retrieval
 func TestRecorder_GetOutputPath(t *testing.T) {
 	tmpDir := t.TempDir()
-	recorder, err := NewRecorder(tmpDir, "test", "abc123", "github")
+
+	// Set XDG_CACHE_HOME to control where database is created
+	cacheDir := filepath.Join(tmpDir, "cache")
+	t.Setenv("XDG_CACHE_HOME", cacheDir)
+
+	repoDir := filepath.Join(tmpDir, "repo")
+	if err := os.MkdirAll(repoDir, 0o755); err != nil {
+		t.Fatalf("Failed to create repo dir: %v", err)
+	}
+
+	recorder, err := NewRecorder(repoDir, "test", "abc123", "github")
 	if err != nil {
 		t.Fatalf("Failed to create recorder: %v", err)
 	}
 	defer func() { _ = recorder.Finalize(0) }()
 
 	outputPath := recorder.GetOutputPath()
-	expectedPath := filepath.Join(tmpDir, detentDir, detentDBName)
 
-	if outputPath != expectedPath {
-		t.Errorf("GetOutputPath() = %v, want %v", outputPath, expectedPath)
+	// Verify the path is under the cache directory
+	detentCacheDir := filepath.Join(cacheDir, "detent")
+	if !filepath.HasPrefix(outputPath, detentCacheDir) {
+		t.Errorf("GetOutputPath() = %v, expected to be under %v", outputPath, detentCacheDir)
 	}
 
 	// Verify the file exists
