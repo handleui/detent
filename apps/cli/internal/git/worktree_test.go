@@ -57,9 +57,8 @@ func TestPrepareWorktree_CleanRepo(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	runID := "test-clean-123"
 
-	info, cleanupWorktree, err := PrepareWorktree(ctx, repoPath, runID)
+	info, cleanupWorktree, err := PrepareWorktree(ctx, repoPath, "")
 	if err != nil {
 		t.Fatalf("PrepareWorktree() failed: %v", err)
 	}
@@ -240,9 +239,7 @@ func TestPrepareWorktree_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	runID := "test-cancel-789"
-
-	info, cleanupWorktree, err := PrepareWorktree(ctx, repoPath, runID)
+	info, cleanupWorktree, err := PrepareWorktree(ctx, repoPath, "")
 	if err != nil {
 		t.Fatalf("PrepareWorktree() failed: %v", err)
 	}
@@ -283,32 +280,29 @@ func TestRemoveWorktree_NonexistentPath(t *testing.T) {
 	}
 }
 
-// TestPrepareWorktree_ConcurrentCalls tests creating multiple worktrees with different run IDs
+// TestPrepareWorktree_ConcurrentCalls tests creating multiple worktrees
 func TestPrepareWorktree_ConcurrentCalls(t *testing.T) {
 	repoPath, cleanup := setupGitRepo(t)
 	defer cleanup()
 
 	ctx := context.Background()
 
-	// Create two worktrees with different run IDs
-	runID1 := "concurrent-1"
-	runID2 := "concurrent-2"
-
-	info1, cleanup1, err := PrepareWorktree(ctx, repoPath, runID1)
+	// Create two worktrees (empty string = temp directory with random suffix)
+	info1, cleanup1, err := PrepareWorktree(ctx, repoPath, "")
 	if err != nil {
-		t.Fatalf("PrepareWorktree(runID1) failed: %v", err)
+		t.Fatalf("PrepareWorktree(1) failed: %v", err)
 	}
 	defer cleanup1()
 
-	info2, cleanup2, err := PrepareWorktree(ctx, repoPath, runID2)
+	info2, cleanup2, err := PrepareWorktree(ctx, repoPath, "")
 	if err != nil {
-		t.Fatalf("PrepareWorktree(runID2) failed: %v", err)
+		t.Fatalf("PrepareWorktree(2) failed: %v", err)
 	}
 	defer cleanup2()
 
 	// Verify both worktrees exist and are different
 	if info1.Path == info2.Path {
-		t.Error("Worktree paths should be different for different run IDs")
+		t.Error("Worktree paths should be different")
 	}
 
 	if _, err := os.Stat(info1.Path); os.IsNotExist(err) {
@@ -338,7 +332,7 @@ func TestPrepareWorktree_ErrorWrapping(t *testing.T) {
 	tmpDir := t.TempDir()
 	ctx := context.Background()
 
-	_, _, err := PrepareWorktree(ctx, tmpDir, "test-error")
+	_, _, err := PrepareWorktree(ctx, tmpDir, "")
 	if err == nil {
 		t.Fatal("Expected error in non-git directory")
 	}

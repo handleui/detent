@@ -160,7 +160,7 @@ func (r *CheckRunner) Prepare(ctx context.Context) error {
 
 	// Prepare worktree in parallel
 	go func() {
-		worktreeInfo, cleanupWorktree, err := git.PrepareWorktree(ctx, r.config.RepoRoot, r.config.RunID)
+		worktreeInfo, cleanupWorktree, err := git.PrepareWorktree(ctx, r.config.RepoRoot, "")
 		worktreeChan <- worktreeResult{
 			worktreeInfo:    worktreeInfo,
 			cleanupWorktree: cleanupWorktree,

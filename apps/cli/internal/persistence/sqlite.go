@@ -46,26 +46,52 @@ func createDirIfNotExists(path string) error {
 	return nil
 }
 
-// getDetentCacheDir returns the global cache directory for detent data.
-// Follows XDG Base Directory spec: uses $XDG_CACHE_HOME if set and absolute,
-// otherwise ~/.cache/detent. Relative XDG paths are invalid per spec and ignored.
-func getDetentCacheDir() (string, error) {
-	if xdg := os.Getenv("XDG_CACHE_HOME"); xdg != "" && filepath.IsAbs(xdg) {
+// getOldDataDir returns the old XDG data directory for migration purposes.
+// This was: ~/.local/share/detent or $XDG_DATA_HOME/detent
+func getOldDataDir() (string, error) {
+	if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" && filepath.IsAbs(xdg) {
 		return filepath.Join(xdg, "detent"), nil
 	}
-	return getDefaultCacheDir()
-}
-
-// getDefaultCacheDir returns the default cache directory (~/.cache/detent).
-func getDefaultCacheDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("failed to get user home directory: %w", err)
 	}
+	return filepath.Join(home, ".local", "share", "detent"), nil
+}
 
-	// Use ~/.cache/detent on all platforms (XDG convention)
-	// Even on macOS, modern CLI tools prefer XDG over ~/Library/Caches
-	return filepath.Join(home, ".cache", "detent"), nil
+// getDetentCacheDir returns the cache directory for detent ephemeral data.
+// Uses the consolidated structure: ~/.detent/cache
+// Worktrees and regenerable data go here.
+func getDetentCacheDir() (string, error) {
+	detentDir, err := GetDetentDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(detentDir, "cache"), nil
+}
+
+// GetWorktreeBaseDir returns the directory for run worktrees for a given repo.
+// Uses the consolidated cache directory: ~/.detent/cache/<repoID>/worktrees
+func GetWorktreeBaseDir(repoRoot string) (string, error) {
+	cacheDir, err := getDetentCacheDir()
+	if err != nil {
+		return "", err
+	}
+	repoID, err := ComputeRepoID(repoRoot)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(cacheDir, repoID, "worktrees"), nil
+}
+
+// GetWorktreePath returns the full path for a specific run worktree.
+// Uses: ~/.detent/cache/<repoID>/worktrees/run-<runID>
+func GetWorktreePath(repoRoot, runID string) (string, error) {
+	baseDir, err := GetWorktreeBaseDir(repoRoot)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(baseDir, "run-"+runID), nil
 }
 
 // ComputeRepoID computes a stable identifier for a repository.
@@ -121,9 +147,9 @@ func hashToID(input string) string {
 }
 
 // GetDatabasePath returns the path to the SQLite database for a given repo.
-// Uses the global cache directory: ~/.cache/detent/<repo-id>/detent.db
+// Uses the consolidated directory: ~/.detent/repos/<repoID>.db
 func GetDatabasePath(repoRoot string) (string, error) {
-	cacheDir, err := getDetentCacheDir()
+	detentDir, err := GetDetentDir()
 	if err != nil {
 		return "", err
 	}
@@ -133,7 +159,140 @@ func GetDatabasePath(repoRoot string) (string, error) {
 		return "", err
 	}
 
+	return filepath.Join(detentDir, "repos", repoID+".db"), nil
+}
+
+// getOldDataDatabasePath returns the old XDG_DATA_HOME location for migration purposes.
+// Old path: ~/.local/share/detent/<repoID>/detent.db
+func getOldDataDatabasePath(repoRoot string) (string, error) {
+	dataDir, err := getOldDataDir()
+	if err != nil {
+		return "", err
+	}
+	repoID, err := ComputeRepoID(repoRoot)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dataDir, repoID, detentDBName), nil
+}
+
+// getOldCacheDatabasePath returns the old cache location for migration purposes.
+// Old path: ~/.cache/detent/<repoID>/detent.db
+func getOldCacheDatabasePath(repoRoot string) (string, error) {
+	// Use XDG_CACHE_HOME if set, otherwise ~/.cache/detent
+	var cacheDir string
+	if xdg := os.Getenv("XDG_CACHE_HOME"); xdg != "" && filepath.IsAbs(xdg) {
+		cacheDir = filepath.Join(xdg, "detent")
+	} else {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("failed to get user home directory: %w", err)
+		}
+		cacheDir = filepath.Join(home, ".cache", "detent")
+	}
+	repoID, err := ComputeRepoID(repoRoot)
+	if err != nil {
+		return "", err
+	}
 	return filepath.Join(cacheDir, repoID, detentDBName), nil
+}
+
+// migrateOldDataDatabase moves database from ~/.local/share/detent/<repoID>/detent.db to new location.
+// This handles the transition from XDG_DATA_HOME to ~/.detent/repos/<repoID>.db
+func migrateOldDataDatabase(repoRoot, newDBPath string) error {
+	oldDBPath, err := getOldDataDatabasePath(repoRoot)
+	if err != nil {
+		return err
+	}
+
+	// Check if old data database exists
+	if _, statErr := os.Stat(oldDBPath); os.IsNotExist(statErr) {
+		return nil // No old data database, nothing to migrate
+	}
+
+	// Check if new location already has a database
+	if _, statErr := os.Stat(newDBPath); statErr == nil {
+		// New location already exists, just clean up old location
+		oldDir := filepath.Dir(oldDBPath)
+		if rmErr := os.RemoveAll(oldDir); rmErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to remove old data database directory: %v\n", rmErr)
+		}
+		return nil
+	}
+
+	// Create new directory
+	newDir := filepath.Dir(newDBPath)
+	if mkdirErr := createDirIfNotExists(newDir); mkdirErr != nil {
+		return fmt.Errorf("failed to create repos directory: %w", mkdirErr)
+	}
+
+	// Checkpoint WAL before copying
+	if walErr := checkpointWAL(oldDBPath); walErr != nil {
+		return fmt.Errorf("failed to checkpoint WAL before migration: %w", walErr)
+	}
+
+	// Copy database file
+	if copyErr := copyFile(oldDBPath, newDBPath); copyErr != nil {
+		return fmt.Errorf("failed to migrate database from old data location: %w", copyErr)
+	}
+
+	// Remove old data database directory (cleanup)
+	oldDir := filepath.Dir(oldDBPath)
+	if rmErr := os.RemoveAll(oldDir); rmErr != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to remove old data database directory: %v\n", rmErr)
+	}
+
+	fmt.Fprintf(os.Stderr, "Migrated database from %s to %s\n", oldDBPath, newDBPath)
+	return nil
+}
+
+// migrateOldCacheDatabase moves database from ~/.cache/detent/<repoID>/detent.db to new location.
+// This handles the transition from XDG_CACHE_HOME to ~/.detent/repos/<repoID>.db
+func migrateOldCacheDatabase(repoRoot, newDBPath string) error {
+	cacheDBPath, err := getOldCacheDatabasePath(repoRoot)
+	if err != nil {
+		return err
+	}
+
+	// Check if cache database exists
+	if _, statErr := os.Stat(cacheDBPath); os.IsNotExist(statErr) {
+		return nil // No cache database, nothing to migrate
+	}
+
+	// Check if new location already has a database
+	if _, statErr := os.Stat(newDBPath); statErr == nil {
+		// New location already exists, just clean up old location
+		cacheDir := filepath.Dir(cacheDBPath)
+		if rmErr := os.RemoveAll(cacheDir); rmErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to remove old cache database directory: %v\n", rmErr)
+		}
+		return nil
+	}
+
+	// Create new directory
+	newDir := filepath.Dir(newDBPath)
+	if mkdirErr := createDirIfNotExists(newDir); mkdirErr != nil {
+		return fmt.Errorf("failed to create repos directory: %w", mkdirErr)
+	}
+
+	// Checkpoint WAL before copying
+	if walErr := checkpointWAL(cacheDBPath); walErr != nil {
+		return fmt.Errorf("failed to checkpoint WAL before migration: %w", walErr)
+	}
+
+	// Copy database file
+	if copyErr := copyFile(cacheDBPath, newDBPath); copyErr != nil {
+		return fmt.Errorf("failed to migrate database from cache: %w", copyErr)
+	}
+
+	// Remove old cache database directory (cleanup)
+	cacheDir := filepath.Dir(cacheDBPath)
+	if rmErr := os.RemoveAll(cacheDir); rmErr != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to remove old cache database directory: %v\n", rmErr)
+	}
+
+	fmt.Fprintf(os.Stderr, "Migrated database from %s to %s\n", cacheDBPath, newDBPath)
+	return nil
 }
 
 // migrateLegacyDatabase moves database from .detent/detent.db to the new global location.
@@ -278,21 +437,35 @@ type SQLiteWriter struct {
 
 // NewSQLiteWriter creates a new SQLite writer and initializes the database schema
 func NewSQLiteWriter(repoRoot string) (*SQLiteWriter, error) {
-	// Get the new global database path
+	// Get the new consolidated database path: ~/.detent/repos/<repoID>.db
 	dbPath, err := GetDatabasePath(repoRoot)
 	if err != nil {
 		return nil, fmt.Errorf("failed to compute database path: %w", err)
 	}
 
-	// Migrate from legacy .detent/ location if needed
-	if migrateErr := migrateLegacyDatabase(repoRoot, dbPath); migrateErr != nil {
-		return nil, fmt.Errorf("failed to migrate legacy database: %w", migrateErr)
+	// Migration chain: check each old location in priority order
+	// 1. ~/.local/share/detent/<repoID>/detent.db (current/recent)
+	// 2. ~/.cache/detent/<repoID>/detent.db (old cache location)
+	// 3. <repo>/.detent/detent.db (legacy in-repo location)
+	if _, statErr := os.Stat(dbPath); os.IsNotExist(statErr) {
+		// Try migrating from old data location first (most recent)
+		if dataErr := migrateOldDataDatabase(repoRoot, dbPath); dataErr != nil {
+			return nil, fmt.Errorf("failed to migrate old data database: %w", dataErr)
+		}
+		// Then try old cache location
+		if cacheErr := migrateOldCacheDatabase(repoRoot, dbPath); cacheErr != nil {
+			return nil, fmt.Errorf("failed to migrate old cache database: %w", cacheErr)
+		}
+		// Finally try legacy in-repo location
+		if legacyErr := migrateLegacyDatabase(repoRoot, dbPath); legacyErr != nil {
+			return nil, fmt.Errorf("failed to migrate legacy database: %w", legacyErr)
+		}
 	}
 
-	// Create cache directory
-	cacheDir := filepath.Dir(dbPath)
-	if mkdirErr := createDirIfNotExists(cacheDir); mkdirErr != nil {
-		return nil, fmt.Errorf("failed to create cache directory: %w", mkdirErr)
+	// Create repos directory
+	reposDir := filepath.Dir(dbPath)
+	if mkdirErr := createDirIfNotExists(reposDir); mkdirErr != nil {
+		return nil, fmt.Errorf("failed to create repos directory: %w", mkdirErr)
 	}
 
 	db, err := sql.Open("sqlite3", dbPath)

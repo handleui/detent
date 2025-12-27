@@ -11,18 +11,6 @@ import (
 func TestNewSQLiteWriter(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Set XDG_CACHE_HOME to tmpDir to control where database is created
-	originalXDG := os.Getenv("XDG_CACHE_HOME")
-	cacheDir := filepath.Join(tmpDir, "cache")
-	t.Setenv("XDG_CACHE_HOME", cacheDir)
-	defer func() {
-		if originalXDG != "" {
-			os.Setenv("XDG_CACHE_HOME", originalXDG)
-		} else {
-			os.Unsetenv("XDG_CACHE_HOME")
-		}
-	}()
-
 	// Create a git repo in tmpDir for ComputeRepoID to work
 	repoDir := filepath.Join(tmpDir, "repo")
 	if err := os.MkdirAll(repoDir, 0o755); err != nil {
@@ -44,21 +32,30 @@ func TestNewSQLiteWriter(t *testing.T) {
 		}
 	}()
 
-	// Verify cache directory was created under XDG_CACHE_HOME
-	detentCacheDir := filepath.Join(cacheDir, "detent")
-	if _, err := os.Stat(detentCacheDir); os.IsNotExist(err) {
-		t.Error("detent cache directory was not created")
+	// Get the expected detent directory (~/.detent)
+	detentDir, err := GetDetentDir()
+	if err != nil {
+		t.Fatalf("Failed to get detent dir: %v", err)
 	}
 
-	// Verify database file was created (path includes repo-id subdirectory)
+	// Verify repos directory was created under ~/.detent
+	reposDir := filepath.Join(detentDir, "repos")
+	if _, err := os.Stat(reposDir); os.IsNotExist(err) {
+		t.Error("repos directory was not created")
+	}
+
+	// Verify database file was created (path is ~/.detent/repos/<repoID>.db)
 	dbPath := writer.Path()
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
 		t.Errorf("Database file was not created at %s", dbPath)
 	}
 
-	// Verify path is under the cache directory
-	if !filepath.HasPrefix(dbPath, detentCacheDir) {
-		t.Errorf("Path() = %v, expected to be under %v", dbPath, detentCacheDir)
+	// Verify path is under the repos directory and ends with .db
+	if !filepath.HasPrefix(dbPath, reposDir) {
+		t.Errorf("Path() = %v, expected to be under %v", dbPath, reposDir)
+	}
+	if filepath.Ext(dbPath) != ".db" {
+		t.Errorf("Path() = %v, expected to end with .db", dbPath)
 	}
 }
 

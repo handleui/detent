@@ -14,10 +14,6 @@ import (
 func TestNewRecorder(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Set XDG_CACHE_HOME to control where database is created
-	cacheDir := filepath.Join(tmpDir, "cache")
-	t.Setenv("XDG_CACHE_HOME", cacheDir)
-
 	repoDir := filepath.Join(tmpDir, "repo")
 	if err := os.MkdirAll(repoDir, 0o755); err != nil {
 		t.Fatalf("Failed to create repo dir: %v", err)
@@ -59,14 +55,23 @@ func TestNewRecorder(t *testing.T) {
 		t.Error("SQLite writer should not be nil")
 	}
 
-	// Verify database was created under cache directory
+	// Get the expected detent directory (~/.detent)
+	detentDir, err := GetDetentDir()
+	if err != nil {
+		t.Fatalf("Failed to get detent dir: %v", err)
+	}
+
+	// Verify database was created under repos directory
 	dbPath := recorder.GetOutputPath()
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
 		t.Error("Database file was not created")
 	}
-	detentCacheDir := filepath.Join(cacheDir, "detent")
-	if !filepath.HasPrefix(dbPath, detentCacheDir) {
-		t.Errorf("Database path %v should be under %v", dbPath, detentCacheDir)
+	reposDir := filepath.Join(detentDir, "repos")
+	if !filepath.HasPrefix(dbPath, reposDir) {
+		t.Errorf("Database path %v should be under %v", dbPath, reposDir)
+	}
+	if filepath.Ext(dbPath) != ".db" {
+		t.Errorf("Database path %v should end with .db", dbPath)
 	}
 }
 
@@ -200,10 +205,6 @@ func TestRecorder_Finalize(t *testing.T) {
 func TestRecorder_GetOutputPath(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Set XDG_CACHE_HOME to control where database is created
-	cacheDir := filepath.Join(tmpDir, "cache")
-	t.Setenv("XDG_CACHE_HOME", cacheDir)
-
 	repoDir := filepath.Join(tmpDir, "repo")
 	if err := os.MkdirAll(repoDir, 0o755); err != nil {
 		t.Fatalf("Failed to create repo dir: %v", err)
@@ -217,10 +218,21 @@ func TestRecorder_GetOutputPath(t *testing.T) {
 
 	outputPath := recorder.GetOutputPath()
 
-	// Verify the path is under the cache directory
-	detentCacheDir := filepath.Join(cacheDir, "detent")
-	if !filepath.HasPrefix(outputPath, detentCacheDir) {
-		t.Errorf("GetOutputPath() = %v, expected to be under %v", outputPath, detentCacheDir)
+	// Get the expected detent directory (~/.detent)
+	detentDir, err := GetDetentDir()
+	if err != nil {
+		t.Fatalf("Failed to get detent dir: %v", err)
+	}
+
+	// Verify the path is under the repos directory (~/.detent/repos)
+	reposDir := filepath.Join(detentDir, "repos")
+	if !filepath.HasPrefix(outputPath, reposDir) {
+		t.Errorf("GetOutputPath() = %v, expected to be under %v", outputPath, reposDir)
+	}
+
+	// Verify the path ends with .db
+	if filepath.Ext(outputPath) != ".db" {
+		t.Errorf("GetOutputPath() = %v, expected to end with .db", outputPath)
 	}
 
 	// Verify the file exists
