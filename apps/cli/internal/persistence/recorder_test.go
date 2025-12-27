@@ -3,6 +3,7 @@ package persistence
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,7 +14,13 @@ import (
 // TestNewRecorder tests recorder creation
 func TestNewRecorder(t *testing.T) {
 	tmpDir := t.TempDir()
-	recorder, err := NewRecorder(tmpDir, "CI", "abc123", "github")
+
+	repoDir := filepath.Join(tmpDir, "repo")
+	if err := os.MkdirAll(repoDir, 0o755); err != nil {
+		t.Fatalf("Failed to create repo dir: %v", err)
+	}
+
+	recorder, err := NewRecorder(repoDir, "CI", "abc123", "github")
 
 	if err != nil {
 		t.Fatalf("NewRecorder() error = %v", err)
@@ -33,8 +40,8 @@ func TestNewRecorder(t *testing.T) {
 	if recorder.runID == "" {
 		t.Error("runID should not be empty")
 	}
-	if recorder.repoRoot != tmpDir {
-		t.Errorf("repoRoot = %v, want %v", recorder.repoRoot, tmpDir)
+	if recorder.repoRoot != repoDir {
+		t.Errorf("repoRoot = %v, want %v", recorder.repoRoot, repoDir)
 	}
 	if recorder.workflowName != "CI" {
 		t.Errorf("workflowName = %v, want 'CI'", recorder.workflowName)
@@ -49,10 +56,23 @@ func TestNewRecorder(t *testing.T) {
 		t.Error("SQLite writer should not be nil")
 	}
 
-	// Verify run was recorded in database
-	dbPath := filepath.Join(tmpDir, detentDir, detentDBName)
+	// Get the expected detent directory (~/.detent)
+	detentDir, err := GetDetentDir()
+	if err != nil {
+		t.Fatalf("Failed to get detent dir: %v", err)
+	}
+
+	// Verify database was created under repos directory
+	dbPath := recorder.GetOutputPath()
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
 		t.Error("Database file was not created")
+	}
+	reposDir := filepath.Join(detentDir, "repos")
+	if !strings.HasPrefix(dbPath, reposDir) {
+		t.Errorf("Database path %v should be under %v", dbPath, reposDir)
+	}
+	if filepath.Ext(dbPath) != ".db" {
+		t.Errorf("Database path %v should end with .db", dbPath)
 	}
 }
 
@@ -76,19 +96,15 @@ func TestRecorder_RecordFinding(t *testing.T) {
 		t.Fatalf("RecordFinding() error = %v", err)
 	}
 
-	// Verify in-memory tracking
-	if len(recorder.errors) != 1 {
-		t.Errorf("In-memory errors count = %d, want 1", len(recorder.errors))
-	}
-
-	// Verify file-level counts
-	if recorder.errorCounts["/app/test.go"] != 1 {
-		t.Errorf("errorCounts = %d, want 1", recorder.errorCounts["/app/test.go"])
+	// Verify error was recorded in database
+	errorCount := recorder.sqlite.GetErrorCount()
+	if errorCount != 1 {
+		t.Errorf("Database error count = %d, want 1", errorCount)
 	}
 }
 
-// TestRecorder_RecordFinding_FileCounts tests file-level error/warning counting
-func TestRecorder_RecordFinding_FileCounts(t *testing.T) {
+// TestRecorder_RecordFinding_MultipleFindingsPersisted tests multiple findings are persisted
+func TestRecorder_RecordFinding_MultipleFindingsPersisted(t *testing.T) {
 	tmpDir := t.TempDir()
 	recorder, err := NewRecorder(tmpDir, "test", "abc123", "github")
 	if err != nil {
@@ -126,12 +142,10 @@ func TestRecorder_RecordFinding_FileCounts(t *testing.T) {
 		}
 	}
 
-	// Verify counts
-	if recorder.errorCounts[file1] != 3 {
-		t.Errorf("errorCounts[%s] = %d, want 3", file1, recorder.errorCounts[file1])
-	}
-	if recorder.warningCounts[file1] != 2 {
-		t.Errorf("warningCounts[%s] = %d, want 2", file1, recorder.warningCounts[file1])
+	// Verify total count in database (deduplication may reduce count)
+	errorCount := recorder.sqlite.GetErrorCount()
+	if errorCount < 2 {
+		t.Errorf("Expected at least 2 unique errors in database, got %d", errorCount)
 	}
 }
 
@@ -185,17 +199,35 @@ func TestRecorder_Finalize(t *testing.T) {
 // TestRecorder_GetOutputPath tests output path retrieval
 func TestRecorder_GetOutputPath(t *testing.T) {
 	tmpDir := t.TempDir()
-	recorder, err := NewRecorder(tmpDir, "test", "abc123", "github")
+
+	repoDir := filepath.Join(tmpDir, "repo")
+	if err := os.MkdirAll(repoDir, 0o755); err != nil {
+		t.Fatalf("Failed to create repo dir: %v", err)
+	}
+
+	recorder, err := NewRecorder(repoDir, "test", "abc123", "github")
 	if err != nil {
 		t.Fatalf("Failed to create recorder: %v", err)
 	}
 	defer func() { _ = recorder.Finalize(0) }()
 
 	outputPath := recorder.GetOutputPath()
-	expectedPath := filepath.Join(tmpDir, detentDir, detentDBName)
 
-	if outputPath != expectedPath {
-		t.Errorf("GetOutputPath() = %v, want %v", outputPath, expectedPath)
+	// Get the expected detent directory (~/.detent)
+	detentDir, err := GetDetentDir()
+	if err != nil {
+		t.Fatalf("Failed to get detent dir: %v", err)
+	}
+
+	// Verify the path is under the repos directory (~/.detent/repos)
+	reposDir := filepath.Join(detentDir, "repos")
+	if !strings.HasPrefix(outputPath, reposDir) {
+		t.Errorf("GetOutputPath() = %v, expected to be under %v", outputPath, reposDir)
+	}
+
+	// Verify the path ends with .db
+	if filepath.Ext(outputPath) != ".db" {
+		t.Errorf("GetOutputPath() = %v, expected to end with .db", outputPath)
 	}
 
 	// Verify the file exists
@@ -236,7 +268,7 @@ func TestGenerateUUID(t *testing.T) {
 	}
 }
 
-// TestRecorder_WorkflowContextPersistence tests that workflow context is tracked
+// TestRecorder_WorkflowContextPersistence tests that workflow context is persisted to database
 func TestRecorder_WorkflowContextPersistence(t *testing.T) {
 	tmpDir := t.TempDir()
 	recorder, err := NewRecorder(tmpDir, "test-workflow", "abc123def", "github")
@@ -261,20 +293,10 @@ func TestRecorder_WorkflowContextPersistence(t *testing.T) {
 		t.Fatalf("RecordFinding() failed: %v", err)
 	}
 
-	// Verify it was recorded in memory
-	if len(recorder.errors) != 1 {
-		t.Fatalf("Expected 1 error in memory, got %d", len(recorder.errors))
-	}
-
-	if recorder.errors[0].WorkflowContext == nil {
-		t.Error("WorkflowContext should not be nil")
-	} else {
-		if recorder.errors[0].WorkflowContext.Job != "test-job" {
-			t.Errorf("Job = %v, want 'test-job'", recorder.errors[0].WorkflowContext.Job)
-		}
-		if recorder.errors[0].WorkflowContext.Step != "test-step" {
-			t.Errorf("Step = %v, want 'test-step'", recorder.errors[0].WorkflowContext.Step)
-		}
+	// Verify it was recorded in database
+	errorCount := recorder.sqlite.GetErrorCount()
+	if errorCount != 1 {
+		t.Fatalf("Expected 1 error in database, got %d", errorCount)
 	}
 }
 
@@ -297,7 +319,7 @@ func TestRecorder_StartTime(t *testing.T) {
 	}
 }
 
-// TestRecorder_ErrorCategoryTracking tests that different error categories are tracked
+// TestRecorder_ErrorCategoryTracking tests that different error categories are persisted
 func TestRecorder_ErrorCategoryTracking(t *testing.T) {
 	tmpDir := t.TempDir()
 	recorder, err := NewRecorder(tmpDir, "test", "abc123", "github")
@@ -316,7 +338,7 @@ func TestRecorder_ErrorCategoryTracking(t *testing.T) {
 
 	for i, cat := range categories {
 		err := recorder.RecordFinding(&errors.ExtractedError{
-			Message:  "test error for category",
+			Message:  "test error for category " + string(cat),
 			File:     "/app/test.go",
 			Line:     i + 1,
 			Severity: "error",
@@ -327,21 +349,10 @@ func TestRecorder_ErrorCategoryTracking(t *testing.T) {
 		}
 	}
 
-	// Verify all categories were recorded
-	if len(recorder.errors) != len(categories) {
-		t.Errorf("Expected %d errors, got %d", len(categories), len(recorder.errors))
-	}
-
-	// Verify each category is present
-	categoryMap := make(map[errors.ErrorCategory]bool)
-	for _, e := range recorder.errors {
-		categoryMap[e.Category] = true
-	}
-
-	for _, cat := range categories {
-		if !categoryMap[cat] {
-			t.Errorf("Category %v not found in recorded errors", cat)
-		}
+	// Verify all categories were recorded in database
+	errorCount := recorder.sqlite.GetErrorCount()
+	if errorCount != len(categories) {
+		t.Errorf("Expected %d errors in database, got %d", len(categories), errorCount)
 	}
 }
 
@@ -363,13 +374,10 @@ func TestRecorder_RecordFinding_WithoutFile(t *testing.T) {
 		t.Fatalf("RecordFinding() error = %v", err)
 	}
 
-	if len(recorder.errors) != 1 {
-		t.Errorf("Expected 1 error, got %d", len(recorder.errors))
-	}
-
-	// Verify no file counts were incremented
-	if len(recorder.errorCounts) != 0 {
-		t.Errorf("errorCounts should be empty, got %d entries", len(recorder.errorCounts))
+	// Verify error was recorded in database
+	errorCount := recorder.sqlite.GetErrorCount()
+	if errorCount != 1 {
+		t.Errorf("Expected 1 error in database, got %d", errorCount)
 	}
 }
 

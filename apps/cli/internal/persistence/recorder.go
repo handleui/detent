@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/detent/cli/internal/errors"
+	"github.com/detent/cli/internal/git"
 	"github.com/detent/cli/internal/util"
 )
 
@@ -17,10 +18,6 @@ type Recorder struct {
 	startTime time.Time
 	sqlite    *SQLiteWriter
 
-	errors        []*errors.ExtractedError
-	fileMetadata  map[string]*ScannedFile
-	errorCounts   map[string]int
-	warningCounts map[string]int
 	fileHashCache map[string]string
 
 	workflowName string
@@ -40,7 +37,14 @@ func NewRecorder(repoRoot, workflowName, commitSHA, execMode string) (*Recorder,
 		return nil, fmt.Errorf("failed to create SQLite writer: %w", err)
 	}
 
-	if err := sqlite.RecordRun(runID, workflowName, commitSHA, execMode); err != nil {
+	// Get tree hash for better cache identity
+	treeHash, err := git.GetCurrentTreeHash(repoRoot)
+	if err != nil {
+		// Non-fatal: tree hash is optional, continue without it
+		treeHash = ""
+	}
+
+	if err := sqlite.RecordRun(runID, workflowName, commitSHA, treeHash, execMode); err != nil {
 		_ = sqlite.Close()
 		return nil, fmt.Errorf("failed to record run: %w", err)
 	}
@@ -50,10 +54,6 @@ func NewRecorder(repoRoot, workflowName, commitSHA, execMode string) (*Recorder,
 		repoRoot:      repoRoot,
 		startTime:     time.Now(),
 		sqlite:        sqlite,
-		errors:        make([]*errors.ExtractedError, 0),
-		fileMetadata:  make(map[string]*ScannedFile),
-		errorCounts:   make(map[string]int),
-		warningCounts: make(map[string]int),
 		fileHashCache: make(map[string]string),
 		workflowName:  workflowName,
 		commitSHA:     commitSHA,
@@ -76,10 +76,6 @@ func (r *Recorder) RecordFindings(findings []*errors.ExtractedError) error {
 		return fmt.Errorf("failed to record findings: %w", err)
 	}
 
-	for _, err := range findings {
-		r.trackFinding(err)
-	}
-
 	return nil
 }
 
@@ -91,7 +87,6 @@ func (r *Recorder) RecordFinding(err *errors.ExtractedError) error {
 		return fmt.Errorf("failed to record finding: %w", dbErr)
 	}
 
-	r.trackFinding(err)
 	return nil
 }
 
@@ -118,18 +113,6 @@ func (r *Recorder) buildFindingRecord(err *errors.ExtractedError) *FindingRecord
 	}
 
 	return finding
-}
-
-func (r *Recorder) trackFinding(err *errors.ExtractedError) {
-	r.errors = append(r.errors, err)
-
-	if err.File != "" {
-		if err.Severity == "error" {
-			r.errorCounts[err.File]++
-		} else {
-			r.warningCounts[err.File]++
-		}
-	}
 }
 
 // Finalize completes the run and closes the database connection

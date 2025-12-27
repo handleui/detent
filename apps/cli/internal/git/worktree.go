@@ -24,16 +24,13 @@ type WorktreeInfo struct {
 	CommitSHA string // Commit SHA that worktree is based on
 }
 
-// PrepareWorktree creates a temporary git worktree for isolated workflow execution.
+// PrepareWorktree creates a git worktree for isolated workflow execution.
 // The worktree is created from the current HEAD commit.
+// If worktreeDir is empty, creates a temp directory. Otherwise uses the provided path.
 // Returns worktree info, cleanup function, and error.
 //
 // Note: This requires a clean worktree. Call ValidateCleanWorktree() before this.
-func PrepareWorktree(ctx context.Context, repoRoot, runID string) (*WorktreeInfo, func(), error) {
-	if err := checkTmpDiskSpace(); err != nil {
-		return nil, nil, err
-	}
-
+func PrepareWorktree(ctx context.Context, repoRoot, worktreeDir string) (*WorktreeInfo, func(), error) {
 	cmd := exec.CommandContext(ctx, "git", "-c", "core.hooksPath=/dev/null", "rev-parse", "HEAD")
 	cmd.Dir = repoRoot
 	cmd.Env = safeGitEnv()
@@ -43,17 +40,27 @@ func PrepareWorktree(ctx context.Context, repoRoot, runID string) (*WorktreeInfo
 	}
 	commitSHA := strings.TrimSpace(string(output))
 
-	// Prevents TOCTOU attacks
-	worktreeDir, err := os.MkdirTemp("", "detent-worktree-")
-	if err != nil {
-		return nil, nil, fmt.Errorf("creating temp directory: %w", err)
+	if checkErr := checkTmpDiskSpace(); checkErr != nil {
+		return nil, nil, checkErr
+	}
+
+	if worktreeDir == "" {
+		worktreeDir, err = os.MkdirTemp("", "detent-worktree-")
+		if err != nil {
+			return nil, nil, fmt.Errorf("creating temp directory: %w", err)
+		}
+	} else {
+		// Create the specified directory
+		if mkdirErr := os.MkdirAll(worktreeDir, 0o700); mkdirErr != nil {
+			return nil, nil, fmt.Errorf("creating worktree directory: %w", mkdirErr)
+		}
 	}
 
 	// Defense in depth: verify not a symlink
 	info, err := os.Lstat(worktreeDir)
 	if err != nil || info.Mode()&os.ModeSymlink != 0 {
 		_ = os.RemoveAll(worktreeDir)
-		return nil, nil, fmt.Errorf("temp directory security check failed")
+		return nil, nil, fmt.Errorf("worktree directory security check failed")
 	}
 
 	if err := createWorktree(ctx, repoRoot, worktreeDir, commitSHA); err != nil {

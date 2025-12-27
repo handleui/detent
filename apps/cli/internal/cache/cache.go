@@ -114,12 +114,29 @@ func convertToExtracted(cachedErrors []*persistence.ErrorRecord) []*errors.Extra
 		ext := &errors.ExtractedError{
 			File:       e.FilePath,
 			Line:       e.LineNumber,
+			Column:     e.ColumnNumber,
 			Message:    e.Message,
 			Category:   errors.ErrorCategory(e.ErrorType),
 			StackTrace: e.StackTrace,
+			RuleID:     e.RuleID,
+			Source:     e.Source,
+			Raw:        e.Raw,
 		}
-		// Use the canonical InferSeverity function
-		ext.Severity = errors.InferSeverity(ext)
+
+		// Use stored severity if available, otherwise infer
+		if e.Severity != "" {
+			ext.Severity = e.Severity
+		} else {
+			ext.Severity = errors.InferSeverity(ext)
+		}
+
+		// Reconstruct workflow context if job info is available
+		if e.WorkflowJob != "" {
+			ext.WorkflowContext = &errors.WorkflowContext{
+				Job: e.WorkflowJob,
+			}
+		}
+
 		extracted = append(extracted, ext)
 	}
 

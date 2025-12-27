@@ -307,7 +307,7 @@ func RunPreflightChecks(ctx context.Context, workflowPath, repoRoot, runID, work
 	worktreeResult, err := checker.executeWorktreePrep(
 		"Creating isolated worktree",
 		func() (worktreePrepResult, error) {
-			info, cleanup, wtErr := git.PrepareWorktree(ctx, repoRoot, runID)
+			info, cleanup, wtErr := git.PrepareWorktree(ctx, repoRoot, "")
 			if wtErr != nil {
 				workflowResult.cleanup()
 				return worktreePrepResult{}, fmt.Errorf("creating worktree: %w", wtErr)

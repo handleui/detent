@@ -1,7 +1,9 @@
 package persistence
 
 import (
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -12,15 +14,14 @@ import (
 
 	_ "github.com/ncruces/go-sqlite3/driver"
 	_ "github.com/ncruces/go-sqlite3/embed"
+	"github.com/detent/cli/internal/git"
 	"github.com/detent/cli/internal/util"
 )
 
 const (
-	detentDir    = ".detent"
-	detentDBName = "detent.db"
-	batchSize    = 500 // Batch size for error inserts
+	batchSize = 500 // Batch size for error inserts
 
-	currentSchemaVersion = 10 // Current database schema version
+	currentSchemaVersion = 13 // Current database schema version
 
 	// healSelectColumns is the standard column list for heal queries (must match scanHealFromScanner order)
 	healSelectColumns = `heal_id, error_id, run_id, diff_content, diff_content_hash, file_path, file_hash,
@@ -30,12 +31,119 @@ const (
 		attempt_number, parent_heal_id, failure_reason`
 )
 
+// repoIDCache caches computed repository IDs to avoid repeated git subprocess calls.
+// Key: absolute repo root path, Value: computed repo ID string.
+var repoIDCache sync.Map
+
 func createDirIfNotExists(path string) error {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		// #nosec G301 - standard permissions for app data directory
-		return os.MkdirAll(path, 0o755)
+		// #nosec G301 - restrictive permissions for cache directory (owner-only access)
+		return os.MkdirAll(path, 0o700)
 	}
 	return nil
+}
+
+// getDetentCacheDir returns the cache directory for detent ephemeral data.
+// Uses the consolidated structure: ~/.detent/cache
+// Worktrees and regenerable data go here.
+func getDetentCacheDir() (string, error) {
+	detentDir, err := GetDetentDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(detentDir, "cache"), nil
+}
+
+// GetWorktreeBaseDir returns the directory for run worktrees for a given repo.
+// Uses the consolidated cache directory: ~/.detent/cache/<repoID>/worktrees
+func GetWorktreeBaseDir(repoRoot string) (string, error) {
+	cacheDir, err := getDetentCacheDir()
+	if err != nil {
+		return "", err
+	}
+	repoID, err := ComputeRepoID(repoRoot)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(cacheDir, repoID, "worktrees"), nil
+}
+
+// GetWorktreePath returns the full path for a specific run worktree.
+// Uses: ~/.detent/cache/<repoID>/worktrees/run-<runID>
+func GetWorktreePath(repoRoot, runID string) (string, error) {
+	baseDir, err := GetWorktreeBaseDir(repoRoot)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(baseDir, "run-"+runID), nil
+}
+
+// ComputeRepoID computes a stable identifier for a repository.
+// Priority: 1) git remote URL, 2) first commit SHA, 3) repo path
+// Returns a 16-character hex string suitable for directory names.
+// Results are cached to avoid repeated git subprocess calls.
+func ComputeRepoID(repoRoot string) (string, error) {
+	// Normalize path for consistent cache key
+	absPath, err := filepath.Abs(repoRoot)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve repo path: %w", err)
+	}
+
+	// Check cache first
+	if cached, ok := repoIDCache.Load(absPath); ok {
+		if repoID, valid := cached.(string); valid {
+			return repoID, nil
+		}
+	}
+
+	// Compute the repo ID
+	repoID := computeRepoIDUncached(absPath)
+
+	// Store in cache
+	repoIDCache.Store(absPath, repoID)
+	return repoID, nil
+}
+
+// computeRepoIDUncached performs the actual repo ID computation without caching.
+func computeRepoIDUncached(absPath string) string {
+	// Priority 1: git remote origin URL (works across machines)
+	remoteURL, err := git.GetRemoteURL(absPath)
+	if err == nil && remoteURL != "" {
+		// Normalize: strip .git suffix for consistent IDs
+		remoteURL = strings.TrimSuffix(remoteURL, ".git")
+		return hashToID(remoteURL)
+	}
+
+	// Priority 2: first commit SHA (immutable, works offline)
+	firstCommit, err := git.GetFirstCommitSHA(absPath)
+	if err == nil && firstCommit != "" {
+		return hashToID(firstCommit)
+	}
+
+	// Priority 3: repo path (last resort - breaks if repo moves)
+	return hashToID(absPath)
+}
+
+// hashToID computes a SHA256 hash and returns the first 20 hex characters (80 bits).
+func hashToID(input string) string {
+	h := sha256.Sum256([]byte(input))
+	return hex.EncodeToString(h[:])[:20]
+}
+
+// GetDatabasePath returns the path to the SQLite database for a given repo.
+// Uses the consolidated directory: ~/.detent/repos/<repoID>.db
+func GetDatabasePath(repoRoot string) (string, error) {
+	detentDir, err := GetDetentDir()
+	if err != nil {
+		return "", err
+	}
+
+	repoID, err := ComputeRepoID(repoRoot)
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.Join(detentDir, "repos", repoID+".db"), nil
 }
 
 // SQLiteWriter handles writing scan results to SQLite database
@@ -49,14 +157,18 @@ type SQLiteWriter struct {
 
 // NewSQLiteWriter creates a new SQLite writer and initializes the database schema
 func NewSQLiteWriter(repoRoot string) (*SQLiteWriter, error) {
-	detentPath := filepath.Join(repoRoot, detentDir)
-
-	// #nosec G301 - standard permissions for app data directory
-	if err := createDirIfNotExists(detentPath); err != nil {
-		return nil, fmt.Errorf("failed to create .detent directory: %w", err)
+	// Get the new consolidated database path: ~/.detent/repos/<repoID>.db
+	dbPath, err := GetDatabasePath(repoRoot)
+	if err != nil {
+		return nil, fmt.Errorf("failed to compute database path: %w", err)
 	}
 
-	dbPath := filepath.Join(detentPath, detentDBName)
+	// Create repos directory
+	reposDir := filepath.Dir(dbPath)
+	if mkdirErr := createDirIfNotExists(reposDir); mkdirErr != nil {
+		return nil, fmt.Errorf("failed to create repos directory: %w", mkdirErr)
+	}
+
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open SQLite database: %w", err)
@@ -321,6 +433,48 @@ func (w *SQLiteWriter) applyMigrations(fromVersion int) error {
 			ON heals(file_path, file_hash, status, created_at DESC);
 			`,
 		},
+		{
+			version: 11,
+			name:    "add_tree_hash_to_runs",
+			sql: `
+			ALTER TABLE runs ADD COLUMN tree_hash TEXT;
+			`,
+		},
+		{
+			version: 12,
+			name:    "add_commit_sha_index_drop_unused",
+			sql: `
+			-- Add missing index for GetRunByCommit lookups
+			CREATE INDEX IF NOT EXISTS idx_runs_commit_sha ON runs(commit_sha);
+
+			-- Drop unused indices (tree_hash and sync_status never queried)
+			DROP INDEX IF EXISTS idx_runs_tree_hash;
+			DROP INDEX IF EXISTS idx_runs_sync_status;
+			DROP INDEX IF EXISTS idx_heals_sync_status;
+
+			-- idx_heals_file_hash is redundant with idx_heals_cache_lookup composite
+			DROP INDEX IF EXISTS idx_heals_file_hash;
+			`,
+		},
+		{
+			version: 13,
+			name:    "add_ai_troubleshooting_and_compliance_fields",
+			sql: `
+			-- AI troubleshooting fields (used by heal prompts)
+			ALTER TABLE errors ADD COLUMN column_number INTEGER;
+			ALTER TABLE errors ADD COLUMN severity TEXT;
+			ALTER TABLE errors ADD COLUMN rule_id TEXT;
+			ALTER TABLE errors ADD COLUMN source TEXT;
+			ALTER TABLE errors ADD COLUMN workflow_job TEXT;
+
+			-- Compliance/debugging field (original CI output)
+			ALTER TABLE errors ADD COLUMN raw TEXT;
+
+			-- Indices for common queries
+			CREATE INDEX IF NOT EXISTS idx_errors_severity ON errors(severity);
+			CREATE INDEX IF NOT EXISTS idx_errors_source ON errors(source);
+			`,
+		},
 	}
 
 	// Apply each migration in a transaction
@@ -363,15 +517,15 @@ func (w *SQLiteWriter) applyMigrations(fromVersion int) error {
 }
 
 // RecordRun inserts a new run record into the database
-func (w *SQLiteWriter) RecordRun(runID, workflowName, commitSHA, executionMode string) error {
+func (w *SQLiteWriter) RecordRun(runID, workflowName, commitSHA, treeHash, executionMode string) error {
 	// Note: is_dirty, dirty_files, base_commit_sha, codebase_state_hash are deprecated
 	// We now require clean commits before running, so is_dirty is always 0
 	query := `
-		INSERT INTO runs (run_id, workflow_name, commit_sha, execution_mode, started_at, is_dirty)
-		VALUES (?, ?, ?, ?, ?, 0)
+		INSERT INTO runs (run_id, workflow_name, commit_sha, tree_hash, execution_mode, started_at, is_dirty)
+		VALUES (?, ?, ?, ?, ?, ?, 0)
 	`
 
-	_, err := w.db.Exec(query, runID, workflowName, commitSHA, executionMode, time.Now().Unix())
+	_, err := w.db.Exec(query, runID, workflowName, commitSHA, treeHash, executionMode, time.Now().Unix())
 	if err != nil {
 		return fmt.Errorf("failed to record run: %w", err)
 	}
@@ -408,19 +562,25 @@ type RunRecord struct {
 
 // ErrorRecord represents an error stored in the database
 type ErrorRecord struct {
-	ErrorID     string
-	RunID       string
-	FilePath    string
-	LineNumber  int
-	ErrorType   string
-	Message     string
-	StackTrace  string
-	FileHash    string
-	ContentHash string
-	FirstSeenAt time.Time
-	LastSeenAt  time.Time
-	SeenCount   int
-	Status      string
+	ErrorID      string
+	RunID        string
+	FilePath     string
+	LineNumber   int
+	ColumnNumber int
+	ErrorType    string
+	Message      string
+	StackTrace   string
+	FileHash     string
+	ContentHash  string
+	Severity     string
+	RuleID       string
+	Source       string
+	WorkflowJob  string
+	Raw          string
+	FirstSeenAt  time.Time
+	LastSeenAt   time.Time
+	SeenCount    int
+	Status       string
 }
 
 // GetRunByID retrieves a run by its ID
@@ -467,9 +627,10 @@ func (w *SQLiteWriter) GetRunByID(runID string) (*RunRecord, error) {
 // GetErrorsByRunID retrieves all errors for a given run
 func (w *SQLiteWriter) GetErrorsByRunID(runID string) ([]*ErrorRecord, error) {
 	query := `
-		SELECT error_id, run_id, file_path, line_number, error_type, message,
-			stack_trace, file_hash, content_hash, first_seen_at, last_seen_at,
-			seen_count, status
+		SELECT error_id, run_id, file_path, line_number, column_number,
+			error_type, message, stack_trace, file_hash, content_hash,
+			severity, rule_id, source, workflow_job, raw,
+			first_seen_at, last_seen_at, seen_count, status
 		FROM errors WHERE run_id = ?
 		ORDER BY file_path, line_number
 	`
@@ -483,7 +644,9 @@ func (w *SQLiteWriter) GetErrorsByRunID(runID string) ([]*ErrorRecord, error) {
 	var records []*ErrorRecord
 	for rows.Next() {
 		var e ErrorRecord
-		var filePath, stackTrace, fileHash, contentHash, status sql.NullString
+		var filePath, stackTrace, fileHash, contentHash sql.NullString
+		var severity, ruleID, source, workflowJob, raw, status sql.NullString
+		var columnNumber sql.NullInt64
 		var firstSeenAt, lastSeenAt sql.NullInt64
 
 		err := rows.Scan(
@@ -491,11 +654,17 @@ func (w *SQLiteWriter) GetErrorsByRunID(runID string) ([]*ErrorRecord, error) {
 			&e.RunID,
 			&filePath,
 			&e.LineNumber,
+			&columnNumber,
 			&e.ErrorType,
 			&e.Message,
 			&stackTrace,
 			&fileHash,
 			&contentHash,
+			&severity,
+			&ruleID,
+			&source,
+			&workflowJob,
+			&raw,
 			&firstSeenAt,
 			&lastSeenAt,
 			&e.SeenCount,
@@ -509,7 +678,15 @@ func (w *SQLiteWriter) GetErrorsByRunID(runID string) ([]*ErrorRecord, error) {
 		e.StackTrace = stackTrace.String
 		e.FileHash = fileHash.String
 		e.ContentHash = contentHash.String
+		e.Severity = severity.String
+		e.RuleID = ruleID.String
+		e.Source = source.String
+		e.WorkflowJob = workflowJob.String
+		e.Raw = raw.String
 		e.Status = status.String
+		if columnNumber.Valid {
+			e.ColumnNumber = int(columnNumber.Int64)
+		}
 		if firstSeenAt.Valid {
 			e.FirstSeenAt = time.Unix(firstSeenAt.Int64, 0)
 		}
@@ -587,10 +764,11 @@ func (w *SQLiteWriter) flushBatch() (err error) {
 
 	insertStmt, err = tx.Prepare(`
 		INSERT INTO errors (
-			error_id, run_id, file_path, line_number, error_type, message,
-			stack_trace, file_hash, content_hash, first_seen_at, last_seen_at,
-			seen_count, status
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'open')
+			error_id, run_id, file_path, line_number, column_number,
+			error_type, message, stack_trace, file_hash, content_hash,
+			severity, rule_id, source, workflow_job, raw,
+			first_seen_at, last_seen_at, seen_count, status
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'open')
 	`)
 	if err != nil {
 		if rbErr := tx.Rollback(); rbErr != nil {
@@ -633,7 +811,7 @@ func (w *SQLiteWriter) flushBatch() (err error) {
 	if len(contentHashes) > 0 {
 		// Build query with placeholders for IN clause
 		placeholders := make([]string, len(contentHashes))
-		args := make([]interface{}, len(contentHashes))
+		args := make([]any, len(contentHashes))
 		for i, hash := range contentHashes {
 			placeholders[i] = "?"
 			args[i] = hash
@@ -702,11 +880,17 @@ func (w *SQLiteWriter) flushBatch() (err error) {
 				finding.RunID,
 				finding.FilePath,
 				finding.Line,
+				finding.Column,
 				finding.Category,
 				finding.Message,
 				finding.StackTrace,
 				finding.FileHash,
 				contentHash,
+				finding.Severity,
+				finding.RuleID,
+				finding.Source,
+				finding.WorkflowJob,
+				finding.Raw,
 				now,
 				now,
 			)
@@ -833,14 +1017,14 @@ func (w *SQLiteWriter) RecordHeal(heal *HealRecord) error {
 // UpdateHealStatus updates the status and optionally the applied_at timestamp of a heal
 func (w *SQLiteWriter) UpdateHealStatus(healID string, status HealStatus, appliedAt *time.Time) error {
 	var query string
-	var args []interface{}
+	var args []any
 
 	if appliedAt != nil {
 		query = `UPDATE heals SET status = ?, applied_at = ? WHERE heal_id = ?`
-		args = []interface{}{string(status), appliedAt.Unix(), healID}
+		args = []any{string(status), appliedAt.Unix(), healID}
 	} else {
 		query = `UPDATE heals SET status = ? WHERE heal_id = ?`
-		args = []interface{}{string(status), healID}
+		args = []any{string(status), healID}
 	}
 
 	result, err := w.db.Exec(query, args...)
