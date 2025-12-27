@@ -8,17 +8,15 @@ import (
 	"github.com/detent/cli/internal/errors"
 )
 
-// Constants for default values and limits.
+// Default values for error formatting.
 const (
 	DefaultCategory    = "unknown"
 	DefaultColumn      = 1
 	MissingValue       = "-"
 	DefaultPriority    = 999
-	MaxStackTraceBytes = 50 * 1024 // 50KB max to prevent memory exhaustion
+	MaxStackTraceBytes = 50 * 1024
 )
 
-// categoryPriority defines the fix order for error categories.
-// Lower number = higher priority (fix first).
 var categoryPriority = map[errors.ErrorCategory]int{
 	errors.CategoryCompile:   1,
 	errors.CategoryTypeCheck: 2,
@@ -29,23 +27,17 @@ var categoryPriority = map[errors.ErrorCategory]int{
 	errors.CategoryUnknown:   7,
 }
 
-// categoriesNeedingStackTrace identifies which error types benefit from stack traces.
-// Research: Stack traces improve accuracy from 31% to 80-90% for these categories.
+// Stack traces improve accuracy from 31% to 80-90% for these categories.
 var categoriesNeedingStackTrace = map[errors.ErrorCategory]bool{
-	errors.CategoryCompile:  true,
-	errors.CategoryTest:     true,
-	errors.CategoryRuntime:  true,
-	errors.CategoryUnknown:  true,
+	errors.CategoryCompile: true,
+	errors.CategoryTest:    true,
+	errors.CategoryRuntime: true,
+	errors.CategoryUnknown: true,
 }
 
-// escapePromptString sanitizes user-controlled strings to prevent prompt injection.
-// Escapes backticks, control characters, and normalizes whitespace.
 func escapePromptString(s string) string {
-	// Replace backticks (can break markdown/code blocks in prompts)
 	s = strings.ReplaceAll(s, "`", "'")
-	// Replace control characters that could manipulate prompt structure
 	s = strings.ReplaceAll(s, "\r", "")
-	// Normalize multiple newlines to single (prevents prompt structure manipulation)
 	for strings.Contains(s, "\n\n\n") {
 		s = strings.ReplaceAll(s, "\n\n\n", "\n\n")
 	}
@@ -53,16 +45,13 @@ func escapePromptString(s string) string {
 }
 
 // FormatError formats a single ExtractedError with full diagnostic context.
-// Research shows: error message + stack trace + rule ID = best AI accuracy.
 func FormatError(err *errors.ExtractedError) string {
-	// P0: Nil pointer check
 	if err == nil {
 		return "(nil error)"
 	}
 
 	var parts []string
 
-	// Category and location
 	category := string(err.Category)
 	if category == "" {
 		category = DefaultCategory
@@ -74,8 +63,6 @@ func FormatError(err *errors.ExtractedError) string {
 		column = DefaultColumn
 	}
 
-	// Primary error line: [category] file:line:col message
-	// P0: Escape user-controlled strings to prevent prompt injection
 	file := escapePromptString(err.File)
 	message := escapePromptString(err.Message)
 
@@ -85,7 +72,6 @@ func FormatError(err *errors.ExtractedError) string {
 	}
 	parts = append(parts, fmt.Sprintf("[%s] %s: %s", category, location, message))
 
-	// Rule ID and source - always include, helps AI understand the error type
 	if err.RuleID != "" || err.Source != "" {
 		ruleID := escapePromptString(err.RuleID)
 		if ruleID == "" {
@@ -98,7 +84,6 @@ func FormatError(err *errors.ExtractedError) string {
 		parts = append(parts, fmt.Sprintf("  Rule: %s | Source: %s", ruleID, source))
 	}
 
-	// Stack trace - include for categories where it improves accuracy
 	if stackTrace := FormatStackTrace(err); stackTrace != "" {
 		parts = append(parts, stackTrace)
 	}
@@ -107,19 +92,15 @@ func FormatError(err *errors.ExtractedError) string {
 }
 
 // FormatStackTrace formats and filters a stack trace.
-// Returns empty string for categories where stack traces are noise (lint).
 func FormatStackTrace(err *errors.ExtractedError) string {
-	// P0: Nil pointer check
 	if err == nil || err.StackTrace == "" {
 		return ""
 	}
 
-	// P0: Reject oversized stack traces to prevent memory exhaustion
 	if len(err.StackTrace) > MaxStackTraceBytes {
 		return "  Stack trace: (truncated - exceeds 50KB limit)"
 	}
 
-	// Skip stack traces for categories where they don't help
 	if !categoriesNeedingStackTrace[err.Category] {
 		return ""
 	}
@@ -131,7 +112,6 @@ func FormatStackTrace(err *errors.ExtractedError) string {
 		return ""
 	}
 
-	// Limit to MaxStackTraceLines (20 frames = sweet spot per research)
 	truncated := false
 	originalLen := len(filtered)
 	if len(filtered) > MaxStackTraceLines {
@@ -139,7 +119,6 @@ func FormatStackTrace(err *errors.ExtractedError) string {
 		truncated = true
 	}
 
-	// Format with indentation
 	var result strings.Builder
 	result.WriteString("  Stack trace:")
 	for _, line := range filtered {
@@ -156,7 +135,6 @@ func FormatStackTrace(err *errors.ExtractedError) string {
 	return result.String()
 }
 
-// filterStackTraceLines removes internal/framework frames that add noise.
 func filterStackTraceLines(lines []string) []string {
 	filtered := make([]string, 0, len(lines))
 	for _, line := range lines {
@@ -167,7 +145,6 @@ func filterStackTraceLines(lines []string) []string {
 	return filtered
 }
 
-// isInternalFrame checks if a stack frame is from internal/framework code.
 func isInternalFrame(line string) bool {
 	for _, pattern := range InternalFramePatterns {
 		if strings.Contains(line, pattern) {
@@ -187,7 +164,6 @@ func FormatErrors(errs []*errors.ExtractedError) string {
 	var parts []string
 
 	for _, err := range sorted {
-		// P0: Skip nil errors
 		if err == nil {
 			continue
 		}
@@ -205,7 +181,6 @@ func FormatErrors(errs []*errors.ExtractedError) string {
 func FormatWorkflowContext(errs []*errors.ExtractedError) string {
 	jobs := make(map[string]struct{})
 	for _, err := range errs {
-		// P0: Skip nil errors
 		if err == nil {
 			continue
 		}
@@ -227,9 +202,7 @@ func FormatWorkflowContext(errs []*errors.ExtractedError) string {
 	return fmt.Sprintf("CI Jobs: %s", strings.Join(jobList, ", "))
 }
 
-// PrioritizeErrors sorts errors by category priority.
-// Compile errors first, then type-check, test, runtime, lint.
-// Returns a new slice; does not modify the original.
+// PrioritizeErrors sorts errors by category priority (compile first, then type-check, test, runtime, lint).
 func PrioritizeErrors(errs []*errors.ExtractedError) []*errors.ExtractedError {
 	if len(errs) == 0 {
 		return errs
@@ -239,7 +212,6 @@ func PrioritizeErrors(errs []*errors.ExtractedError) []*errors.ExtractedError {
 	copy(sorted, errs)
 
 	sort.SliceStable(sorted, func(i, j int) bool {
-		// P0: Handle nil pointers
 		if sorted[i] == nil {
 			return false
 		}
@@ -252,7 +224,6 @@ func PrioritizeErrors(errs []*errors.ExtractedError) []*errors.ExtractedError {
 		if priI != priJ {
 			return priI < priJ
 		}
-		// Within same priority, sort by file then line
 		if sorted[i].File != sorted[j].File {
 			return sorted[i].File < sorted[j].File
 		}
@@ -262,7 +233,6 @@ func PrioritizeErrors(errs []*errors.ExtractedError) []*errors.ExtractedError {
 	return sorted
 }
 
-// getPriority returns the priority for a category, with a safe default.
 func getPriority(cat errors.ErrorCategory) int {
 	if p, ok := categoryPriority[cat]; ok {
 		return p
@@ -273,7 +243,6 @@ func getPriority(cat errors.ErrorCategory) int {
 // CountErrors returns error and warning counts.
 func CountErrors(errs []*errors.ExtractedError) (errorCount, warningCount int) {
 	for _, err := range errs {
-		// P0: Skip nil errors
 		if err == nil {
 			continue
 		}
@@ -291,7 +260,6 @@ func CountErrors(errs []*errors.ExtractedError) (errorCount, warningCount int) {
 func CountByCategory(errs []*errors.ExtractedError) map[errors.ErrorCategory]int {
 	counts := make(map[errors.ErrorCategory]int)
 	for _, err := range errs {
-		// P0: Skip nil errors
 		if err == nil {
 			continue
 		}

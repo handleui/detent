@@ -40,11 +40,11 @@ func PrepareWorktree(ctx context.Context, repoRoot, worktreeDir string) (*Worktr
 	}
 	commitSHA := strings.TrimSpace(string(output))
 
-	// If no worktree dir specified, create temp directory (legacy behavior)
+	if checkErr := checkTmpDiskSpace(); checkErr != nil {
+		return nil, nil, checkErr
+	}
+
 	if worktreeDir == "" {
-		if checkErr := checkTmpDiskSpace(); checkErr != nil {
-			return nil, nil, checkErr
-		}
 		worktreeDir, err = os.MkdirTemp("", "detent-worktree-")
 		if err != nil {
 			return nil, nil, fmt.Errorf("creating temp directory: %w", err)

@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,9 +19,7 @@ import (
 )
 
 const (
-	legacyDetentDir = ".detent"
-	detentDBName    = "detent.db"
-	batchSize       = 500 // Batch size for error inserts
+	batchSize = 500 // Batch size for error inserts
 
 	currentSchemaVersion = 12 // Current database schema version
 
@@ -44,19 +41,6 @@ func createDirIfNotExists(path string) error {
 		return os.MkdirAll(path, 0o700)
 	}
 	return nil
-}
-
-// getOldDataDir returns the old XDG data directory for migration purposes.
-// This was: ~/.local/share/detent or $XDG_DATA_HOME/detent
-func getOldDataDir() (string, error) {
-	if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" && filepath.IsAbs(xdg) {
-		return filepath.Join(xdg, "detent"), nil
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("failed to get user home directory: %w", err)
-	}
-	return filepath.Join(home, ".local", "share", "detent"), nil
 }
 
 // getDetentCacheDir returns the cache directory for detent ephemeral data.
@@ -162,270 +146,6 @@ func GetDatabasePath(repoRoot string) (string, error) {
 	return filepath.Join(detentDir, "repos", repoID+".db"), nil
 }
 
-// getOldDataDatabasePath returns the old XDG_DATA_HOME location for migration purposes.
-// Old path: ~/.local/share/detent/<repoID>/detent.db
-func getOldDataDatabasePath(repoRoot string) (string, error) {
-	dataDir, err := getOldDataDir()
-	if err != nil {
-		return "", err
-	}
-	repoID, err := ComputeRepoID(repoRoot)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dataDir, repoID, detentDBName), nil
-}
-
-// getOldCacheDatabasePath returns the old cache location for migration purposes.
-// Old path: ~/.cache/detent/<repoID>/detent.db
-func getOldCacheDatabasePath(repoRoot string) (string, error) {
-	// Use XDG_CACHE_HOME if set, otherwise ~/.cache/detent
-	var cacheDir string
-	if xdg := os.Getenv("XDG_CACHE_HOME"); xdg != "" && filepath.IsAbs(xdg) {
-		cacheDir = filepath.Join(xdg, "detent")
-	} else {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("failed to get user home directory: %w", err)
-		}
-		cacheDir = filepath.Join(home, ".cache", "detent")
-	}
-	repoID, err := ComputeRepoID(repoRoot)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(cacheDir, repoID, detentDBName), nil
-}
-
-// migrateOldDataDatabase moves database from ~/.local/share/detent/<repoID>/detent.db to new location.
-// This handles the transition from XDG_DATA_HOME to ~/.detent/repos/<repoID>.db
-func migrateOldDataDatabase(repoRoot, newDBPath string) error {
-	oldDBPath, err := getOldDataDatabasePath(repoRoot)
-	if err != nil {
-		return err
-	}
-
-	// Check if old data database exists
-	if _, statErr := os.Stat(oldDBPath); os.IsNotExist(statErr) {
-		return nil // No old data database, nothing to migrate
-	}
-
-	// Check if new location already has a database
-	if _, statErr := os.Stat(newDBPath); statErr == nil {
-		// New location already exists, just clean up old location
-		oldDir := filepath.Dir(oldDBPath)
-		if rmErr := os.RemoveAll(oldDir); rmErr != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to remove old data database directory: %v\n", rmErr)
-		}
-		return nil
-	}
-
-	// Create new directory
-	newDir := filepath.Dir(newDBPath)
-	if mkdirErr := createDirIfNotExists(newDir); mkdirErr != nil {
-		return fmt.Errorf("failed to create repos directory: %w", mkdirErr)
-	}
-
-	// Checkpoint WAL before copying
-	if walErr := checkpointWAL(oldDBPath); walErr != nil {
-		return fmt.Errorf("failed to checkpoint WAL before migration: %w", walErr)
-	}
-
-	// Copy database file
-	if copyErr := copyFile(oldDBPath, newDBPath); copyErr != nil {
-		return fmt.Errorf("failed to migrate database from old data location: %w", copyErr)
-	}
-
-	// Remove old data database directory (cleanup)
-	oldDir := filepath.Dir(oldDBPath)
-	if rmErr := os.RemoveAll(oldDir); rmErr != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to remove old data database directory: %v\n", rmErr)
-	}
-
-	fmt.Fprintf(os.Stderr, "Migrated database from %s to %s\n", oldDBPath, newDBPath)
-	return nil
-}
-
-// migrateOldCacheDatabase moves database from ~/.cache/detent/<repoID>/detent.db to new location.
-// This handles the transition from XDG_CACHE_HOME to ~/.detent/repos/<repoID>.db
-func migrateOldCacheDatabase(repoRoot, newDBPath string) error {
-	cacheDBPath, err := getOldCacheDatabasePath(repoRoot)
-	if err != nil {
-		return err
-	}
-
-	// Check if cache database exists
-	if _, statErr := os.Stat(cacheDBPath); os.IsNotExist(statErr) {
-		return nil // No cache database, nothing to migrate
-	}
-
-	// Check if new location already has a database
-	if _, statErr := os.Stat(newDBPath); statErr == nil {
-		// New location already exists, just clean up old location
-		cacheDir := filepath.Dir(cacheDBPath)
-		if rmErr := os.RemoveAll(cacheDir); rmErr != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to remove old cache database directory: %v\n", rmErr)
-		}
-		return nil
-	}
-
-	// Create new directory
-	newDir := filepath.Dir(newDBPath)
-	if mkdirErr := createDirIfNotExists(newDir); mkdirErr != nil {
-		return fmt.Errorf("failed to create repos directory: %w", mkdirErr)
-	}
-
-	// Checkpoint WAL before copying
-	if walErr := checkpointWAL(cacheDBPath); walErr != nil {
-		return fmt.Errorf("failed to checkpoint WAL before migration: %w", walErr)
-	}
-
-	// Copy database file
-	if copyErr := copyFile(cacheDBPath, newDBPath); copyErr != nil {
-		return fmt.Errorf("failed to migrate database from cache: %w", copyErr)
-	}
-
-	// Remove old cache database directory (cleanup)
-	cacheDir := filepath.Dir(cacheDBPath)
-	if rmErr := os.RemoveAll(cacheDir); rmErr != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to remove old cache database directory: %v\n", rmErr)
-	}
-
-	fmt.Fprintf(os.Stderr, "Migrated database from %s to %s\n", cacheDBPath, newDBPath)
-	return nil
-}
-
-// migrateLegacyDatabase moves database from .detent/detent.db to the new global location.
-// Returns the path to use (new location if migrated, or new location if no legacy exists).
-func migrateLegacyDatabase(repoRoot, newDBPath string) error {
-	legacyDBPath := filepath.Join(repoRoot, legacyDetentDir, detentDBName)
-
-	// Security: Use Lstat to detect symlinks (prevents symlink attacks)
-	legacyInfo, err := os.Lstat(legacyDBPath)
-	if os.IsNotExist(err) {
-		return nil // No legacy database, nothing to migrate
-	}
-	if err != nil {
-		return fmt.Errorf("failed to stat legacy database: %w", err)
-	}
-
-	// Security: Refuse to migrate symlinks (prevents symlink attacks)
-	if legacyInfo.Mode()&os.ModeSymlink != 0 {
-		fmt.Fprintf(os.Stderr, "Warning: legacy database is a symlink, refusing migration for security\n")
-		return nil
-	}
-
-	// Security: Validate that legacy path resolves within repoRoot (prevents path traversal)
-	resolvedLegacyPath, err := filepath.EvalSymlinks(filepath.Dir(legacyDBPath))
-	if err != nil {
-		return fmt.Errorf("failed to resolve legacy database path: %w", err)
-	}
-	resolvedRepoRoot, err := filepath.EvalSymlinks(repoRoot)
-	if err != nil {
-		return fmt.Errorf("failed to resolve repo root path: %w", err)
-	}
-	// Ensure resolved path is within repo root (add separator to prevent prefix attacks like /repo-evil matching /repo)
-	if !strings.HasPrefix(resolvedLegacyPath+string(filepath.Separator), resolvedRepoRoot+string(filepath.Separator)) {
-		fmt.Fprintf(os.Stderr, "Warning: legacy database path escapes repo root, refusing migration for security\n")
-		return nil
-	}
-
-	// Check if new location already has a database
-	if _, err := os.Stat(newDBPath); err == nil {
-		// New location already exists, just clean up legacy
-		if err := removeLegacyDetentDir(repoRoot); err != nil {
-			// Non-fatal: log but continue
-			fmt.Fprintf(os.Stderr, "Warning: failed to remove legacy .detent directory: %v\n", err)
-		}
-		return nil
-	}
-
-	// Create new directory
-	newDir := filepath.Dir(newDBPath)
-	if err := createDirIfNotExists(newDir); err != nil {
-		return fmt.Errorf("failed to create cache directory: %w", err)
-	}
-
-	// Data integrity: Checkpoint WAL before copying to ensure database is self-contained
-	if err := checkpointWAL(legacyDBPath); err != nil {
-		return fmt.Errorf("failed to checkpoint WAL before migration: %w", err)
-	}
-
-	// Copy database file (not move, in case of failure)
-	// After checkpoint, we only need the main .db file (WAL/SHM are empty or can be recreated)
-	if err := copyFile(legacyDBPath, newDBPath); err != nil {
-		return fmt.Errorf("failed to migrate database: %w", err)
-	}
-
-	// Remove legacy directory
-	if err := removeLegacyDetentDir(repoRoot); err != nil {
-		// Non-fatal: log but continue
-		fmt.Fprintf(os.Stderr, "Warning: failed to remove legacy .detent directory: %v\n", err)
-	}
-
-	fmt.Fprintf(os.Stderr, "Migrated database to %s\n", newDBPath)
-	return nil
-}
-
-// checkpointWAL flushes WAL file contents to the main database file.
-// This ensures the database file is self-contained before copying.
-func checkpointWAL(dbPath string) error {
-	db, err := sql.Open("sqlite3", dbPath)
-	if err != nil {
-		return fmt.Errorf("failed to open database for checkpoint: %w", err)
-	}
-	defer func() { _ = db.Close() }()
-
-	// TRUNCATE mode: checkpoint and then truncate the WAL file to zero bytes
-	// This ensures the .db file is completely self-contained
-	_, err = db.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
-	if err != nil {
-		return fmt.Errorf("failed to checkpoint WAL: %w", err)
-	}
-
-	return nil
-}
-
-// removeLegacyDetentDir removes the old .detent directory from the repo.
-func removeLegacyDetentDir(repoRoot string) error {
-	legacyDir := filepath.Join(repoRoot, legacyDetentDir)
-	return os.RemoveAll(legacyDir)
-}
-
-// copyFile copies a file from src to dst with fsync for durability.
-func copyFile(src, dst string) error {
-	// #nosec G304 - src is from known location
-	sourceFile, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = sourceFile.Close() }()
-
-	// #nosec G304 - dst is constructed from cache dir
-	destFile, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = destFile.Close() }()
-
-	if _, copyErr := io.Copy(destFile, sourceFile); copyErr != nil {
-		return copyErr
-	}
-
-	// Sync to disk for durability before considering copy complete
-	if syncErr := destFile.Sync(); syncErr != nil {
-		return syncErr
-	}
-
-	// Preserve permissions
-	info, statErr := os.Stat(src)
-	if statErr != nil {
-		return statErr
-	}
-	return os.Chmod(dst, info.Mode())
-}
-
-
 // SQLiteWriter handles writing scan results to SQLite database
 type SQLiteWriter struct {
 	db         *sql.DB
@@ -441,25 +161,6 @@ func NewSQLiteWriter(repoRoot string) (*SQLiteWriter, error) {
 	dbPath, err := GetDatabasePath(repoRoot)
 	if err != nil {
 		return nil, fmt.Errorf("failed to compute database path: %w", err)
-	}
-
-	// Migration chain: check each old location in priority order
-	// 1. ~/.local/share/detent/<repoID>/detent.db (current/recent)
-	// 2. ~/.cache/detent/<repoID>/detent.db (old cache location)
-	// 3. <repo>/.detent/detent.db (legacy in-repo location)
-	if _, statErr := os.Stat(dbPath); os.IsNotExist(statErr) {
-		// Try migrating from old data location first (most recent)
-		if dataErr := migrateOldDataDatabase(repoRoot, dbPath); dataErr != nil {
-			return nil, fmt.Errorf("failed to migrate old data database: %w", dataErr)
-		}
-		// Then try old cache location
-		if cacheErr := migrateOldCacheDatabase(repoRoot, dbPath); cacheErr != nil {
-			return nil, fmt.Errorf("failed to migrate old cache database: %w", cacheErr)
-		}
-		// Finally try legacy in-repo location
-		if legacyErr := migrateLegacyDatabase(repoRoot, dbPath); legacyErr != nil {
-			return nil, fmt.Errorf("failed to migrate legacy database: %w", legacyErr)
-		}
 	}
 
 	// Create repos directory
@@ -736,10 +437,7 @@ func (w *SQLiteWriter) applyMigrations(fromVersion int) error {
 			version: 11,
 			name:    "add_tree_hash_to_runs",
 			sql: `
-			-- Tree hash represents exact file state, independent of commit metadata
-			-- Useful for cache identity across rebases and future cross-machine sync
 			ALTER TABLE runs ADD COLUMN tree_hash TEXT;
-			CREATE INDEX IF NOT EXISTS idx_runs_tree_hash ON runs(tree_hash);
 			`,
 		},
 		{

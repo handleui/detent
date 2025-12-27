@@ -9,7 +9,6 @@ import (
 )
 
 // MaxAttempts is the number of fix attempts before giving up.
-// Research: 2 attempts with verification produces best results.
 const MaxAttempts = 2
 
 // FilePrompt contains a generated prompt for fixing errors in a single file.
@@ -43,7 +42,6 @@ func BuildFilePrompt(filePath string, errs []*errors.ExtractedError) *FilePrompt
 	var header strings.Builder
 	header.WriteString(filePath)
 
-	// Error/warning summary
 	switch {
 	case errorCount > 0 && warningCount > 0:
 		header.WriteString(fmt.Sprintf(" (%d errors, %d warnings)", errorCount, warningCount))
@@ -53,18 +51,15 @@ func BuildFilePrompt(filePath string, errs []*errors.ExtractedError) *FilePrompt
 		header.WriteString(fmt.Sprintf(" (%d warnings)", warningCount))
 	}
 
-	// Build prompt with full context
 	var prompt strings.Builder
 	prompt.WriteString(header.String())
 	prompt.WriteString("\n\n")
 
-	// Include workflow context if available
 	if workflowContext != "" {
 		prompt.WriteString(workflowContext)
 		prompt.WriteString("\n\n")
 	}
 
-	// Formatted errors with stack traces
 	prompt.WriteString(FormatErrors(errs))
 
 	return &FilePrompt{
@@ -85,7 +80,6 @@ func BuildFilePromptWithAttempt(filePath string, errs []*errors.ExtractedError, 
 		return base
 	}
 
-	// Add attempt context for retry
 	var prompt strings.Builder
 
 	prompt.WriteString(fmt.Sprintf("ATTEMPT %d of %d\n", attempt.Attempt, MaxAttempts))
@@ -114,7 +108,6 @@ func BuildFilePromptWithAttempt(filePath string, errs []*errors.ExtractedError, 
 // BuildAllFilePrompts generates prompts for all files in a ComprehensiveErrorGroup.
 // Files with compile/type errors are prioritized first.
 func BuildAllFilePrompts(group *errors.ComprehensiveErrorGroup) []*FilePrompt {
-	// P0: Nil check
 	if group == nil || group.ByFile == nil {
 		return nil
 	}
@@ -122,7 +115,6 @@ func BuildAllFilePrompts(group *errors.ComprehensiveErrorGroup) []*FilePrompt {
 	prompts := make([]*FilePrompt, 0, len(group.ByFile))
 
 	for filePath, errs := range group.ByFile {
-		// P0: Skip empty error slices
 		if len(errs) == 0 {
 			continue
 		}
@@ -133,7 +125,7 @@ func BuildAllFilePrompts(group *errors.ComprehensiveErrorGroup) []*FilePrompt {
 	return prompts
 }
 
-// sortPromptsByPriority sorts file prompts by error priority using O(n log n) sort.
+// sortPromptsByPriority sorts file prompts by error priority.
 func sortPromptsByPriority(prompts []*FilePrompt) {
 	sort.Slice(prompts, func(i, j int) bool {
 		return prompts[i].Priority < prompts[j].Priority
@@ -144,7 +136,6 @@ func sortPromptsByPriority(prompts []*FilePrompt) {
 func getHighestPriority(errs []*errors.ExtractedError) int {
 	highest := DefaultPriority
 	for _, err := range errs {
-		// P0: Skip nil errors
 		if err == nil {
 			continue
 		}
