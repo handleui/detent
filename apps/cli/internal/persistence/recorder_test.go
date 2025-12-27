@@ -3,6 +3,7 @@ package persistence
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -67,7 +68,7 @@ func TestNewRecorder(t *testing.T) {
 		t.Error("Database file was not created")
 	}
 	reposDir := filepath.Join(detentDir, "repos")
-	if !filepath.HasPrefix(dbPath, reposDir) {
+	if !strings.HasPrefix(dbPath, reposDir) {
 		t.Errorf("Database path %v should be under %v", dbPath, reposDir)
 	}
 	if filepath.Ext(dbPath) != ".db" {
@@ -220,7 +221,7 @@ func TestRecorder_GetOutputPath(t *testing.T) {
 
 	// Verify the path is under the repos directory (~/.detent/repos)
 	reposDir := filepath.Join(detentDir, "repos")
-	if !filepath.HasPrefix(outputPath, reposDir) {
+	if !strings.HasPrefix(outputPath, reposDir) {
 		t.Errorf("GetOutputPath() = %v, expected to be under %v", outputPath, reposDir)
 	}
 
