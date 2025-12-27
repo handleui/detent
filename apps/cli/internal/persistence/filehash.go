@@ -38,33 +38,6 @@ func ComputeFileHashWithInfo(path string) (string, os.FileInfo, error) {
 	return hex.EncodeToString(hash.Sum(nil)), info, nil
 }
 
-// GetFileInfo retrieves file metadata (size, mod time)
-func GetFileInfo(path string) (size, modTime int64, err error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return 0, 0, fmt.Errorf("failed to stat file: %w", err)
-	}
-
-	return info.Size(), info.ModTime().Unix(), nil
-}
-
-// BuildScannedFile creates a ScannedFile record with hash and metadata
-func BuildScannedFile(path string, errorCount, warningCount int) (*ScannedFile, error) {
-	hash, info, err := ComputeFileHashWithInfo(path)
-	if err != nil {
-		return nil, err
-	}
-
-	return &ScannedFile{
-		Path:         path,
-		Hash:         hash,
-		Size:         info.Size(),
-		ModTime:      info.ModTime(),
-		ErrorCount:   errorCount,
-		WarningCount: warningCount,
-	}, nil
-}
-
 // lineColPattern matches file:line:col patterns for normalization
 var lineColPattern = regexp.MustCompile(`:\d+:\d+`)
 

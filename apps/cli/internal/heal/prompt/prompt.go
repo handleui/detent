@@ -44,11 +44,11 @@ func BuildFilePrompt(filePath string, errs []*errors.ExtractedError) *FilePrompt
 
 	switch {
 	case errorCount > 0 && warningCount > 0:
-		header.WriteString(fmt.Sprintf(" (%d errors, %d warnings)", errorCount, warningCount))
+		fmt.Fprintf(&header, " (%d errors, %d warnings)", errorCount, warningCount)
 	case errorCount > 0:
-		header.WriteString(fmt.Sprintf(" (%d errors)", errorCount))
+		fmt.Fprintf(&header, " (%d errors)", errorCount)
 	default:
-		header.WriteString(fmt.Sprintf(" (%d warnings)", warningCount))
+		fmt.Fprintf(&header, " (%d warnings)", warningCount)
 	}
 
 	var prompt strings.Builder
@@ -82,17 +82,17 @@ func BuildFilePromptWithAttempt(filePath string, errs []*errors.ExtractedError, 
 
 	var prompt strings.Builder
 
-	prompt.WriteString(fmt.Sprintf("ATTEMPT %d of %d\n", attempt.Attempt, MaxAttempts))
+	fmt.Fprintf(&prompt, "ATTEMPT %d of %d\n", attempt.Attempt, MaxAttempts)
 
 	if attempt.PreviousFailed {
 		prompt.WriteString("Previous fix did not resolve all errors.\n")
 		if attempt.FailureReason != "" {
-			prompt.WriteString(fmt.Sprintf("Failure reason: %s\n", attempt.FailureReason))
+			fmt.Fprintf(&prompt, "Failure reason: %s\n", attempt.FailureReason)
 		}
 		if len(attempt.PreviousErrors) > 0 {
 			prompt.WriteString("Previous errors that persisted:\n")
 			for _, e := range attempt.PreviousErrors {
-				prompt.WriteString(fmt.Sprintf("  - %s\n", e))
+				fmt.Fprintf(&prompt, "  - %s\n", e)
 			}
 		}
 		prompt.WriteString("\nTry a different approach this time.\n")

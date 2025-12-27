@@ -127,9 +127,7 @@ func FormatStackTrace(err *errors.ExtractedError) string {
 	}
 	if truncated {
 		remaining := originalLen - MaxStackTraceLines
-		result.WriteString("\n    ... (truncated, ")
-		result.WriteString(fmt.Sprintf("%d", remaining))
-		result.WriteString(" more frames)")
+		fmt.Fprintf(&result, "\n    ... (truncated, %d more frames)", remaining)
 	}
 
 	return result.String()

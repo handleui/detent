@@ -21,7 +21,7 @@ import (
 const (
 	batchSize = 500 // Batch size for error inserts
 
-	currentSchemaVersion = 12 // Current database schema version
+	currentSchemaVersion = 13 // Current database schema version
 
 	// healSelectColumns is the standard column list for heal queries (must match scanHealFromScanner order)
 	healSelectColumns = `heal_id, error_id, run_id, diff_content, diff_content_hash, file_path, file_hash,
@@ -456,6 +456,25 @@ func (w *SQLiteWriter) applyMigrations(fromVersion int) error {
 			DROP INDEX IF EXISTS idx_heals_file_hash;
 			`,
 		},
+		{
+			version: 13,
+			name:    "add_ai_troubleshooting_and_compliance_fields",
+			sql: `
+			-- AI troubleshooting fields (used by heal prompts)
+			ALTER TABLE errors ADD COLUMN column_number INTEGER;
+			ALTER TABLE errors ADD COLUMN severity TEXT;
+			ALTER TABLE errors ADD COLUMN rule_id TEXT;
+			ALTER TABLE errors ADD COLUMN source TEXT;
+			ALTER TABLE errors ADD COLUMN workflow_job TEXT;
+
+			-- Compliance/debugging field (original CI output)
+			ALTER TABLE errors ADD COLUMN raw TEXT;
+
+			-- Indices for common queries
+			CREATE INDEX IF NOT EXISTS idx_errors_severity ON errors(severity);
+			CREATE INDEX IF NOT EXISTS idx_errors_source ON errors(source);
+			`,
+		},
 	}
 
 	// Apply each migration in a transaction
@@ -543,19 +562,25 @@ type RunRecord struct {
 
 // ErrorRecord represents an error stored in the database
 type ErrorRecord struct {
-	ErrorID     string
-	RunID       string
-	FilePath    string
-	LineNumber  int
-	ErrorType   string
-	Message     string
-	StackTrace  string
-	FileHash    string
-	ContentHash string
-	FirstSeenAt time.Time
-	LastSeenAt  time.Time
-	SeenCount   int
-	Status      string
+	ErrorID      string
+	RunID        string
+	FilePath     string
+	LineNumber   int
+	ColumnNumber int
+	ErrorType    string
+	Message      string
+	StackTrace   string
+	FileHash     string
+	ContentHash  string
+	Severity     string
+	RuleID       string
+	Source       string
+	WorkflowJob  string
+	Raw          string
+	FirstSeenAt  time.Time
+	LastSeenAt   time.Time
+	SeenCount    int
+	Status       string
 }
 
 // GetRunByID retrieves a run by its ID
@@ -602,9 +627,10 @@ func (w *SQLiteWriter) GetRunByID(runID string) (*RunRecord, error) {
 // GetErrorsByRunID retrieves all errors for a given run
 func (w *SQLiteWriter) GetErrorsByRunID(runID string) ([]*ErrorRecord, error) {
 	query := `
-		SELECT error_id, run_id, file_path, line_number, error_type, message,
-			stack_trace, file_hash, content_hash, first_seen_at, last_seen_at,
-			seen_count, status
+		SELECT error_id, run_id, file_path, line_number, column_number,
+			error_type, message, stack_trace, file_hash, content_hash,
+			severity, rule_id, source, workflow_job, raw,
+			first_seen_at, last_seen_at, seen_count, status
 		FROM errors WHERE run_id = ?
 		ORDER BY file_path, line_number
 	`
@@ -618,7 +644,9 @@ func (w *SQLiteWriter) GetErrorsByRunID(runID string) ([]*ErrorRecord, error) {
 	var records []*ErrorRecord
 	for rows.Next() {
 		var e ErrorRecord
-		var filePath, stackTrace, fileHash, contentHash, status sql.NullString
+		var filePath, stackTrace, fileHash, contentHash sql.NullString
+		var severity, ruleID, source, workflowJob, raw, status sql.NullString
+		var columnNumber sql.NullInt64
 		var firstSeenAt, lastSeenAt sql.NullInt64
 
 		err := rows.Scan(
@@ -626,11 +654,17 @@ func (w *SQLiteWriter) GetErrorsByRunID(runID string) ([]*ErrorRecord, error) {
 			&e.RunID,
 			&filePath,
 			&e.LineNumber,
+			&columnNumber,
 			&e.ErrorType,
 			&e.Message,
 			&stackTrace,
 			&fileHash,
 			&contentHash,
+			&severity,
+			&ruleID,
+			&source,
+			&workflowJob,
+			&raw,
 			&firstSeenAt,
 			&lastSeenAt,
 			&e.SeenCount,
@@ -644,7 +678,15 @@ func (w *SQLiteWriter) GetErrorsByRunID(runID string) ([]*ErrorRecord, error) {
 		e.StackTrace = stackTrace.String
 		e.FileHash = fileHash.String
 		e.ContentHash = contentHash.String
+		e.Severity = severity.String
+		e.RuleID = ruleID.String
+		e.Source = source.String
+		e.WorkflowJob = workflowJob.String
+		e.Raw = raw.String
 		e.Status = status.String
+		if columnNumber.Valid {
+			e.ColumnNumber = int(columnNumber.Int64)
+		}
 		if firstSeenAt.Valid {
 			e.FirstSeenAt = time.Unix(firstSeenAt.Int64, 0)
 		}
@@ -722,10 +764,11 @@ func (w *SQLiteWriter) flushBatch() (err error) {
 
 	insertStmt, err = tx.Prepare(`
 		INSERT INTO errors (
-			error_id, run_id, file_path, line_number, error_type, message,
-			stack_trace, file_hash, content_hash, first_seen_at, last_seen_at,
-			seen_count, status
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'open')
+			error_id, run_id, file_path, line_number, column_number,
+			error_type, message, stack_trace, file_hash, content_hash,
+			severity, rule_id, source, workflow_job, raw,
+			first_seen_at, last_seen_at, seen_count, status
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'open')
 	`)
 	if err != nil {
 		if rbErr := tx.Rollback(); rbErr != nil {
@@ -768,7 +811,7 @@ func (w *SQLiteWriter) flushBatch() (err error) {
 	if len(contentHashes) > 0 {
 		// Build query with placeholders for IN clause
 		placeholders := make([]string, len(contentHashes))
-		args := make([]interface{}, len(contentHashes))
+		args := make([]any, len(contentHashes))
 		for i, hash := range contentHashes {
 			placeholders[i] = "?"
 			args[i] = hash
@@ -837,11 +880,17 @@ func (w *SQLiteWriter) flushBatch() (err error) {
 				finding.RunID,
 				finding.FilePath,
 				finding.Line,
+				finding.Column,
 				finding.Category,
 				finding.Message,
 				finding.StackTrace,
 				finding.FileHash,
 				contentHash,
+				finding.Severity,
+				finding.RuleID,
+				finding.Source,
+				finding.WorkflowJob,
+				finding.Raw,
 				now,
 				now,
 			)
@@ -968,14 +1017,14 @@ func (w *SQLiteWriter) RecordHeal(heal *HealRecord) error {
 // UpdateHealStatus updates the status and optionally the applied_at timestamp of a heal
 func (w *SQLiteWriter) UpdateHealStatus(healID string, status HealStatus, appliedAt *time.Time) error {
 	var query string
-	var args []interface{}
+	var args []any
 
 	if appliedAt != nil {
 		query = `UPDATE heals SET status = ?, applied_at = ? WHERE heal_id = ?`
-		args = []interface{}{string(status), appliedAt.Unix(), healID}
+		args = []any{string(status), appliedAt.Unix(), healID}
 	} else {
 		query = `UPDATE heals SET status = ? WHERE heal_id = ?`
-		args = []interface{}{string(status), healID}
+		args = []any{string(status), healID}
 	}
 
 	result, err := w.db.Exec(query, args...)
