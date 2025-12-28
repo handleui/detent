@@ -25,20 +25,20 @@ type GlobalConfig struct {
 
 // HealConfig contains settings for the heal command.
 type HealConfig struct {
-	Model         string `yaml:"model,omitempty"`          // Model to use (claude-sonnet-4-5, claude-opus-4-5, claude-haiku-4-5)
-	MaxIterations int    `yaml:"max_iterations,omitempty"` // Maximum tool call rounds (default: 20, min: 1, max: 100)
-	MaxTokens     int    `yaml:"max_tokens,omitempty"`     // Max tokens per response (default: 4096, min: 100, max: 32768)
-	TimeoutMins   int    `yaml:"timeout_mins,omitempty"`   // Total timeout in minutes (default: 10, min: 1, max: 60)
+	Model       string  `yaml:"model,omitempty"`       // Model: claude-sonnet-4-5, claude-opus-4-5, claude-haiku-4-5
+	TimeoutMins int     `yaml:"timeout_mins,omitempty"` // Total timeout in minutes (default: 10)
+	BudgetUSD   float64 `yaml:"budget_usd,omitempty"`   // Max spend per run in USD (default: 1.00, 0 = unlimited)
+	Verbose     bool    `yaml:"verbose,omitempty"`      // Show tool calls as they happen
 }
 
 // HealConfig validation bounds.
 const (
-	minMaxIterations = 1
-	maxMaxIterations = 100
-	minMaxTokens     = 100
-	maxMaxTokens     = 32768
-	minTimeoutMins   = 1
-	maxTimeoutMins   = 60
+	minTimeoutMins = 1
+	maxTimeoutMins = 60
+	minBudgetUSD   = 0.0
+	maxBudgetUSD   = 100.0
+
+	defaultBudgetUSD = 1.00
 
 	modelPrefix = "claude-"
 )
@@ -46,10 +46,10 @@ const (
 // DefaultHealConfig returns the default heal configuration.
 func DefaultHealConfig() HealConfig {
 	return HealConfig{
-		Model:         "claude-sonnet-4-5",
-		MaxIterations: 20,
-		MaxTokens:     4096,
-		TimeoutMins:   10,
+		Model:       "claude-sonnet-4-5",
+		TimeoutMins: 10,
+		BudgetUSD:   defaultBudgetUSD,
+		Verbose:     false,
 	}
 }
 
@@ -61,10 +61,20 @@ func (h HealConfig) WithDefaults() HealConfig {
 	if h.Model == "" || !strings.HasPrefix(h.Model, modelPrefix) {
 		h.Model = defaults.Model
 	}
-	h.MaxIterations = clampInt(h.MaxIterations, minMaxIterations, maxMaxIterations, defaults.MaxIterations)
-	h.MaxTokens = clampInt(h.MaxTokens, minMaxTokens, maxMaxTokens, defaults.MaxTokens)
 	h.TimeoutMins = clampInt(h.TimeoutMins, minTimeoutMins, maxTimeoutMins, defaults.TimeoutMins)
+	h.BudgetUSD = clampFloat(h.BudgetUSD, minBudgetUSD, maxBudgetUSD, defaults.BudgetUSD)
+	// Verbose is a bool, no clamping needed
 	return h
+}
+
+// clampFloat clamps a value to [minVal, maxVal] range.
+// 0 is preserved (means unlimited budget).
+// Negative values are clamped to 0.
+func clampFloat(value, minVal, maxVal, _ float64) float64 {
+	if value < 0 {
+		return 0
+	}
+	return max(minVal, min(value, maxVal))
 }
 
 // clampInt clamps a value to [minVal, maxVal] range, using defaultVal if value is <= 0.

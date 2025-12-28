@@ -5,7 +5,6 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 )
 
 // APIKeyResult contains the result of the API key prompt.
@@ -24,11 +23,11 @@ type APIKeyPromptModel struct {
 }
 
 var (
-	apiKeyTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("208")) // Anthropic orange
-	apiKeyTextStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	apiKeyHintStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Italic(true)
-	apiKeyErrorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
-	apiKeyDimStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	apiKeyTitleStyle = AnthropicStyle.Bold(true)
+	apiKeyTextStyle  = PrimaryStyle
+	apiKeyHintStyle  = HintStyle
+	apiKeyErrorStyle = ErrorStyle
+	apiKeyDimStyle   = MutedStyle
 )
 
 // NewAPIKeyPromptModel creates a new API key prompt model.

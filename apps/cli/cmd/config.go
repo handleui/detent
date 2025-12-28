@@ -4,18 +4,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/charmbracelet/lipgloss"
 	"github.com/detent/cli/internal/persistence"
-	"github.com/goccy/go-yaml"
+	"github.com/detent/cli/internal/tui"
 	"github.com/spf13/cobra"
-)
-
-var (
-	configSuccessStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
-	configDimStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	configTextStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	configKeyStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("45"))
-	configValueStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("220"))
 )
 
 var forceReset bool
@@ -23,13 +14,13 @@ var forceReset bool
 var configCmd = &cobra.Command{
 	Use:   "config",
 	Short: "Manage detent configuration",
-	Long: `View and manage the global detent configuration stored in ~/.detent/config.yaml.
+	Long: `View and manage the global detent configuration.
 
-The configuration file contains settings for the heal command, including:
-  - model: Claude model to use (claude-sonnet-4-5, claude-opus-4-5, claude-haiku-4-5)
-  - max_iterations: Maximum tool call rounds (default: 20)
-  - max_tokens: Max tokens per response (default: 4096)
-  - timeout_mins: Total timeout in minutes (default: 10)`,
+Settings:
+  model        Claude model for AI healing
+  timeout      Maximum time per healing run
+  budget       Maximum spend per run (0 = unlimited)
+  verbose      Show tool calls in real-time`,
 }
 
 var configShowCmd = &cobra.Command{
@@ -41,10 +32,9 @@ var configShowCmd = &cobra.Command{
 var configResetCmd = &cobra.Command{
 	Use:   "reset",
 	Short: "Reset configuration to defaults",
-	Long: `Reset the configuration file to default values.
+	Long: `Reset all settings to default values.
 
-This will preserve your API key but reset all other settings to defaults.
-Use --force to skip confirmation.`,
+Your API key will be preserved.`,
 	RunE: runConfigReset,
 }
 
@@ -65,33 +55,46 @@ func init() {
 func runConfigShow(_ *cobra.Command, _ []string) error {
 	cfg, err := persistence.LoadGlobalConfig()
 	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
+		fmt.Fprintf(os.Stderr, "\n%s Failed to load configuration\n", tui.ErrorStyle.Render("✗"))
+		fmt.Fprintf(os.Stderr, "%s %s\n", tui.Bullet(), tui.MutedStyle.Render(err.Error()))
+		fmt.Fprintf(os.Stderr, "\n%s %s\n\n", tui.Bullet(), tui.SecondaryStyle.Render("Run: detent config reset"))
+		return nil
 	}
 
-	// Apply defaults for display
-	healWithDefaults := cfg.Heal.WithDefaults()
+	healCfg := cfg.Heal.WithDefaults()
+	configPath, _ := persistence.GetConfigPath()
 
 	fmt.Println()
-	fmt.Printf("%s\n\n", configTextStyle.Render("Current Configuration"))
 
-	// API Key (masked - show only last 4 chars for security)
-	apiKeyDisplay := configDimStyle.Render("(not set)")
+	// Section: Authentication
+	fmt.Printf("%s\n", tui.SecondaryStyle.Render("Authentication"))
 	if cfg.AnthropicAPIKey != "" {
-		masked := "****" + cfg.AnthropicAPIKey[max(0, len(cfg.AnthropicAPIKey)-4):]
-		apiKeyDisplay = configValueStyle.Render(masked)
+		masked := "····" + cfg.AnthropicAPIKey[max(0, len(cfg.AnthropicAPIKey)-4):]
+		fmt.Printf("  API Key      %s\n", tui.PrimaryStyle.Render(masked))
+	} else {
+		fmt.Printf("  API Key      %s\n", tui.WarningStyle.Render("not configured"))
 	}
-	fmt.Printf("  %s %s\n", configKeyStyle.Render("anthropic_api_key:"), apiKeyDisplay)
 
-	fmt.Printf("\n  %s\n", configKeyStyle.Render("heal:"))
-	fmt.Printf("    %s %s\n", configKeyStyle.Render("model:"), configValueStyle.Render(healWithDefaults.Model))
-	fmt.Printf("    %s %s\n", configKeyStyle.Render("max_iterations:"), configValueStyle.Render(fmt.Sprintf("%d", healWithDefaults.MaxIterations)))
-	fmt.Printf("    %s %s\n", configKeyStyle.Render("max_tokens:"), configValueStyle.Render(fmt.Sprintf("%d", healWithDefaults.MaxTokens)))
-	fmt.Printf("    %s %s\n", configKeyStyle.Render("timeout_mins:"), configValueStyle.Render(fmt.Sprintf("%d", healWithDefaults.TimeoutMins)))
+	// Section: Healing
+	fmt.Printf("\n%s\n", tui.SecondaryStyle.Render("Healing"))
+	fmt.Printf("  Model        %s\n", tui.PrimaryStyle.Render(healCfg.Model))
+	fmt.Printf("  Timeout      %s\n", tui.PrimaryStyle.Render(fmt.Sprintf("%d min", healCfg.TimeoutMins)))
 
-	// Show if any values are using defaults
-	if cfg.Heal.Model == "" || cfg.Heal.MaxIterations == 0 || cfg.Heal.MaxTokens == 0 || cfg.Heal.TimeoutMins == 0 {
-		fmt.Printf("\n  %s\n", configDimStyle.Render("(some values using defaults)"))
+	if healCfg.BudgetUSD == 0 {
+		fmt.Printf("  Budget       %s\n", tui.MutedStyle.Render("unlimited"))
+	} else {
+		fmt.Printf("  Budget       %s\n", tui.PrimaryStyle.Render(fmt.Sprintf("$%.2f", healCfg.BudgetUSD)))
 	}
+
+	if healCfg.Verbose {
+		fmt.Printf("  Verbose      %s\n", tui.PrimaryStyle.Render("on"))
+	} else {
+		fmt.Printf("  Verbose      %s\n", tui.MutedStyle.Render("off"))
+	}
+
+	// Section: File
+	fmt.Printf("\n%s\n", tui.SecondaryStyle.Render("File"))
+	fmt.Printf("  %s\n", tui.MutedStyle.Render(configPath))
 
 	fmt.Println()
 	return nil
@@ -99,12 +102,18 @@ func runConfigShow(_ *cobra.Command, _ []string) error {
 
 func runConfigReset(_ *cobra.Command, _ []string) error {
 	if !forceReset {
-		fmt.Printf("%s Reset configuration to defaults? [y/N] ", configTextStyle.Render("?"))
+		fmt.Println()
+		fmt.Printf("%s Reset to defaults?\n", tui.WarningStyle.Render("!"))
+		fmt.Printf("%s Your API key will be preserved\n", tui.Bullet())
+		fmt.Printf("%s All other settings reset to defaults\n\n", tui.Bullet())
+		fmt.Printf("Continue? [y/N] ")
+
 		var response string
 		if _, err := fmt.Scanln(&response); err != nil || (response != "y" && response != "Y") {
-			fmt.Println(configDimStyle.Render("Cancelled"))
+			fmt.Printf("\n%s Cancelled\n\n", tui.MutedStyle.Render("·"))
 			return nil
 		}
+		fmt.Println()
 	}
 
 	// Load existing config to preserve API key
@@ -124,18 +133,13 @@ func runConfigReset(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("saving config: %w", err)
 	}
 
-	fmt.Printf("%s %s\n", configSuccessStyle.Render("+"), configTextStyle.Render("Configuration reset to defaults"))
+	healCfg := newCfg.Heal
 
-	// Show the new config (mask API key for security)
-	displayCfg := *newCfg
-	if displayCfg.AnthropicAPIKey != "" {
-		displayCfg.AnthropicAPIKey = "****" + displayCfg.AnthropicAPIKey[max(0, len(displayCfg.AnthropicAPIKey)-4):]
-	}
-	data, err := yaml.Marshal(displayCfg)
-	if err != nil {
-		return fmt.Errorf("marshaling config for display: %w", err)
-	}
-	fmt.Printf("\n%s\n", configDimStyle.Render(string(data)))
+	fmt.Printf("%s Configuration reset\n\n", tui.SuccessStyle.Render("✓"))
+	fmt.Printf("  Model        %s\n", tui.PrimaryStyle.Render(healCfg.Model))
+	fmt.Printf("  Timeout      %s\n", tui.PrimaryStyle.Render(fmt.Sprintf("%d min", healCfg.TimeoutMins)))
+	fmt.Printf("  Budget       %s\n", tui.PrimaryStyle.Render(fmt.Sprintf("$%.2f", healCfg.BudgetUSD)))
+	fmt.Printf("  Verbose      %s\n\n", tui.MutedStyle.Render("off"))
 
 	return nil
 }
@@ -148,9 +152,8 @@ func runConfigPath(_ *cobra.Command, _ []string) error {
 
 	fmt.Println(path)
 
-	// Check if file exists
 	if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
-		fmt.Fprintf(os.Stderr, "%s\n", configDimStyle.Render("(file does not exist yet)"))
+		fmt.Fprintf(os.Stderr, "%s file does not exist yet\n", tui.Bullet())
 	}
 
 	return nil

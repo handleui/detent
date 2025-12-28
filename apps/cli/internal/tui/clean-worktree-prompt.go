@@ -6,7 +6,6 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 )
 
 const (
@@ -61,14 +60,14 @@ type CleanWorktreePromptModel struct {
 }
 
 var (
-	promptTitleStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("252"))
-	promptTextStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
-	promptFileStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	promptSelectedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(colorSuccess))
-	promptNormalStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	promptHintStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Italic(true)
-	promptDimStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	promptErrorStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
+	promptTitleStyle    = BoldPrimaryStyle
+	promptTextStyle     = SecondaryStyle
+	promptFileStyle     = MutedStyle
+	promptSelectedStyle = SuccessStyle
+	promptNormalStyle   = PrimaryStyle
+	promptHintStyle     = MutedStyle.Italic(true)
+	promptDimStyle      = MutedStyle
+	promptErrorStyle    = ErrorStyle
 )
 
 // NewCleanWorktreePromptModel creates a new prompt model with the given dirty files

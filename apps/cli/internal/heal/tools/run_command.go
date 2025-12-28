@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -28,7 +29,18 @@ var CommandWhitelist = map[string]CommandSpec{
 	"yarn": {AllowedSubcommands: []string{"run", "test", "install", "build"}},
 	"pnpm": {AllowedSubcommands: []string{"run", "test", "install", "build"}},
 	"bun":  {AllowedSubcommands: []string{"run", "test", "install", "build", "x"}},
-	"npx":  {AllowedSubcommands: nil}, // Any args allowed for npx
+	"npx": {AllowedSubcommands: []string{
+		// Linters and formatters
+		"eslint", "prettier", "biome", "oxlint",
+		// TypeScript
+		"tsc", "tsc-watch",
+		// Test runners
+		"vitest", "jest",
+		// Monorepo tools
+		"turbo", "nx",
+		// Common utilities
+		"rimraf", "nodemon",
+	}},
 
 	// Go
 	"go":             {AllowedSubcommands: []string{"build", "test", "run", "fmt", "vet", "mod", "generate", "install"}},
@@ -43,8 +55,8 @@ var CommandWhitelist = map[string]CommandSpec{
 	"rustfmt": {AllowedSubcommands: nil},
 
 	// Python
-	"python":  {AllowedSubcommands: []string{"-m", "-c"}},
-	"python3": {AllowedSubcommands: []string{"-m", "-c"}},
+	"python":  {AllowedSubcommands: []string{"-m"}},
+	"python3": {AllowedSubcommands: []string{"-m"}},
 	"pip":     {AllowedSubcommands: []string{"install"}},
 	"pip3":    {AllowedSubcommands: []string{"install"}},
 	"pytest":  {AllowedSubcommands: nil},
@@ -53,7 +65,18 @@ var CommandWhitelist = map[string]CommandSpec{
 	"black":   {AllowedSubcommands: nil},
 
 	// Build tools
-	"make":   {AllowedSubcommands: nil}, // Any target allowed
+	//
+	// SECURITY NOTE: Make, Gradle, Maven execute project-defined targets/tasks.
+	// Unlike fixed-verb tools (go, cargo), these cannot have restricted subcommands
+	// because target names are project-specific (e.g., "make lint", "make deploy-prod").
+	//
+	// ACCEPTED RISK: A malicious Makefile/build.gradle could contain dangerous targets.
+	// MITIGATIONS:
+	//   1. Worktree sandbox isolates file operations
+	//   2. Environment filtering (safeCommandEnv) prevents credential exfiltration
+	//   3. Users run detent on trusted codebases (same trust model as "npm install")
+	//
+	"make":   {AllowedSubcommands: nil},
 	"cmake":  {AllowedSubcommands: nil},
 	"gradle": {AllowedSubcommands: nil},
 	"mvn":    {AllowedSubcommands: nil},
@@ -91,6 +114,167 @@ var BlockedPatterns = []string{
 	"`",
 	"eval",
 	"exec",
+}
+
+// allowedEnvVars is an allowlist of environment variable names that are safe to pass
+// to executed commands. Uses exact matches for specific variables.
+var allowedEnvVars = []string{
+	// Essential system variables
+	"PATH",
+	"HOME",
+	"USER",
+	"TMPDIR",
+	"TEMP",
+	"TMP",
+	"LANG",
+	"SHELL",
+	"TERM",
+	"COLORTERM",
+	"FORCE_COLOR",
+	"NO_COLOR",
+	"CLICOLOR",
+	"CLICOLOR_FORCE",
+
+	// Go
+	"GOPATH",
+	"GOROOT",
+	"GOBIN",
+	"GOCACHE",
+	"GOMODCACHE",
+	"GOPROXY",
+	"GOPRIVATE",
+	"GOFLAGS",
+	"CGO_ENABLED",
+	"CGO_CFLAGS",
+	"CGO_LDFLAGS",
+
+	// Node.js / JavaScript
+	"NODE_ENV",
+	"NODE_PATH",
+	"NODE_OPTIONS",
+	"NPM_CONFIG_REGISTRY",
+	"NPM_CONFIG_CACHE",
+	"YARN_CACHE_FOLDER",
+	"PNPM_HOME",
+	"BUN_INSTALL",
+
+	// Python
+	"PYTHONPATH",
+	"PYTHONHOME",
+	"VIRTUAL_ENV",
+	"CONDA_PREFIX",
+	"CONDA_DEFAULT_ENV",
+	"PIPENV_VENV_IN_PROJECT",
+
+	// Rust
+	"CARGO_HOME",
+	"RUSTUP_HOME",
+	"RUSTFLAGS",
+	"CARGO_TARGET_DIR",
+
+	// Java / JVM
+	"JAVA_HOME",
+	"JDK_HOME",
+	"MAVEN_HOME",
+	"M2_HOME",
+	"GRADLE_HOME",
+	"GRADLE_USER_HOME",
+
+	// Ruby
+	"GEM_HOME",
+	"GEM_PATH",
+	"BUNDLE_PATH",
+	"RBENV_ROOT",
+	"RUBY_VERSION",
+
+	// Build tools
+	"CC",
+	"CXX",
+	"CFLAGS",
+	"CXXFLAGS",
+	"LDFLAGS",
+	"PKG_CONFIG_PATH",
+	"CMAKE_PREFIX_PATH",
+
+	// Editor integration (for some tools)
+	"EDITOR",
+	"VISUAL",
+}
+
+// allowedEnvPrefixes is an allowlist of environment variable prefixes that are safe.
+// Variables starting with these prefixes will be included (unless they match a blocked suffix).
+var allowedEnvPrefixes = []string{
+	"LC_", // Locale settings (LC_ALL, LC_CTYPE, LC_MESSAGES, etc.)
+	"XDG_", // XDG base directory specification
+}
+
+// blockedEnvSuffixes are suffixes that indicate secrets, even if the prefix is allowed.
+// Any variable ending with these will be excluded.
+var blockedEnvSuffixes = []string{
+	"_KEY",
+	"_TOKEN",
+	"_SECRET",
+	"_PASSWORD",
+	"_CREDENTIALS",
+	"_AUTH",
+	"_API_KEY",
+}
+
+// safeCommandEnv returns a filtered environment for executing commands.
+// Uses an allowlist approach to prevent secrets from being exposed to executed commands.
+//
+// This function:
+// 1. Includes only explicitly allowed environment variables
+// 2. Includes variables with allowed prefixes (like LC_*)
+// 3. Excludes any variable with a blocked suffix (like _TOKEN, _SECRET)
+//
+// This prevents malicious code from exfiltrating API keys, tokens, and other secrets
+// that may be present in the parent environment.
+func safeCommandEnv() []string {
+	// Build a set of allowed exact variable names for O(1) lookup
+	allowedSet := make(map[string]struct{}, len(allowedEnvVars))
+	for _, v := range allowedEnvVars {
+		allowedSet[v] = struct{}{}
+	}
+
+	var env []string
+
+	for _, kv := range os.Environ() {
+		idx := strings.Index(kv, "=")
+		if idx <= 0 {
+			continue
+		}
+		key := kv[:idx]
+		upperKey := strings.ToUpper(key)
+
+		// Check if the variable has a blocked suffix (secrets)
+		blocked := false
+		for _, suffix := range blockedEnvSuffixes {
+			if strings.HasSuffix(upperKey, suffix) {
+				blocked = true
+				break
+			}
+		}
+		if blocked {
+			continue
+		}
+
+		// Check if exact match in allowlist
+		if _, ok := allowedSet[key]; ok {
+			env = append(env, kv)
+			continue
+		}
+
+		// Check if matches an allowed prefix
+		for _, prefix := range allowedEnvPrefixes {
+			if strings.HasPrefix(key, prefix) {
+				env = append(env, kv)
+				break
+			}
+		}
+	}
+
+	return env
 }
 
 // RunCommandTool executes whitelisted commands.
@@ -185,6 +369,7 @@ func (t *RunCommandTool) Execute(ctx context.Context, input json.RawMessage) (Re
 	// #nosec G204 - command is validated against whitelist and blocked patterns
 	cmd := exec.CommandContext(execCtx, parts[0], parts[1:]...)
 	cmd.Dir = t.ctx.WorktreePath
+	cmd.Env = safeCommandEnv()
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

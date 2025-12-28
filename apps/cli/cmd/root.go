@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/detent/cli/internal/git"
 	"github.com/detent/cli/internal/persistence"
 	"github.com/detent/cli/internal/runner"
@@ -15,12 +14,6 @@ import (
 	"github.com/detent/cli/internal/tui"
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
-)
-
-const (
-	brandingColor = "42"  // Green - matches colorSuccess in TUI
-	commandColor  = "15"  // Pure white for command name
-	contextColor  = "241" // Gray - matches hintTextGray in TUI
 )
 
 var (
@@ -32,18 +25,6 @@ var (
 // globalConfig holds the loaded configuration, available to all commands.
 // Initialized in PersistentPreRunE.
 var globalConfig *persistence.GlobalConfig
-
-// warnStyle is used for warning messages.
-var warnStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
-
-var (
-	brandingStyle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color(brandingColor))
-	commandStyle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color(commandColor))
-	contextStyle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color(contextColor))
-)
 
 var rootCmd = &cobra.Command{
 	Use:   "detent",
@@ -60,38 +41,32 @@ Requirements:
   - act (nektos/act - automatically invoked)`,
 	Version: Version,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		// Skip config loading for config subcommands (they handle it themselves)
-		// Walk up the command tree to check if any parent is the config command
+		// Skip for config subcommands
 		for c := cmd; c != nil; c = c.Parent() {
 			if c == configCmd {
 				return nil
 			}
 		}
 
-		// Print branding
+		// Minimal branding: "detent v0.1.0 · branch main"
 		fmt.Println()
-		versionText := brandingStyle.Render(fmt.Sprintf("Detent v%s", Version))
-		commandText := commandStyle.Render(cmd.Name())
-		fmt.Printf("%s %s\n", versionText, commandText)
+		repoRoot, _ := filepath.Abs(".")
+		branch, _ := git.GetCurrentBranch(repoRoot)
 
-		repoRoot, err := filepath.Abs(".")
-		if err == nil {
-			if branch, branchErr := git.GetCurrentBranch(repoRoot); branchErr == nil {
-				fmt.Printf("%s\n\n", contextStyle.Render(fmt.Sprintf("└─ on branch %s", branch)))
-			}
+		header := tui.BrandStyle.Render("detent") + " " + tui.MutedStyle.Render("v"+Version)
+		if branch != "" {
+			header += " " + tui.MutedStyle.Render("· "+branch)
 		}
+		fmt.Println(header)
+		fmt.Println()
 
-		// Load and validate global config
+		// Load config
 		cfg, configErr := persistence.LoadGlobalConfig()
 		if configErr != nil {
-			fmt.Fprintf(os.Stderr, "%s %s\n",
-				warnStyle.Render("⚠"),
-				contextStyle.Render(fmt.Sprintf("Config error: %v", configErr)))
-			fmt.Fprintf(os.Stderr, "  %s %s %s\n\n",
-				contextStyle.Render("Run"),
-				commandStyle.Render("detent config reset"),
-				contextStyle.Render("to fix"))
-			// Continue with defaults
+			fmt.Fprintf(os.Stderr, "%s Config error: %s\n",
+				tui.WarningStyle.Render("!"),
+				tui.MutedStyle.Render(configErr.Error()))
+			fmt.Fprintf(os.Stderr, "%s Run: detent config reset\n\n", tui.Bullet())
 			cfg = &persistence.GlobalConfig{
 				Heal: persistence.DefaultHealConfig(),
 			}
@@ -119,10 +94,10 @@ func init() {
 	rootCmd.PersistentFlags().StringVarP(&workflowsDir, "workflows", "w", runner.WorkflowsDir, "workflows directory path")
 	rootCmd.PersistentFlags().StringVar(&workflowFile, "workflow", "", "specific workflow file (e.g., ci.yml)")
 
-	rootCmd.SetHelpTemplate(fmt.Sprintf(`%s
+	rootCmd.SetHelpTemplate(`detent v` + Version + `
 {{with (or .Long .Short)}}{{. | trimTrailingWhitespaces}}
 
-{{end}}{{if or .Runnable .HasSubCommands}}{{.UsageString}}{{end}}`, brandingStyle.Render(fmt.Sprintf("Detent v%s", Version))))
+{{end}}{{if or .Runnable .HasSubCommands}}{{.UsageString}}{{end}}`)
 }
 
 // ensureAPIKey checks for API key and prompts interactively if missing.
@@ -169,9 +144,7 @@ func ensureAPIKey() (string, error) {
 	// Only update the global after successful save
 	globalConfig.AnthropicAPIKey = result.Key
 
-	fmt.Fprintf(os.Stderr, "%s %s\n\n",
-		brandingStyle.Render("+"),
-		contextStyle.Render("API key saved to configuration"))
+	fmt.Fprintf(os.Stderr, "%s API key saved\n\n", tui.SuccessStyle.Render("✓"))
 
 	return result.Key, nil
 }

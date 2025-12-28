@@ -7,24 +7,20 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/charmbracelet/lipgloss"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/detent/cli/internal/git"
 	"github.com/detent/cli/internal/heal/client"
 	"github.com/detent/cli/internal/heal/tools"
+	"github.com/detent/cli/internal/tui"
+	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 )
 
 var monsterMode bool
-
-var (
-	frankensteinSuccessStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
-	frankensteinDimStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	frankensteinTextStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	frankensteinErrorStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
-)
 
 var frankensteinCmd = &cobra.Command{
 	Use:   "frankenstein",
@@ -50,6 +46,7 @@ func init() {
 
 // toolTracker tracks which tools were called and their results.
 type toolTracker struct {
+	mu       sync.RWMutex
 	expected map[string]bool
 	called   map[string]bool
 	errors   map[string]string
@@ -68,6 +65,8 @@ func newToolTracker(toolNames []string) *toolTracker {
 }
 
 func (t *toolTracker) recordCall(name string, isError bool, errorMsg string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	t.called[name] = true
 	if isError {
 		t.errors[name] = errorMsg
@@ -75,6 +74,8 @@ func (t *toolTracker) recordCall(name string, isError bool, errorMsg string) {
 }
 
 func (t *toolTracker) allCalled() bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
 	for name := range t.expected {
 		if !t.called[name] {
 			return false
@@ -84,11 +85,125 @@ func (t *toolTracker) allCalled() bool {
 }
 
 func (t *toolTracker) hasErrors() bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
 	return len(t.errors) > 0
 }
 
+func (t *toolTracker) getCallStatus(name string) (called bool, errMsg string, hasError bool) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	called = t.called[name]
+	errMsg, hasError = t.errors[name]
+	return
+}
+
+// frankensteinModel is the Bubble Tea model for the frankenstein command.
+type frankensteinModel struct {
+	shimmer       tui.ShimmerModel
+	tracker       *toolTracker
+	expectedTools []string
+	done          bool
+	err           error
+	monster       bool
+}
+
+// frankensteinDoneMsg signals the test loop completed.
+type frankensteinDoneMsg struct {
+	err error
+}
+
+func newFrankensteinModel(tracker *toolTracker, expectedTools []string, monster bool) frankensteinModel {
+	text := "Testing AI tools"
+	if monster {
+		text = "Testing AI tools (full)"
+	}
+	return frankensteinModel{
+		shimmer:       tui.NewShimmerModel(text, "#00D787"), // Green matching brandingColor
+		tracker:       tracker,
+		expectedTools: expectedTools,
+		monster:       monster,
+	}
+}
+
+func (m frankensteinModel) Init() tea.Cmd {
+	return m.shimmer.Init()
+}
+
+func (m frankensteinModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		if msg.String() == "ctrl+c" || msg.String() == "q" {
+			return m, tea.Quit
+		}
+
+	case frankensteinDoneMsg:
+		m.done = true
+		m.err = msg.err
+		m.shimmer = m.shimmer.SetLoading(false)
+		return m, tea.Quit
+
+	case tui.ShimmerTickMsg:
+		var cmd tea.Cmd
+		m.shimmer, cmd = m.shimmer.Update(msg)
+		return m, cmd
+	}
+
+	return m, nil
+}
+
+func (m frankensteinModel) View() string {
+	if m.done {
+		return m.renderResults()
+	}
+
+	return fmt.Sprintf("%s %s\n", tui.Bullet(), m.shimmer.View())
+}
+
+func (m frankensteinModel) renderResults() string {
+	var out string
+
+	// Header
+	out += fmt.Sprintf("%s %s\n", tui.Bullet(), m.shimmer.View())
+
+	// Sort tools for consistent output
+	sortedTools := make([]string, len(m.expectedTools))
+	copy(sortedTools, m.expectedTools)
+	sort.Strings(sortedTools)
+
+	for _, name := range sortedTools {
+		var status string
+		called, errMsg, hasError := m.tracker.getCallStatus(name)
+		if called {
+			if hasError {
+				status = tui.ErrorStyle.Render(fmt.Sprintf("✗ (%s)", truncateError(errMsg)))
+			} else {
+				status = tui.SuccessStyle.Render("✓")
+			}
+		} else {
+			status = tui.MutedStyle.Render("-")
+		}
+
+		out += fmt.Sprintf("  %s %s %s\n", tui.Arrow(), name, status)
+	}
+
+	// Summary
+	switch {
+	case m.err != nil:
+		out += fmt.Sprintf("%s Test failed: %v\n", tui.ErrorStyle.Render("✗"), m.err)
+	case m.tracker.hasErrors():
+		out += fmt.Sprintf("%s Some tools failed\n", tui.ErrorStyle.Render("✗"))
+	case m.tracker.allCalled():
+		out += fmt.Sprintf("%s All tools working\n", tui.SuccessStyle.Render("✓"))
+	default:
+		out += fmt.Sprintf("%s Not all tools tested\n", tui.MutedStyle.Render("·"))
+	}
+
+	out += "\n"
+	return out
+}
+
 func runFrankenstein(cmd *cobra.Command, _ []string) error {
-	// Ensure API key is available
 	apiKey, err := ensureAPIKey()
 	if err != nil {
 		return err
@@ -99,7 +214,6 @@ func runFrankenstein(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("resolving current directory: %w", err)
 	}
 
-	// Verify we're in a git repo
 	if _, refsErr := git.GetCurrentRefs(repoPath); refsErr != nil {
 		return fmt.Errorf("not a git repository: %w", refsErr)
 	}
@@ -109,7 +223,6 @@ func runFrankenstein(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	// Set up tool context (using current dir, no isolation needed for read-only)
 	toolCtx := &tools.Context{
 		WorktreePath: repoPath,
 		RepoRoot:     repoPath,
@@ -119,7 +232,6 @@ func runFrankenstein(cmd *cobra.Command, _ []string) error {
 	registry := tools.NewRegistry(toolCtx)
 	var expectedTools []string
 
-	// Always register read-only tools
 	registry.Register(tools.NewGlobTool(toolCtx))
 	registry.Register(tools.NewReadFileTool(toolCtx))
 	registry.Register(tools.NewGrepTool(toolCtx))
@@ -133,22 +245,9 @@ func runFrankenstein(cmd *cobra.Command, _ []string) error {
 	}
 
 	tracker := newToolTracker(expectedTools)
-
-	// Build prompt
 	systemPrompt := buildFrankensteinSystemPrompt(monsterMode)
 	userPrompt := buildFrankensteinUserPrompt(monsterMode)
 
-	if monsterMode {
-		fmt.Fprintf(os.Stderr, "%s %s\n",
-			frankensteinDimStyle.Render(">"),
-			frankensteinTextStyle.Render("Testing AI tools (full)..."))
-	} else {
-		fmt.Fprintf(os.Stderr, "%s %s\n",
-			frankensteinDimStyle.Render(">"),
-			frankensteinTextStyle.Render("Testing AI tools..."))
-	}
-
-	// Run the test loop with appropriate timeout
 	timeout := 60 * time.Second
 	if monsterMode {
 		timeout = 120 * time.Second
@@ -156,24 +255,125 @@ func runFrankenstein(cmd *cobra.Command, _ []string) error {
 	ctx, cancel := context.WithTimeout(cmd.Context(), timeout)
 	defer cancel()
 
-	err = runFrankensteinLoop(ctx, c.API(), registry, tracker, systemPrompt, userPrompt)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s %s\n",
-			frankensteinErrorStyle.Render("✗"),
-			frankensteinTextStyle.Render(fmt.Sprintf("Test failed: %v", err)))
-		return err
+	// Check if we have a TTY for the shimmer animation
+	isTTY := isatty.IsTerminal(os.Stderr.Fd())
+
+	if isTTY {
+		// Interactive mode with shimmer animation
+		return runFrankensteinInteractive(ctx, c.API(), registry, tracker, expectedTools, systemPrompt, userPrompt)
 	}
 
-	// Display results
-	displayFrankensteinResults(tracker, expectedTools)
+	// Non-interactive mode (no TTY)
+	return runFrankensteinSimple(ctx, c.API(), registry, tracker, expectedTools, systemPrompt, userPrompt)
+}
 
-	fmt.Fprintln(os.Stderr)
+func runFrankensteinInteractive(
+	ctx context.Context,
+	api anthropic.Client,
+	registry *tools.Registry,
+	tracker *toolTracker,
+	expectedTools []string,
+	systemPrompt, userPrompt string,
+) error {
+	model := newFrankensteinModel(tracker, expectedTools, monsterMode)
+	p := tea.NewProgram(model, tea.WithOutput(os.Stderr))
 
-	if tracker.hasErrors() {
+	go func() {
+		loopErr := runFrankensteinLoop(ctx, api, registry, tracker, systemPrompt, userPrompt)
+		p.Send(frankensteinDoneMsg{err: loopErr})
+	}()
+
+	finalModel, err := p.Run()
+	if err != nil {
+		return fmt.Errorf("TUI error: %w", err)
+	}
+
+	fm, ok := finalModel.(frankensteinModel)
+	if !ok {
+		return fmt.Errorf("unexpected model type")
+	}
+	if fm.err != nil {
+		return fm.err
+	}
+	if fm.tracker.hasErrors() {
 		return fmt.Errorf("some tools failed")
 	}
 
 	return nil
+}
+
+func runFrankensteinSimple(
+	ctx context.Context,
+	api anthropic.Client,
+	registry *tools.Registry,
+	tracker *toolTracker,
+	expectedTools []string,
+	systemPrompt, userPrompt string,
+) error {
+	// Simple non-animated output
+	if monsterMode {
+		fmt.Fprintf(os.Stderr, "%s %s\n",
+			tui.MutedStyle.Render(">"),
+			tui.PrimaryStyle.Render("Testing AI tools (full)..."))
+	} else {
+		fmt.Fprintf(os.Stderr, "%s %s\n",
+			tui.MutedStyle.Render(">"),
+			tui.PrimaryStyle.Render("Testing AI tools..."))
+	}
+
+	err := runFrankensteinLoop(ctx, api, registry, tracker, systemPrompt, userPrompt)
+
+	// Display results
+	displayFrankensteinResultsSimple(tracker, expectedTools)
+	fmt.Fprintln(os.Stderr)
+
+	if err != nil {
+		return err
+	}
+	if tracker.hasErrors() {
+		return fmt.Errorf("some tools failed")
+	}
+	return nil
+}
+
+func displayFrankensteinResultsSimple(tracker *toolTracker, expectedTools []string) {
+	sortedTools := make([]string, len(expectedTools))
+	copy(sortedTools, expectedTools)
+	sort.Strings(sortedTools)
+
+	for _, name := range sortedTools {
+		var status string
+		called, errMsg, hasError := tracker.getCallStatus(name)
+		if called {
+			if hasError {
+				status = tui.ErrorStyle.Render(fmt.Sprintf("✗ (%s)", truncateError(errMsg)))
+			} else {
+				status = tui.SuccessStyle.Render("✓")
+			}
+		} else {
+			status = tui.MutedStyle.Render("-")
+		}
+
+		fmt.Fprintf(os.Stderr, "  %s %s %s\n",
+			tui.MutedStyle.Render("↳"),
+			tui.PrimaryStyle.Render(name),
+			status)
+	}
+
+	switch {
+	case tracker.hasErrors():
+		fmt.Fprintf(os.Stderr, "%s %s\n",
+			tui.ErrorStyle.Render("✗"),
+			tui.PrimaryStyle.Render("Some tools failed"))
+	case tracker.allCalled():
+		fmt.Fprintf(os.Stderr, "%s %s\n",
+			tui.SuccessStyle.Render("+"),
+			tui.PrimaryStyle.Render("All tools working"))
+	default:
+		fmt.Fprintf(os.Stderr, "%s %s\n",
+			tui.MutedStyle.Render("~"),
+			tui.PrimaryStyle.Render("Not all tools were tested"))
+	}
 }
 
 func runFrankensteinLoop(
@@ -241,44 +441,6 @@ func runFrankensteinLoop(
 	}
 
 	return fmt.Errorf("max iterations exceeded")
-}
-
-func displayFrankensteinResults(tracker *toolTracker, expectedTools []string) {
-	// Sort tools for consistent output
-	sort.Strings(expectedTools)
-
-	for _, name := range expectedTools {
-		var status string
-		if tracker.called[name] {
-			if errMsg, hasError := tracker.errors[name]; hasError {
-				status = frankensteinErrorStyle.Render(fmt.Sprintf("✗ (%s)", truncateError(errMsg)))
-			} else {
-				status = frankensteinSuccessStyle.Render("✓")
-			}
-		} else {
-			status = frankensteinDimStyle.Render("-")
-		}
-
-		fmt.Fprintf(os.Stderr, "  %s %s %s\n",
-			frankensteinDimStyle.Render("↳"),
-			frankensteinTextStyle.Render(name),
-			status)
-	}
-
-	switch {
-	case tracker.hasErrors():
-		fmt.Fprintf(os.Stderr, "%s %s\n",
-			frankensteinErrorStyle.Render("✗"),
-			frankensteinTextStyle.Render("Some tools failed"))
-	case tracker.allCalled():
-		fmt.Fprintf(os.Stderr, "%s %s\n",
-			frankensteinSuccessStyle.Render("+"),
-			frankensteinTextStyle.Render("All tools working"))
-	default:
-		fmt.Fprintf(os.Stderr, "%s %s\n",
-			frankensteinDimStyle.Render("~"),
-			frankensteinTextStyle.Render("Not all tools were tested"))
-	}
 }
 
 func truncateError(msg string) string {

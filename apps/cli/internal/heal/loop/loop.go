@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"os"
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -12,34 +14,37 @@ import (
 )
 
 const (
-	// DefaultMaxIterations is the maximum number of tool call rounds.
-	DefaultMaxIterations = 20
+	// maxIterations is the internal limit on tool call rounds (not user-configurable).
+	maxIterations = 50
 
-	// DefaultMaxTokens is the maximum tokens per response.
-	DefaultMaxTokens = 4096
+	// maxTokensPerResponse is the internal limit on tokens per response.
+	maxTokensPerResponse = 8192
 
 	// DefaultTimeout is the total timeout for the healing loop.
 	DefaultTimeout = 10 * time.Minute
 
 	// DefaultModel is the model to use for healing.
 	DefaultModel = anthropic.ModelClaudeSonnet4_5
+
+	// DefaultBudgetUSD is the default spending limit per run.
+	DefaultBudgetUSD = 1.00
 )
 
 // Config configures the healing loop.
 type Config struct {
-	MaxIterations int
-	MaxTokens     int
-	Timeout       time.Duration
-	Model         anthropic.Model
+	Timeout   time.Duration
+	Model     anthropic.Model
+	BudgetUSD float64 // 0 = unlimited
+	Verbose   bool
 }
 
 // DefaultConfig returns a config with default values.
 func DefaultConfig() Config {
 	return Config{
-		MaxIterations: DefaultMaxIterations,
-		MaxTokens:     DefaultMaxTokens,
-		Timeout:       DefaultTimeout,
-		Model:         DefaultModel,
+		Timeout:   DefaultTimeout,
+		Model:     DefaultModel,
+		BudgetUSD: DefaultBudgetUSD,
+		Verbose:   false,
 	}
 }
 
@@ -48,10 +53,10 @@ func DefaultConfig() Config {
 func ConfigFromHealConfig(hc persistence.HealConfig) Config {
 	hc = hc.WithDefaults()
 	return Config{
-		MaxIterations: hc.MaxIterations,
-		MaxTokens:     hc.MaxTokens,
-		Timeout:       time.Duration(hc.TimeoutMins) * time.Minute,
-		Model:         anthropic.Model(hc.Model),
+		Timeout:   time.Duration(hc.TimeoutMins) * time.Minute,
+		Model:     anthropic.Model(hc.Model),
+		BudgetUSD: hc.BudgetUSD,
+		Verbose:   hc.Verbose,
 	}
 }
 
@@ -71,21 +76,39 @@ type Result struct {
 
 	// Duration is how long the loop took.
 	Duration time.Duration
+
+	// InputTokens is the total input tokens used across all API calls.
+	InputTokens int64
+
+	// OutputTokens is the total output tokens used across all API calls.
+	OutputTokens int64
+
+	// CostUSD is the calculated cost in USD based on token usage.
+	CostUSD float64
+
+	// BudgetExceeded indicates if the loop stopped due to budget limit.
+	BudgetExceeded bool
 }
 
 // HealLoop orchestrates the agentic healing process.
 type HealLoop struct {
-	client   anthropic.Client
-	registry *tools.Registry
-	config   Config
+	client        anthropic.Client
+	registry      *tools.Registry
+	config        Config
+	verboseWriter io.Writer
 }
 
 // New creates a new healing loop.
 func New(client anthropic.Client, registry *tools.Registry, config Config) *HealLoop {
+	var verboseWriter io.Writer
+	if config.Verbose {
+		verboseWriter = os.Stderr
+	}
 	return &HealLoop{
-		client:   client,
-		registry: registry,
-		config:   config,
+		client:        client,
+		registry:      registry,
+		config:        config,
+		verboseWriter: verboseWriter,
 	}
 }
 
@@ -103,14 +126,15 @@ func (l *HealLoop) Run(ctx context.Context, systemPrompt, userPrompt string) (*R
 	}
 
 	result := &Result{}
+	modelName := string(l.config.Model)
 
-	for iteration := 0; iteration < l.config.MaxIterations; iteration++ {
+	for iteration := range maxIterations {
 		result.Iterations = iteration + 1
 
 		// Make API call
 		response, err := l.client.Messages.New(ctx, anthropic.MessageNewParams{
 			Model:     l.config.Model,
-			MaxTokens: int64(l.config.MaxTokens),
+			MaxTokens: maxTokensPerResponse,
 			System: []anthropic.TextBlockParam{
 				{Text: systemPrompt},
 			},
@@ -119,7 +143,20 @@ func (l *HealLoop) Run(ctx context.Context, systemPrompt, userPrompt string) (*R
 		})
 		if err != nil {
 			result.Duration = time.Since(startTime)
+			result.CostUSD = CalculateCost(modelName, result.InputTokens, result.OutputTokens)
 			return result, fmt.Errorf("API call failed: %w", err)
+		}
+
+		// Track token usage
+		result.InputTokens += response.Usage.InputTokens
+		result.OutputTokens += response.Usage.OutputTokens
+		result.CostUSD = CalculateCost(modelName, result.InputTokens, result.OutputTokens)
+
+		// Check budget (don't return error - let caller decide how to handle)
+		if l.config.BudgetUSD > 0 && result.CostUSD > l.config.BudgetUSD {
+			result.BudgetExceeded = true
+			result.Duration = time.Since(startTime)
+			return result, nil
 		}
 
 		// Check if we're done (model finished without requesting tools)
@@ -139,6 +176,9 @@ func (l *HealLoop) Run(ctx context.Context, systemPrompt, userPrompt string) (*R
 			if toolUse, ok := block.AsAny().(anthropic.ToolUseBlock); ok {
 				hasToolUse = true
 				result.ToolCalls++
+
+				// Verbose logging
+				l.logToolCall(toolUse.Name, toolUse.JSON.Input.Raw())
 
 				// Dispatch the tool
 				toolResult := l.registry.Dispatch(ctx, toolUse.Name, json.RawMessage(toolUse.JSON.Input.Raw()))
@@ -165,7 +205,7 @@ func (l *HealLoop) Run(ctx context.Context, systemPrompt, userPrompt string) (*R
 	}
 
 	result.Duration = time.Since(startTime)
-	return result, fmt.Errorf("max iterations (%d) exceeded", l.config.MaxIterations)
+	return result, fmt.Errorf("max iterations (%d) exceeded", maxIterations)
 }
 
 // extractTextContent extracts text content from a response.
@@ -175,6 +215,53 @@ func (l *HealLoop) extractTextContent(response *anthropic.Message) string {
 			return text.Text
 		}
 	}
+	return ""
+}
+
+// logToolCall logs a tool call in verbose mode with the key parameter.
+func (l *HealLoop) logToolCall(toolName, inputRaw string) {
+	if l.verboseWriter == nil {
+		return
+	}
+
+	// Extract key parameter based on tool type
+	keyParam := extractKeyParam(toolName, inputRaw)
+	if keyParam != "" {
+		_, _ = fmt.Fprintf(l.verboseWriter, "  → %s: %s\n", toolName, keyParam)
+	} else {
+		_, _ = fmt.Fprintf(l.verboseWriter, "  → %s\n", toolName)
+	}
+}
+
+// extractKeyParam extracts the most relevant parameter for verbose output.
+func extractKeyParam(toolName, inputRaw string) string {
+	var params map[string]any
+	if err := json.Unmarshal([]byte(inputRaw), &params); err != nil {
+		return ""
+	}
+
+	// Map tool names to their key parameter
+	keyParamNames := map[string]string{
+		"read_file":   "path",
+		"edit_file":   "path",
+		"glob":        "pattern",
+		"grep":        "pattern",
+		"run_check":   "category",
+		"run_command": "command",
+	}
+
+	if paramName, ok := keyParamNames[toolName]; ok {
+		if value, exists := params[paramName]; exists {
+			if s, ok := value.(string); ok {
+				// Truncate long values
+				if len(s) > 50 {
+					return s[:47] + "..."
+				}
+				return s
+			}
+		}
+	}
+
 	return ""
 }
 

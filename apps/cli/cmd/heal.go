@@ -2,28 +2,23 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
 	"github.com/detent/cli/internal/git"
 	"github.com/detent/cli/internal/heal/client"
 	"github.com/detent/cli/internal/heal/loop"
 	"github.com/detent/cli/internal/heal/prompt"
 	"github.com/detent/cli/internal/heal/tools"
 	"github.com/detent/cli/internal/persistence"
+	"github.com/detent/cli/internal/tui"
 	"github.com/spf13/cobra"
 )
 
 var testAPI bool
-
-var (
-	healSuccessStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
-	healDimStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	healTextStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-)
 
 var healCmd = &cobra.Command{
 	Use:   "heal",
@@ -64,9 +59,8 @@ func runHeal(cmd *cobra.Command, args []string) error {
 
 	// Handle --test flag (deprecated)
 	if testAPI {
-		fmt.Fprintf(os.Stderr, "%s %s\n",
-			lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render("⚠"),
-			healTextStyle.Render("--test is deprecated, use 'dt frankenstein' instead"))
+		fmt.Fprintf(os.Stderr, "%s --test is deprecated, use 'dt frankenstein' instead\n",
+			tui.WarningStyle.Render("!"))
 		return runHealTest(cmd.Context(), apiKey)
 	}
 
@@ -88,9 +82,9 @@ func runHeal(cmd *cobra.Command, args []string) error {
 	if !worktreeExists || forceRun {
 		fmt.Fprintf(os.Stderr, "Running check to create worktree...\n")
 		if checkErr := runCheck(cmd, args); checkErr != nil {
-			// Check returns error if there are errors found - that's expected for heal
-			// We continue if the error is about found errors, but fail on other errors
-			if checkErr.Error() != "found errors in workflow execution" {
+			// Check returns ErrFoundErrors when errors are found - that's expected for heal.
+			// We continue in that case but fail on other errors.
+			if !errors.Is(checkErr, ErrFoundErrors) {
 				return checkErr
 			}
 		}
@@ -113,23 +107,19 @@ func runHeal(cmd *cobra.Command, args []string) error {
 	}
 	defer func() { _ = db.Close() }()
 
-	errors, err := db.GetErrorsByRunID(runID)
+	errRecords, err := db.GetErrorsByRunID(runID)
 	if err != nil {
 		return fmt.Errorf("loading errors: %w", err)
 	}
 
-	if len(errors) == 0 {
+	if len(errRecords) == 0 {
 		fmt.Println("No errors to heal")
 		return nil
 	}
 
 	// Display summary
-	fmt.Fprintf(os.Stderr, "%s %s\n",
-		healDimStyle.Render(">"),
-		healTextStyle.Render(fmt.Sprintf("Found %d errors in run %s", len(errors), runID)))
-	fmt.Fprintf(os.Stderr, "%s %s\n\n",
-		healDimStyle.Render(">"),
-		healTextStyle.Render(fmt.Sprintf("Worktree: %s", worktreePath)))
+	fmt.Fprintf(os.Stderr, "%s Found %d errors\n", tui.Bullet(), len(errRecords))
+	fmt.Fprintf(os.Stderr, "%s Worktree: %s\n\n", tui.Bullet(), tui.MutedStyle.Render(worktreePath))
 
 	// Create Anthropic client
 	c, err := client.New(apiKey)
@@ -154,15 +144,13 @@ func runHeal(cmd *cobra.Command, args []string) error {
 	registry.Register(tools.NewRunCommandTool(toolCtx))
 
 	// Build user prompt from errors
-	userPrompt := buildUserPrompt(errors)
+	userPrompt := buildUserPrompt(errRecords)
 
 	// Create and run healing loop with config from global settings
 	loopConfig := loop.ConfigFromHealConfig(globalConfig.Heal)
 	healLoop := loop.New(c.API(), registry, loopConfig)
 
-	fmt.Fprintf(os.Stderr, "%s %s\n",
-		healDimStyle.Render(">"),
-		healTextStyle.Render("Starting AI healing loop..."))
+	fmt.Fprintf(os.Stderr, "%s Starting healing...\n", tui.Bullet())
 
 	result, err := healLoop.Run(cmd.Context(), prompt.BuildSystemPrompt(), userPrompt)
 	if err != nil {
@@ -171,40 +159,46 @@ func runHeal(cmd *cobra.Command, args []string) error {
 
 	// Display result
 	fmt.Fprintf(os.Stderr, "\n")
-	if result.Success {
-		fmt.Fprintf(os.Stderr, "%s %s\n",
-			healSuccessStyle.Render("+"),
-			healTextStyle.Render("Healing completed successfully"))
-	} else {
-		fmt.Fprintf(os.Stderr, "%s %s\n",
-			lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Render("!"),
-			healTextStyle.Render("Healing incomplete"))
+	switch {
+	case result.Success:
+		fmt.Fprintf(os.Stderr, "%s Healing complete\n", tui.SuccessStyle.Render("✓"))
+	case result.BudgetExceeded:
+		fmt.Fprintf(os.Stderr, "%s Budget limit reached\n", tui.WarningStyle.Render("!"))
+	default:
+		fmt.Fprintf(os.Stderr, "%s Healing incomplete\n", tui.ErrorStyle.Render("✗"))
 	}
 
-	fmt.Fprintf(os.Stderr, "%s %s\n",
-		healDimStyle.Render(">"),
-		healTextStyle.Render(fmt.Sprintf("Iterations: %d, Tool calls: %d, Duration: %s",
-			result.Iterations, result.ToolCalls, result.Duration.Round(100*1e6))))
+	fmt.Fprintf(os.Stderr, "%s %d iterations, %d tool calls, %s\n",
+		tui.Bullet(),
+		result.Iterations, result.ToolCalls, result.Duration.Round(100*1e6))
+
+	fmt.Fprintf(os.Stderr, "%s $%.4f (%dk in, %dk out)\n",
+		tui.Bullet(),
+		result.CostUSD, result.InputTokens/1000, result.OutputTokens/1000)
 
 	if result.FinalMessage != "" {
 		fmt.Fprintf(os.Stderr, "\n%s\n%s\n",
-			healDimStyle.Render("Summary:"),
+			tui.SecondaryStyle.Render("Summary"),
 			result.FinalMessage)
+	}
+
+	if result.BudgetExceeded {
+		return fmt.Errorf("budget limit ($%.2f) exceeded", globalConfig.Heal.BudgetUSD)
 	}
 
 	return nil
 }
 
 // buildUserPrompt formats error records into a prompt for Claude.
-func buildUserPrompt(errors []*persistence.ErrorRecord) string {
+func buildUserPrompt(errRecords []*persistence.ErrorRecord) string {
 	var sb strings.Builder
 
 	sb.WriteString("Fix the following CI errors:\n\n")
 
 	// Group errors by file
 	byFile := make(map[string][]*persistence.ErrorRecord)
-	for _, err := range errors {
-		byFile[err.FilePath] = append(byFile[err.FilePath], err)
+	for _, rec := range errRecords {
+		byFile[rec.FilePath] = append(byFile[rec.FilePath], rec)
 	}
 
 	for filePath, fileErrors := range byFile {
@@ -242,21 +236,16 @@ func runHealTest(ctx context.Context, apiKey string) error {
 		return err
 	}
 
-	fmt.Fprintf(os.Stderr, "%s %s\n",
-		healDimStyle.Render(">"),
-		healTextStyle.Render("Testing Claude API connection..."))
+	fmt.Fprintf(os.Stderr, "%s Testing API connection...\n", tui.Bullet())
 
 	response, err := c.Test(ctx)
 	if err != nil {
 		return fmt.Errorf("API test failed: %w", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "%s %s\n",
-		healSuccessStyle.Render("+"),
-		healTextStyle.Render("Connected"))
-
+	fmt.Fprintf(os.Stderr, "%s Connected\n", tui.SuccessStyle.Render("✓"))
 	fmt.Fprintf(os.Stderr, "\n%s\n%s\n\n",
-		healDimStyle.Render("Claude says:"),
+		tui.SecondaryStyle.Render("Response"),
 		response)
 
 	return nil
