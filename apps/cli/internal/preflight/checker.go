@@ -303,16 +303,21 @@ func RunPreflightChecks(ctx context.Context, workflowPath, repoRoot, runID, work
 		return nil, err
 	}
 
-	// Check 6: Create worktree
+	// Check 6: Create worktree (persistent, at ~/.detent/worktrees/{runID})
 	worktreeResult, err := checker.executeWorktreePrep(
 		"Creating isolated worktree",
 		func() (worktreePrepResult, error) {
-			info, cleanup, wtErr := git.PrepareWorktree(ctx, repoRoot, "")
+			worktreePath, pathErr := git.GetWorktreePath(runID)
+			if pathErr != nil {
+				workflowResult.cleanup()
+				return worktreePrepResult{}, fmt.Errorf("getting worktree path: %w", pathErr)
+			}
+			info, _, wtErr := git.PrepareWorktree(ctx, repoRoot, worktreePath)
 			if wtErr != nil {
 				workflowResult.cleanup()
 				return worktreePrepResult{}, fmt.Errorf("creating worktree: %w", wtErr)
 			}
-			return worktreePrepResult{info: info, cleanup: cleanup}, nil
+			return worktreePrepResult{info: info, cleanup: nil}, nil // Persistent, no cleanup
 		},
 	)
 	if err != nil {

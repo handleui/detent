@@ -58,6 +58,7 @@ func Execute() error {
 
 func init() {
 	rootCmd.AddCommand(checkCmd)
+	rootCmd.AddCommand(healCmd)
 	rootCmd.AddCommand(injectCmd)
 
 	// Persistent flags available to all commands

@@ -10,7 +10,7 @@ import (
 )
 
 var validEventPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
-var validUUIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+var validRunIDPattern = regexp.MustCompile(`^[0-9a-f]{16}$`)
 
 // RunConfig configures a workflow execution run.
 // This is the high-level configuration that orchestrates the entire check workflow,
@@ -58,8 +58,8 @@ func (c *RunConfig) Validate() error {
 	if c.RunID == "" {
 		return fmt.Errorf("RunID is required")
 	}
-	if !validUUIDPattern.MatchString(c.RunID) {
-		return fmt.Errorf("invalid RunID format: must be a valid UUID v4")
+	if !validRunIDPattern.MatchString(c.RunID) {
+		return fmt.Errorf("invalid RunID format: must be a 16-character hex string")
 	}
 
 	// Validate WorkflowPath doesn't escape RepoRoot

@@ -43,41 +43,6 @@ func createDirIfNotExists(path string) error {
 	return nil
 }
 
-// getDetentCacheDir returns the cache directory for detent ephemeral data.
-// Uses the consolidated structure: ~/.detent/cache
-// Worktrees and regenerable data go here.
-func getDetentCacheDir() (string, error) {
-	detentDir, err := GetDetentDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(detentDir, "cache"), nil
-}
-
-// GetWorktreeBaseDir returns the directory for run worktrees for a given repo.
-// Uses the consolidated cache directory: ~/.detent/cache/<repoID>/worktrees
-func GetWorktreeBaseDir(repoRoot string) (string, error) {
-	cacheDir, err := getDetentCacheDir()
-	if err != nil {
-		return "", err
-	}
-	repoID, err := ComputeRepoID(repoRoot)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(cacheDir, repoID, "worktrees"), nil
-}
-
-// GetWorktreePath returns the full path for a specific run worktree.
-// Uses: ~/.detent/cache/<repoID>/worktrees/run-<runID>
-func GetWorktreePath(repoRoot, runID string) (string, error) {
-	baseDir, err := GetWorktreeBaseDir(repoRoot)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(baseDir, "run-"+runID), nil
-}
-
 // ComputeRepoID computes a stable identifier for a repository.
 // Priority: 1) git remote URL, 2) first commit SHA, 3) repo path
 // Returns a 16-character hex string suitable for directory names.

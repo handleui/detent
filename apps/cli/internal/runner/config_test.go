@@ -27,7 +27,7 @@ func TestRunConfig_Validate(t *testing.T) {
 			config: &RunConfig{
 				RepoRoot:     tmpDir,
 				WorkflowPath: validWorkflowPath,
-				RunID:        "12345678-1234-1234-1234-123456789abc",
+				RunID:        "0123456789abcdef",
 				Event:        "push",
 			},
 			wantErr: false,
@@ -37,7 +37,7 @@ func TestRunConfig_Validate(t *testing.T) {
 			config: &RunConfig{
 				RepoRoot:     tmpDir,
 				WorkflowPath: validWorkflowPath,
-				RunID:        "12345678-1234-1234-1234-123456789abc",
+				RunID:        "0123456789abcdef",
 			},
 			wantErr: false,
 		},
@@ -46,7 +46,7 @@ func TestRunConfig_Validate(t *testing.T) {
 			config: &RunConfig{
 				RepoRoot:     tmpDir,
 				WorkflowPath: validWorkflowPath,
-				RunID:        "12345678-1234-1234-1234-123456789abc",
+				RunID:        "0123456789abcdef",
 				Event:        "pull_request",
 			},
 			wantErr: false,
@@ -56,7 +56,7 @@ func TestRunConfig_Validate(t *testing.T) {
 			config: &RunConfig{
 				RepoRoot:     tmpDir,
 				WorkflowPath: validWorkflowPath,
-				RunID:        "12345678-1234-1234-1234-123456789abc",
+				RunID:        "0123456789abcdef",
 				Event:        "workflow-dispatch",
 			},
 			wantErr: false,
@@ -65,7 +65,7 @@ func TestRunConfig_Validate(t *testing.T) {
 			name: "missing RepoRoot",
 			config: &RunConfig{
 				WorkflowPath: validWorkflowPath,
-				RunID:        "12345678-1234-1234-1234-123456789abc",
+				RunID:        "0123456789abcdef",
 				Event:        "push",
 			},
 			wantErr: true,
@@ -75,7 +75,7 @@ func TestRunConfig_Validate(t *testing.T) {
 			name: "missing WorkflowPath",
 			config: &RunConfig{
 				RepoRoot: tmpDir,
-				RunID:    "12345678-1234-1234-1234-123456789abc",
+				RunID:    "0123456789abcdef",
 				Event:    "push",
 			},
 			wantErr: true,
@@ -96,18 +96,18 @@ func TestRunConfig_Validate(t *testing.T) {
 			config: &RunConfig{
 				RepoRoot:     tmpDir,
 				WorkflowPath: validWorkflowPath,
-				RunID:        "12345",
+				RunID:        "0123456789abcde", // 15 chars
 				Event:        "push",
 			},
 			wantErr: true,
 			errMsg:  "invalid RunID format",
 		},
 		{
-			name: "invalid RunID format - no hyphens",
+			name: "invalid RunID format - too long",
 			config: &RunConfig{
 				RepoRoot:     tmpDir,
 				WorkflowPath: validWorkflowPath,
-				RunID:        "12345678123412341234123456789abc",
+				RunID:        "0123456789abcdef0", // 17 chars
 				Event:        "push",
 			},
 			wantErr: true,
@@ -118,7 +118,7 @@ func TestRunConfig_Validate(t *testing.T) {
 			config: &RunConfig{
 				RepoRoot:     tmpDir,
 				WorkflowPath: validWorkflowPath,
-				RunID:        "12345678-1234-1234-1234-123456789ABC",
+				RunID:        "0123456789ABCDEF", // uppercase
 				Event:        "push",
 			},
 			wantErr: true,
@@ -129,7 +129,7 @@ func TestRunConfig_Validate(t *testing.T) {
 			config: &RunConfig{
 				RepoRoot:     tmpDir,
 				WorkflowPath: validWorkflowPath,
-				RunID:        "12345678-1234-1234-1234-123456789xyz",
+				RunID:        "0123456789abcdeg", // 'g' is not hex
 				Event:        "push",
 			},
 			wantErr: true,
@@ -140,7 +140,7 @@ func TestRunConfig_Validate(t *testing.T) {
 			config: &RunConfig{
 				RepoRoot:     tmpDir,
 				WorkflowPath: filepath.Join(tmpDir, "..", "..", "etc", "workflows"),
-				RunID:        "12345678-1234-1234-1234-123456789abc",
+				RunID:        "0123456789abcdef",
 				Event:        "push",
 			},
 			wantErr: true,
@@ -151,7 +151,7 @@ func TestRunConfig_Validate(t *testing.T) {
 			config: &RunConfig{
 				RepoRoot:     tmpDir,
 				WorkflowPath: "../../../etc/workflows",
-				RunID:        "12345678-1234-1234-1234-123456789abc",
+				RunID:        "0123456789abcdef",
 				Event:        "push",
 			},
 			wantErr: true,
@@ -162,7 +162,7 @@ func TestRunConfig_Validate(t *testing.T) {
 			config: &RunConfig{
 				RepoRoot:     tmpDir,
 				WorkflowPath: validWorkflowPath,
-				RunID:        "12345678-1234-1234-1234-123456789abc",
+				RunID:        "0123456789abcdef",
 				Event:        "push; rm -rf /",
 			},
 			wantErr: true,
@@ -173,7 +173,7 @@ func TestRunConfig_Validate(t *testing.T) {
 			config: &RunConfig{
 				RepoRoot:     tmpDir,
 				WorkflowPath: validWorkflowPath,
-				RunID:        "12345678-1234-1234-1234-123456789abc",
+				RunID:        "0123456789abcdef",
 				Event:        "pull request",
 			},
 			wantErr: true,
@@ -184,7 +184,7 @@ func TestRunConfig_Validate(t *testing.T) {
 			config: &RunConfig{
 				RepoRoot:     tmpDir,
 				WorkflowPath: validWorkflowPath,
-				RunID:        "12345678-1234-1234-1234-123456789abc",
+				RunID:        "0123456789abcdef",
 				Event:        "push.event",
 			},
 			wantErr: true,
@@ -195,7 +195,7 @@ func TestRunConfig_Validate(t *testing.T) {
 			config: &RunConfig{
 				RepoRoot:     tmpDir,
 				WorkflowPath: validWorkflowPath,
-				RunID:        "12345678-1234-1234-1234-123456789abc",
+				RunID:        "0123456789abcdef",
 				Event:        "push/test",
 			},
 			wantErr: true,
@@ -240,7 +240,7 @@ func TestRunConfig_Validate_SymlinkRejection(t *testing.T) {
 	cfg := &RunConfig{
 		RepoRoot:     tmpDir,
 		WorkflowPath: symlinkPath,
-		RunID:        "12345678-1234-1234-1234-123456789abc",
+		RunID:        "0123456789abcdef",
 		Event:        "push",
 	}
 
@@ -265,7 +265,7 @@ func TestRunConfig_Validate_DefaultEvent(t *testing.T) {
 	cfg := &RunConfig{
 		RepoRoot:     tmpDir,
 		WorkflowPath: workflowPath,
-		RunID:        "12345678-1234-1234-1234-123456789abc",
+		RunID:        "0123456789abcdef",
 		Event:        "",
 	}
 

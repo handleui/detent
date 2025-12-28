@@ -34,6 +34,32 @@ func GetCurrentTreeHash(repoRoot string) (string, error) {
 	return strings.TrimSpace(string(output)), nil
 }
 
+// Refs contains the commit SHA and tree hash for the current HEAD.
+type Refs struct {
+	CommitSHA string // Full SHA of HEAD commit
+	TreeHash  string // Tree hash representing file content state
+}
+
+// GetCurrentRefs retrieves both the commit SHA and tree hash in a single git call.
+// This is more efficient than calling GetCurrentCommitSHA and GetCurrentTreeHash separately.
+func GetCurrentRefs(repoRoot string) (*Refs, error) {
+	// #nosec G204 - repoRoot is from user's repository
+	cmd := exec.Command("git", "-c", "core.hooksPath=/dev/null", "-C", repoRoot, "rev-parse", "HEAD", "HEAD^{tree}")
+	cmd.Env = safeGitEnv()
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get git refs: %w", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	if len(lines) != 2 {
+		return nil, fmt.Errorf("unexpected git rev-parse output: expected 2 lines, got %d", len(lines))
+	}
+	return &Refs{
+		CommitSHA: lines[0],
+		TreeHash:  lines[1],
+	}, nil
+}
+
 // GetFirstCommitSHA retrieves the SHA of the first (root) commit in the repository.
 // This is immutable and unique per repository, useful for identifying repos.
 // Returns empty string if the repository has no commits.
