@@ -3,8 +3,10 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/detent/cli/internal/git"
 	"github.com/detent/cli/internal/runner"
 	"github.com/detent/cli/internal/signal"
 	"github.com/spf13/cobra"
@@ -13,6 +15,7 @@ import (
 const (
 	brandingColor = "42"  // Green - matches colorSuccess in TUI
 	commandColor  = "15"  // Pure white for command name
+	contextColor  = "241" // Gray - matches hintTextGray in TUI
 )
 
 var (
@@ -26,6 +29,8 @@ var (
 		Foreground(lipgloss.Color(brandingColor))
 	commandStyle = lipgloss.NewStyle().
 		Foreground(lipgloss.Color(commandColor))
+	contextStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color(contextColor))
 )
 
 var rootCmd = &cobra.Command{
@@ -47,6 +52,13 @@ Requirements:
 		versionText := brandingStyle.Render(fmt.Sprintf("Detent v%s", Version))
 		commandText := commandStyle.Render(cmd.Name())
 		fmt.Printf("%s %s\n", versionText, commandText)
+
+		repoRoot, err := filepath.Abs(".")
+		if err == nil {
+			if branch, branchErr := git.GetCurrentBranch(repoRoot); branchErr == nil {
+				fmt.Printf("%s\n\n", contextStyle.Render(fmt.Sprintf("└─ on branch %s", branch)))
+			}
+		}
 	},
 }
 

@@ -1,14 +1,18 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 
 	"github.com/detent/cli/internal/git"
+	"github.com/detent/cli/internal/heal/client"
 	"github.com/detent/cli/internal/persistence"
 	"github.com/spf13/cobra"
 )
+
+var testAPI bool
 
 var healCmd = &cobra.Command{
 	Use:   "heal",
@@ -36,9 +40,15 @@ so heal can reuse existing worktrees created by check.`,
 
 func init() {
 	healCmd.Flags().BoolVarP(&forceRun, "force", "f", false, "force fresh check run")
+	healCmd.Flags().BoolVar(&testAPI, "test", false, "test Claude API connection")
 }
 
 func runHeal(cmd *cobra.Command, args []string) error {
+	// Handle --test flag
+	if testAPI {
+		return runHealTest(cmd.Context())
+	}
+
 	// Resolve repository path
 	repoPath, err := filepath.Abs(".")
 	if err != nil {
@@ -97,5 +107,27 @@ func runHeal(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Worktree ready at: %s\n", worktreePath)
 	fmt.Println("\nAI healing loop not yet implemented")
 
+	return nil
+}
+
+// runHealTest tests the Claude API connection.
+func runHealTest(ctx context.Context) error {
+	config, err := persistence.LoadGlobalConfig()
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+
+	c, err := client.New(config.AnthropicAPIKey)
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintf(os.Stderr, "Testing Claude API connection...\n")
+	response, err := c.Test(ctx)
+	if err != nil {
+		return fmt.Errorf("API test failed: %w", err)
+	}
+
+	fmt.Printf("Claude says: %s\n", response)
 	return nil
 }

@@ -79,6 +79,19 @@ func GetFirstCommitSHA(repoRoot string) (string, error) {
 	return lines[0], nil
 }
 
+// GetCurrentBranch retrieves the current git branch name.
+// Returns "(HEAD detached)" if in detached HEAD state.
+func GetCurrentBranch(repoRoot string) (string, error) {
+	// #nosec G204 - repoRoot is from user's repository
+	cmd := exec.Command("git", "-c", "core.hooksPath=/dev/null", "-C", repoRoot, "symbolic-ref", "--short", "HEAD")
+	cmd.Env = safeGitEnv()
+	output, err := cmd.Output()
+	if err != nil {
+		return "(HEAD detached)", nil
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
 // GetRemoteURL retrieves the URL of the origin remote.
 // Returns empty string if no origin remote exists (e.g., local-only repo).
 func GetRemoteURL(repoRoot string) (string, error) {

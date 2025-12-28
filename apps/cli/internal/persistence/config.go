@@ -16,8 +16,9 @@ const (
 // GlobalConfig holds user-level settings for detent.
 // Stored in ~/.detent/config.yaml
 type GlobalConfig struct {
-	Model        string  `yaml:"model,omitempty"`
-	CostLimitUSD float64 `yaml:"cost_limit_usd,omitempty"`
+	Model           string  `yaml:"model,omitempty"`
+	CostLimitUSD    float64 `yaml:"cost_limit_usd,omitempty"`
+	AnthropicAPIKey string  `yaml:"anthropic_api_key,omitempty"`
 }
 
 // GetDetentDir returns the global detent directory path (~/.detent).
