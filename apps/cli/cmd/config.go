@@ -74,13 +74,10 @@ func runConfigShow(_ *cobra.Command, _ []string) error {
 	fmt.Println()
 	fmt.Printf("%s\n\n", configTextStyle.Render("Current Configuration"))
 
-	// API Key (masked)
+	// API Key (masked - show only last 4 chars for security)
 	apiKeyDisplay := configDimStyle.Render("(not set)")
 	if cfg.AnthropicAPIKey != "" {
-		masked := cfg.AnthropicAPIKey
-		if len(masked) > 12 {
-			masked = masked[:8] + "..." + masked[len(masked)-4:]
-		}
+		masked := "****" + cfg.AnthropicAPIKey[max(0, len(cfg.AnthropicAPIKey)-4):]
 		apiKeyDisplay = configValueStyle.Render(masked)
 	}
 	fmt.Printf("  %s %s\n", configKeyStyle.Render("anthropic_api_key:"), apiKeyDisplay)
@@ -129,8 +126,15 @@ func runConfigReset(_ *cobra.Command, _ []string) error {
 
 	fmt.Printf("%s %s\n", configSuccessStyle.Render("+"), configTextStyle.Render("Configuration reset to defaults"))
 
-	// Show the new config
-	data, _ := yaml.Marshal(newCfg)
+	// Show the new config (mask API key for security)
+	displayCfg := *newCfg
+	if displayCfg.AnthropicAPIKey != "" {
+		displayCfg.AnthropicAPIKey = "****" + displayCfg.AnthropicAPIKey[max(0, len(displayCfg.AnthropicAPIKey)-4):]
+	}
+	data, err := yaml.Marshal(displayCfg)
+	if err != nil {
+		return fmt.Errorf("marshaling config for display: %w", err)
+	}
 	fmt.Printf("\n%s\n", configDimStyle.Render(string(data)))
 
 	return nil

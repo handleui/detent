@@ -6,11 +6,14 @@ import (
 	"os"
 	"path/filepath"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/detent/cli/internal/git"
 	"github.com/detent/cli/internal/persistence"
 	"github.com/detent/cli/internal/runner"
 	"github.com/detent/cli/internal/signal"
+	"github.com/detent/cli/internal/tui"
+	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 )
 
@@ -58,8 +61,11 @@ Requirements:
 	Version: Version,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		// Skip config loading for config subcommands (they handle it themselves)
-		if cmd.Name() == "config" || (cmd.Parent() != nil && cmd.Parent().Name() == "config") {
-			return nil
+		// Walk up the command tree to check if any parent is the config command
+		for c := cmd; c != nil; c = c.Parent() {
+			if c == configCmd {
+				return nil
+			}
 		}
 
 		// Print branding
@@ -117,4 +123,55 @@ func init() {
 {{with (or .Long .Short)}}{{. | trimTrailingWhitespaces}}
 
 {{end}}{{if or .Runnable .HasSubCommands}}{{.UsageString}}{{end}}`, brandingStyle.Render(fmt.Sprintf("Detent v%s", Version))))
+}
+
+// ensureAPIKey checks for API key and prompts interactively if missing.
+// Uses globalConfig and saves the key if prompted.
+// Returns the API key or an error if unavailable.
+func ensureAPIKey() (string, error) {
+	if globalConfig == nil {
+		// This indicates a programming error - config should always be loaded
+		// before commands that need API keys are run
+		return "", fmt.Errorf("internal error: configuration not initialized")
+	}
+
+	// Check existing key (config takes precedence over env)
+	existingKey := persistence.ResolveAPIKey(globalConfig.AnthropicAPIKey)
+	if existingKey != "" {
+		return existingKey, nil
+	}
+
+	// No key found - prompt if interactive terminal
+	if !isatty.IsTerminal(os.Stdin.Fd()) {
+		return "", fmt.Errorf("no API key found: set ANTHROPIC_API_KEY environment variable or run 'detent config show' for configuration options")
+	}
+
+	// Show interactive prompt
+	model := tui.NewAPIKeyPromptModel()
+	program := tea.NewProgram(model)
+
+	if _, runErr := program.Run(); runErr != nil {
+		return "", fmt.Errorf("prompt failed: %w", runErr)
+	}
+
+	result := model.GetResult()
+	if result == nil || result.Cancelled {
+		return "", fmt.Errorf("API key input cancelled")
+	}
+
+	// Save key to global config (create a copy to avoid partial state on error)
+	updatedConfig := *globalConfig
+	updatedConfig.AnthropicAPIKey = result.Key
+	if saveErr := persistence.SaveGlobalConfig(&updatedConfig); saveErr != nil {
+		return "", fmt.Errorf("failed to save API key: %w", saveErr)
+	}
+
+	// Only update the global after successful save
+	globalConfig.AnthropicAPIKey = result.Key
+
+	fmt.Fprintf(os.Stderr, "%s %s\n\n",
+		brandingStyle.Render("+"),
+		contextStyle.Render("API key saved to configuration"))
+
+	return result.Key, nil
 }

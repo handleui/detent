@@ -88,8 +88,8 @@ func (t *toolTracker) hasErrors() bool {
 }
 
 func runFrankenstein(cmd *cobra.Command, _ []string) error {
-	// Use globalConfig from root.go
-	apiKey, err := ensureAPIKey(globalConfig)
+	// Ensure API key is available
+	apiKey, err := ensureAPIKey()
 	if err != nil {
 		return err
 	}
@@ -148,14 +148,13 @@ func runFrankenstein(cmd *cobra.Command, _ []string) error {
 			frankensteinTextStyle.Render("Testing AI tools..."))
 	}
 
-	// Run the test loop
-	ctx, cancel := context.WithTimeout(cmd.Context(), 60*time.Second)
-	defer cancel()
-
+	// Run the test loop with appropriate timeout
+	timeout := 60 * time.Second
 	if monsterMode {
-		ctx, cancel = context.WithTimeout(cmd.Context(), 120*time.Second)
-		defer cancel()
+		timeout = 120 * time.Second
 	}
+	ctx, cancel := context.WithTimeout(cmd.Context(), timeout)
+	defer cancel()
 
 	err = runFrankensteinLoop(ctx, c.API(), registry, tracker, systemPrompt, userPrompt)
 	if err != nil {

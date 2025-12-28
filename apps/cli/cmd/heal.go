@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/detent/cli/internal/git"
 	"github.com/detent/cli/internal/heal/client"
@@ -15,8 +14,6 @@ import (
 	"github.com/detent/cli/internal/heal/prompt"
 	"github.com/detent/cli/internal/heal/tools"
 	"github.com/detent/cli/internal/persistence"
-	"github.com/detent/cli/internal/tui"
-	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 )
 
@@ -59,8 +56,8 @@ func init() {
 }
 
 func runHeal(cmd *cobra.Command, args []string) error {
-	// Preflight: ensure API key is available (uses globalConfig from root.go)
-	apiKey, err := ensureAPIKey(globalConfig)
+	// Preflight: ensure API key is available
+	apiKey, err := ensureAPIKey()
 	if err != nil {
 		return err
 	}
@@ -265,43 +262,3 @@ func runHealTest(ctx context.Context, apiKey string) error {
 	return nil
 }
 
-// ensureAPIKey checks for API key and prompts interactively if missing.
-// Returns the API key or an error if unavailable.
-func ensureAPIKey(config *persistence.GlobalConfig) (string, error) {
-	// Check existing key (config takes precedence over env)
-	existingKey := persistence.ResolveAPIKey(config.AnthropicAPIKey)
-	if existingKey != "" {
-		return existingKey, nil
-	}
-
-	// No key found - prompt if interactive terminal
-	if !isatty.IsTerminal(os.Stdin.Fd()) {
-		return "", fmt.Errorf("no API key: set ANTHROPIC_API_KEY env var or add anthropic_api_key to ~/.detent/config.yaml")
-	}
-
-	// Show interactive prompt
-	model := tui.NewAPIKeyPromptModel()
-	program := tea.NewProgram(model)
-
-	if _, runErr := program.Run(); runErr != nil {
-		return "", fmt.Errorf("prompt failed: %w", runErr)
-	}
-
-	result := model.GetResult()
-	if result == nil || result.Cancelled {
-		return "", fmt.Errorf("API key input cancelled")
-	}
-
-	// Save key to global config
-	config.AnthropicAPIKey = result.Key
-	if saveErr := persistence.SaveGlobalConfig(config); saveErr != nil {
-		return "", fmt.Errorf("saving config: %w", saveErr)
-	}
-
-	fmt.Fprintf(os.Stderr, "%s %s %s\n\n",
-		healSuccessStyle.Render("+"),
-		healTextStyle.Render("API key saved to"),
-		healDimStyle.Render("~/.detent/config.yaml"))
-
-	return result.Key, nil
-}
