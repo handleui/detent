@@ -2,11 +2,19 @@ package client
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
+)
+
+const (
+	// defaultRequestTimeout is the per-request timeout for API calls.
+	// This applies to each retry attempt individually.
+	defaultRequestTimeout = 30 * time.Second
 )
 
 // Client wraps the Anthropic SDK for healing operations.
@@ -15,18 +23,22 @@ type Client struct {
 }
 
 // New creates a new Anthropic client.
-// API key is resolved in order: ANTHROPIC_API_KEY env var > config file.
+// API key is resolved in order: config file > ANTHROPIC_API_KEY env var.
+// If user explicitly sets key in config, that takes precedence (intentional override).
 func New(configAPIKey string) (*Client, error) {
-	key := os.Getenv("ANTHROPIC_API_KEY")
+	key := configAPIKey
 	if key == "" {
-		key = configAPIKey
+		key = os.Getenv("ANTHROPIC_API_KEY")
 	}
 	if key == "" {
 		return nil, fmt.Errorf("no API key: set ANTHROPIC_API_KEY env var or add anthropic_api_key to ~/.detent/config.yaml")
 	}
 
 	return &Client{
-		api: anthropic.NewClient(option.WithAPIKey(key)),
+		api: anthropic.NewClient(
+			option.WithAPIKey(key),
+			option.WithRequestTimeout(defaultRequestTimeout),
+		),
 	}, nil
 }
 
@@ -41,13 +53,37 @@ func (c *Client) Test(ctx context.Context) (string, error) {
 		},
 	})
 	if err != nil {
-		return "", fmt.Errorf("API request failed: %w", err)
+		return "", formatAPIError(err)
 	}
 
+	// Use index-based iteration to avoid copying 600-byte blocks per iteration.
+	// gocritic rangeValCopy flags this if we use `for _, block := range`.
 	for i := range msg.Content {
 		if text, ok := msg.Content[i].AsAny().(anthropic.TextBlock); ok {
 			return text.Text, nil
 		}
 	}
 	return "", fmt.Errorf("no text response from Claude")
+}
+
+// formatAPIError provides user-friendly error messages for Anthropic API errors.
+func formatAPIError(err error) error {
+	var apiErr *anthropic.Error
+	if errors.As(err, &apiErr) {
+		switch apiErr.StatusCode {
+		case 401:
+			return fmt.Errorf("invalid API key: check your ANTHROPIC_API_KEY or ~/.detent/config.yaml")
+		case 403:
+			return fmt.Errorf("API key lacks permission: %w", err)
+		case 429:
+			return fmt.Errorf("rate limited: too many requests, try again later")
+		case 500, 502, 503:
+			return fmt.Errorf("anthropic API unavailable (status %d): try again later", apiErr.StatusCode)
+		case 529:
+			return fmt.Errorf("anthropic API overloaded: try again later")
+		default:
+			return fmt.Errorf("API error (status %d): %w", apiErr.StatusCode, err)
+		}
+	}
+	return fmt.Errorf("API request failed: %w", err)
 }
