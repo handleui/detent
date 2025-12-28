@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -22,21 +21,16 @@ type Client struct {
 	api anthropic.Client
 }
 
-// New creates a new Anthropic client.
-// API key is resolved in order: config file > ANTHROPIC_API_KEY env var.
-// If user explicitly sets key in config, that takes precedence (intentional override).
-func New(configAPIKey string) (*Client, error) {
-	key := configAPIKey
-	if key == "" {
-		key = os.Getenv("ANTHROPIC_API_KEY")
-	}
-	if key == "" {
-		return nil, fmt.Errorf("no API key: set ANTHROPIC_API_KEY env var or add anthropic_api_key to ~/.detent/config.yaml")
+// New creates a new Anthropic client with the provided API key.
+// The key should already be resolved via persistence.ResolveAPIKey().
+func New(apiKey string) (*Client, error) {
+	if apiKey == "" {
+		return nil, fmt.Errorf("no API key provided")
 	}
 
 	return &Client{
 		api: anthropic.NewClient(
-			option.WithAPIKey(key),
+			option.WithAPIKey(apiKey),
 			option.WithRequestTimeout(defaultRequestTimeout),
 		),
 	}, nil

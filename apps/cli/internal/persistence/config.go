@@ -65,6 +65,16 @@ func LoadGlobalConfig() (*GlobalConfig, error) {
 	return &cfg, nil
 }
 
+// ResolveAPIKey returns the API key from config or environment.
+// Config takes precedence (if user explicitly sets it, respect that).
+// Returns empty string if no key is found.
+func ResolveAPIKey(configKey string) string {
+	if configKey != "" {
+		return configKey
+	}
+	return os.Getenv("ANTHROPIC_API_KEY")
+}
+
 // SaveGlobalConfig saves the global configuration to ~/.detent/config.yaml.
 // Creates the ~/.detent directory if it does not exist.
 func SaveGlobalConfig(cfg *GlobalConfig) error {

@@ -6,9 +6,12 @@ import (
 	"os"
 	"path/filepath"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/detent/cli/internal/git"
 	"github.com/detent/cli/internal/heal/client"
 	"github.com/detent/cli/internal/persistence"
+	"github.com/detent/cli/internal/tui"
+	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 )
 
@@ -44,9 +47,15 @@ func init() {
 }
 
 func runHeal(cmd *cobra.Command, args []string) error {
+	// Preflight: ensure API key is available
+	apiKey, err := ensureAPIKey()
+	if err != nil {
+		return err
+	}
+
 	// Handle --test flag
 	if testAPI {
-		return runHealTest(cmd.Context())
+		return runHealTest(cmd.Context(), apiKey)
 	}
 
 	// Resolve repository path
@@ -111,13 +120,8 @@ func runHeal(cmd *cobra.Command, args []string) error {
 }
 
 // runHealTest tests the Claude API connection.
-func runHealTest(ctx context.Context) error {
-	config, err := persistence.LoadGlobalConfig()
-	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
-	}
-
-	c, err := client.New(config.AnthropicAPIKey)
+func runHealTest(ctx context.Context, apiKey string) error {
+	c, err := client.New(apiKey)
 	if err != nil {
 		return err
 	}
@@ -130,4 +134,46 @@ func runHealTest(ctx context.Context) error {
 
 	fmt.Printf("Claude says: %s\n", response)
 	return nil
+}
+
+// ensureAPIKey checks for API key and prompts interactively if missing.
+// Returns the API key or an error if unavailable.
+func ensureAPIKey() (string, error) {
+	config, err := persistence.LoadGlobalConfig()
+	if err != nil {
+		return "", fmt.Errorf("loading config: %w", err)
+	}
+
+	// Check existing key (config takes precedence over env)
+	existingKey := persistence.ResolveAPIKey(config.AnthropicAPIKey)
+	if existingKey != "" {
+		return existingKey, nil
+	}
+
+	// No key found - prompt if interactive terminal
+	if !isatty.IsTerminal(os.Stdin.Fd()) {
+		return "", fmt.Errorf("no API key: set ANTHROPIC_API_KEY env var or add anthropic_api_key to ~/.detent/config.yaml")
+	}
+
+	// Show interactive prompt
+	model := tui.NewAPIKeyPromptModel()
+	program := tea.NewProgram(model)
+
+	if _, runErr := program.Run(); runErr != nil {
+		return "", fmt.Errorf("prompt failed: %w", runErr)
+	}
+
+	result := model.GetResult()
+	if result == nil || result.Cancelled {
+		return "", fmt.Errorf("API key input cancelled")
+	}
+
+	// Save key to global config
+	config.AnthropicAPIKey = result.Key
+	if saveErr := persistence.SaveGlobalConfig(config); saveErr != nil {
+		return "", fmt.Errorf("saving config: %w", saveErr)
+	}
+
+	fmt.Fprintf(os.Stderr, "API key saved to ~/.detent/config.yaml\n\n")
+	return result.Key, nil
 }
