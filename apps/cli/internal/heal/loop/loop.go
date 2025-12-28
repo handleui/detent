@@ -8,6 +8,7 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/detent/cli/internal/heal/tools"
+	"github.com/detent/cli/internal/persistence"
 )
 
 const (
@@ -39,6 +40,18 @@ func DefaultConfig() Config {
 		MaxTokens:     DefaultMaxTokens,
 		Timeout:       DefaultTimeout,
 		Model:         DefaultModel,
+	}
+}
+
+// ConfigFromHealConfig creates a loop Config from a persistence.HealConfig.
+// Applies defaults for any zero values.
+func ConfigFromHealConfig(hc persistence.HealConfig) Config {
+	hc = hc.WithDefaults()
+	return Config{
+		MaxIterations: hc.MaxIterations,
+		MaxTokens:     hc.MaxTokens,
+		Timeout:       time.Duration(hc.TimeoutMins) * time.Minute,
+		Model:         anthropic.Model(hc.Model),
 	}
 }
 

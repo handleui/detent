@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/goccy/go-yaml"
 )
@@ -16,9 +17,62 @@ const (
 // GlobalConfig holds user-level settings for detent.
 // Stored in ~/.detent/config.yaml
 type GlobalConfig struct {
-	Model           string  `yaml:"model,omitempty"`
-	CostLimitUSD    float64 `yaml:"cost_limit_usd,omitempty"`
-	AnthropicAPIKey string  `yaml:"anthropic_api_key,omitempty"`
+	AnthropicAPIKey string `yaml:"anthropic_api_key,omitempty"`
+
+	// Heal settings
+	Heal HealConfig `yaml:"heal,omitempty"`
+}
+
+// HealConfig contains settings for the heal command.
+type HealConfig struct {
+	Model         string `yaml:"model,omitempty"`          // Model to use (claude-sonnet-4-5, claude-opus-4-5, claude-haiku-4-5)
+	MaxIterations int    `yaml:"max_iterations,omitempty"` // Maximum tool call rounds (default: 20, min: 1, max: 100)
+	MaxTokens     int    `yaml:"max_tokens,omitempty"`     // Max tokens per response (default: 4096, min: 100, max: 32768)
+	TimeoutMins   int    `yaml:"timeout_mins,omitempty"`   // Total timeout in minutes (default: 10, min: 1, max: 60)
+}
+
+// HealConfig validation bounds.
+const (
+	minMaxIterations = 1
+	maxMaxIterations = 100
+	minMaxTokens     = 100
+	maxMaxTokens     = 32768
+	minTimeoutMins   = 1
+	maxTimeoutMins   = 60
+
+	modelPrefix = "claude-"
+)
+
+// DefaultHealConfig returns the default heal configuration.
+func DefaultHealConfig() HealConfig {
+	return HealConfig{
+		Model:         "claude-sonnet-4-5",
+		MaxIterations: 20,
+		MaxTokens:     4096,
+		TimeoutMins:   10,
+	}
+}
+
+// WithDefaults returns a HealConfig with defaults applied for zero/invalid values.
+// Values outside valid bounds are clamped to the nearest bound.
+// Invalid model names are reset to the default.
+func (h HealConfig) WithDefaults() HealConfig {
+	defaults := DefaultHealConfig()
+	if h.Model == "" || !strings.HasPrefix(h.Model, modelPrefix) {
+		h.Model = defaults.Model
+	}
+	h.MaxIterations = clampInt(h.MaxIterations, minMaxIterations, maxMaxIterations, defaults.MaxIterations)
+	h.MaxTokens = clampInt(h.MaxTokens, minMaxTokens, maxMaxTokens, defaults.MaxTokens)
+	h.TimeoutMins = clampInt(h.TimeoutMins, minTimeoutMins, maxTimeoutMins, defaults.TimeoutMins)
+	return h
+}
+
+// clampInt clamps a value to [minVal, maxVal] range, using defaultVal if value is <= 0.
+func clampInt(value, minVal, maxVal, defaultVal int) int {
+	if value <= 0 {
+		return defaultVal
+	}
+	return max(minVal, min(value, maxVal))
 }
 
 // GetDetentDir returns the global detent directory path (~/.detent).
@@ -41,7 +95,7 @@ func GetConfigPath() (string, error) {
 }
 
 // LoadGlobalConfig loads the global configuration from ~/.detent/config.yaml.
-// Returns an empty config if the file does not exist.
+// If the file does not exist, creates it with default values.
 func LoadGlobalConfig() (*GlobalConfig, error) {
 	configPath, err := GetConfigPath()
 	if err != nil {
@@ -52,7 +106,13 @@ func LoadGlobalConfig() (*GlobalConfig, error) {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return &GlobalConfig{}, nil
+			// Create config with defaults
+			cfg := &GlobalConfig{
+				Heal: DefaultHealConfig(),
+			}
+			// Try to save it (ignore errors - config dir might not exist yet)
+			_ = SaveGlobalConfig(cfg)
+			return cfg, nil
 		}
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}

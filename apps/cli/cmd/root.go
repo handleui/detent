@@ -72,6 +72,7 @@ func init() {
 	rootCmd.AddCommand(checkCmd)
 	rootCmd.AddCommand(healCmd)
 	rootCmd.AddCommand(injectCmd)
+	rootCmd.AddCommand(frankensteinCmd)
 
 	// Persistent flags available to all commands
 	rootCmd.PersistentFlags().StringVarP(&workflowsDir, "workflows", "w", runner.WorkflowsDir, "workflows directory path")

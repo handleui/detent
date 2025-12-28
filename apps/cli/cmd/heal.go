@@ -59,14 +59,23 @@ func init() {
 }
 
 func runHeal(cmd *cobra.Command, args []string) error {
+	// Load global config
+	config, err := persistence.LoadGlobalConfig()
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+
 	// Preflight: ensure API key is available
-	apiKey, err := ensureAPIKey()
+	apiKey, err := ensureAPIKey(config)
 	if err != nil {
 		return err
 	}
 
-	// Handle --test flag
+	// Handle --test flag (deprecated)
 	if testAPI {
+		fmt.Fprintf(os.Stderr, "%s %s\n",
+			lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render("⚠"),
+			healTextStyle.Render("--test is deprecated, use 'dt frankenstein' instead"))
 		return runHealTest(cmd.Context(), apiKey)
 	}
 
@@ -156,8 +165,9 @@ func runHeal(cmd *cobra.Command, args []string) error {
 	// Build user prompt from errors
 	userPrompt := buildUserPrompt(errors)
 
-	// Create and run healing loop
-	healLoop := loop.New(c.API(), registry, loop.DefaultConfig())
+	// Create and run healing loop with config from global settings
+	loopConfig := loop.ConfigFromHealConfig(config.Heal)
+	healLoop := loop.New(c.API(), registry, loopConfig)
 
 	fmt.Fprintf(os.Stderr, "%s %s\n",
 		healDimStyle.Render(">"),
@@ -263,12 +273,7 @@ func runHealTest(ctx context.Context, apiKey string) error {
 
 // ensureAPIKey checks for API key and prompts interactively if missing.
 // Returns the API key or an error if unavailable.
-func ensureAPIKey() (string, error) {
-	config, err := persistence.LoadGlobalConfig()
-	if err != nil {
-		return "", fmt.Errorf("loading config: %w", err)
-	}
-
+func ensureAPIKey(config *persistence.GlobalConfig) (string, error) {
 	// Check existing key (config takes precedence over env)
 	existingKey := persistence.ResolveAPIKey(config.AnthropicAPIKey)
 	if existingKey != "" {
