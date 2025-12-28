@@ -3,12 +3,34 @@ package persistence
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
 
+// setupTestDetentHome sets DETENT_HOME to a temp directory for test isolation.
+// Returns a cleanup function that restores the original value.
+func setupTestDetentHome(t *testing.T) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	original := os.Getenv(DetentHomeEnv)
+	if err := os.Setenv(DetentHomeEnv, tmpDir); err != nil {
+		t.Fatalf("Failed to set %s: %v", DetentHomeEnv, err)
+	}
+	t.Cleanup(func() {
+		if original == "" {
+			os.Unsetenv(DetentHomeEnv)
+		} else {
+			os.Setenv(DetentHomeEnv, original)
+		}
+		// Clear repo ID cache to avoid cross-test pollution
+		repoIDCache = sync.Map{}
+	})
+}
+
 // TestNewSQLiteWriter tests the creation of a new SQLite writer
 func TestNewSQLiteWriter(t *testing.T) {
+	setupTestDetentHome(t)
 	tmpDir := t.TempDir()
 
 	// Create a git repo in tmpDir for ComputeRepoID to work
@@ -61,6 +83,7 @@ func TestNewSQLiteWriter(t *testing.T) {
 
 // TestSQLiteWriter_initSchema tests schema initialization
 func TestSQLiteWriter_initSchema(t *testing.T) {
+	setupTestDetentHome(t)
 	tmpDir := t.TempDir()
 	writer, err := NewSQLiteWriter(tmpDir)
 	if err != nil {
@@ -104,6 +127,7 @@ func TestSQLiteWriter_initSchema(t *testing.T) {
 
 // TestSQLiteWriter_RecordRun tests run recording
 func TestSQLiteWriter_RecordRun(t *testing.T) {
+	setupTestDetentHome(t)
 	tmpDir := t.TempDir()
 	writer, err := NewSQLiteWriter(tmpDir)
 	if err != nil {
@@ -142,6 +166,7 @@ func TestSQLiteWriter_RecordRun(t *testing.T) {
 
 // TestSQLiteWriter_RecordError_WithFlush tests error recording with manual flush
 func TestSQLiteWriter_RecordError_WithFlush(t *testing.T) {
+	setupTestDetentHome(t)
 	tmpDir := t.TempDir()
 	writer, err := NewSQLiteWriter(tmpDir)
 	if err != nil {
@@ -187,6 +212,7 @@ func TestSQLiteWriter_RecordError_WithFlush(t *testing.T) {
 
 // TestSQLiteWriter_RecordError_Deduplication tests deduplication logic
 func TestSQLiteWriter_RecordError_Deduplication(t *testing.T) {
+	setupTestDetentHome(t)
 	tmpDir := t.TempDir()
 	writer, err := NewSQLiteWriter(tmpDir)
 	if err != nil {
@@ -242,6 +268,7 @@ func TestSQLiteWriter_RecordError_Deduplication(t *testing.T) {
 
 // TestSQLiteWriter_FinalizeRun tests run finalization
 func TestSQLiteWriter_FinalizeRun(t *testing.T) {
+	setupTestDetentHome(t)
 	tmpDir := t.TempDir()
 	writer, err := NewSQLiteWriter(tmpDir)
 	if err != nil {
@@ -292,6 +319,7 @@ func TestSQLiteWriter_FinalizeRun(t *testing.T) {
 
 // TestSQLiteWriter_ErrorFields tests that all error fields are properly stored
 func TestSQLiteWriter_ErrorFields(t *testing.T) {
+	setupTestDetentHome(t)
 	tmpDir := t.TempDir()
 	writer, err := NewSQLiteWriter(tmpDir)
 	if err != nil {
@@ -375,6 +403,7 @@ func TestSQLiteWriter_ErrorFields(t *testing.T) {
 
 // TestSQLiteWriter_FlushBatch tests manual batch flushing
 func TestSQLiteWriter_FlushBatch(t *testing.T) {
+	setupTestDetentHome(t)
 	tmpDir := t.TempDir()
 	writer, err := NewSQLiteWriter(tmpDir)
 	if err != nil {
@@ -427,6 +456,7 @@ func TestSQLiteWriter_FlushBatch(t *testing.T) {
 
 // TestSQLiteWriter_LastSeenAtUpdates tests that last_seen_at is updated correctly
 func TestSQLiteWriter_LastSeenAtUpdates(t *testing.T) {
+	setupTestDetentHome(t)
 	tmpDir := t.TempDir()
 	writer, err := NewSQLiteWriter(tmpDir)
 	if err != nil {
@@ -518,6 +548,7 @@ func TestCreateDirIfNotExists(t *testing.T) {
 
 // TestSQLiteWriter_SchemaMigration tests schema versioning and migration
 func TestSQLiteWriter_SchemaMigration(t *testing.T) {
+	setupTestDetentHome(t)
 	tmpDir := t.TempDir()
 
 	// Create initial writer (should apply all migrations)
@@ -585,6 +616,7 @@ func TestSQLiteWriter_SchemaMigration(t *testing.T) {
 
 // TestSQLiteWriter_GetPendingHealByFileHash tests heal caching lookup by file hash
 func TestSQLiteWriter_GetPendingHealByFileHash(t *testing.T) {
+	setupTestDetentHome(t)
 	tmpDir := t.TempDir()
 	writer, err := NewSQLiteWriter(tmpDir)
 	if err != nil {
@@ -676,6 +708,7 @@ func TestSQLiteWriter_GetPendingHealByFileHash(t *testing.T) {
 
 // TestSQLiteWriter_GetPendingHealByFileHash_StatusFilter tests that only pending heals are returned
 func TestSQLiteWriter_GetPendingHealByFileHash_StatusFilter(t *testing.T) {
+	setupTestDetentHome(t)
 	tmpDir := t.TempDir()
 	writer, err := NewSQLiteWriter(tmpDir)
 	if err != nil {
@@ -766,6 +799,7 @@ func TestSQLiteWriter_GetPendingHealByFileHash_StatusFilter(t *testing.T) {
 
 // TestSQLiteWriter_GetPendingHealByFileHash_MostRecent tests that the most recent pending heal is returned
 func TestSQLiteWriter_GetPendingHealByFileHash_MostRecent(t *testing.T) {
+	setupTestDetentHome(t)
 	tmpDir := t.TempDir()
 	writer, err := NewSQLiteWriter(tmpDir)
 	if err != nil {
@@ -847,6 +881,7 @@ func TestSQLiteWriter_GetPendingHealByFileHash_MostRecent(t *testing.T) {
 
 // TestSQLiteWriter_RecordHeal_WithFileHash tests that file_hash is properly stored
 func TestSQLiteWriter_RecordHeal_WithFileHash(t *testing.T) {
+	setupTestDetentHome(t)
 	tmpDir := t.TempDir()
 	writer, err := NewSQLiteWriter(tmpDir)
 	if err != nil {

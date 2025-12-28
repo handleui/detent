@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/goccy/go-yaml"
 )
@@ -12,7 +13,23 @@ import (
 const (
 	detentDirName  = ".detent"
 	configFileName = "config.yaml"
+
+	// DetentHomeEnv is the environment variable that overrides the default detent directory.
+	// Used for testing to avoid polluting ~/.detent with test data.
+	DetentHomeEnv = "DETENT_HOME"
 )
+
+// TrustedRepo stores trust information for a repository.
+// The key in the TrustedRepos map is the first commit SHA (immutable identifier).
+//
+// SECURITY NOTE: Using first commit SHA means forked repos inherit trust from their
+// parent. This is intentional: users trust a codebase lineage, not a location.
+// A fork shares the same commit history, so inheriting trust is consistent.
+type TrustedRepo struct {
+	RemoteURL       string    `yaml:"remote_url,omitempty"`       // For display only (e.g., "github.com/user/repo")
+	TrustedAt       time.Time `yaml:"trusted_at"`
+	ApprovedTargets []string  `yaml:"approved_targets,omitempty"` // User-approved make targets for this repo
+}
 
 // GlobalConfig holds user-level settings for detent.
 // Stored in ~/.detent/config.yaml
@@ -21,6 +38,9 @@ type GlobalConfig struct {
 
 	// Heal settings
 	Heal HealConfig `yaml:"heal,omitempty"`
+
+	// TrustedRepos maps first commit SHA to trust info
+	TrustedRepos map[string]TrustedRepo `yaml:"trusted_repos,omitempty"`
 }
 
 // HealConfig contains settings for the heal command.
@@ -87,7 +107,11 @@ func clampInt(value, minVal, maxVal, defaultVal int) int {
 
 // GetDetentDir returns the global detent directory path (~/.detent).
 // This directory contains user configuration and can be shared with other components.
+// If DETENT_HOME environment variable is set, uses that instead (for testing).
 func GetDetentDir() (string, error) {
+	if override := os.Getenv(DetentHomeEnv); override != "" {
+		return override, nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("failed to get user home directory: %w", err)
@@ -171,4 +195,74 @@ func SaveGlobalConfig(cfg *GlobalConfig) error {
 	}
 
 	return nil
+}
+
+// IsTrustedRepo checks if a repository is trusted by its first commit SHA.
+func (g *GlobalConfig) IsTrustedRepo(firstCommitSHA string) bool {
+	if g.TrustedRepos == nil {
+		return false
+	}
+	_, ok := g.TrustedRepos[firstCommitSHA]
+	return ok
+}
+
+// TrustRepo marks a repository as trusted and saves the config.
+// The firstCommitSHA is the immutable identifier for the repository.
+// The remoteURL is stored for display purposes only.
+// Preserves any existing ApprovedTargets for the repo.
+func (g *GlobalConfig) TrustRepo(firstCommitSHA, remoteURL string) error {
+	if g.TrustedRepos == nil {
+		g.TrustedRepos = make(map[string]TrustedRepo)
+	}
+
+	// Preserve existing approved targets if re-trusting
+	existing := g.TrustedRepos[firstCommitSHA]
+	g.TrustedRepos[firstCommitSHA] = TrustedRepo{
+		RemoteURL:       remoteURL,
+		TrustedAt:       time.Now(),
+		ApprovedTargets: existing.ApprovedTargets,
+	}
+	return SaveGlobalConfig(g)
+}
+
+// IsTargetApprovedForRepo checks if a make target is approved for a specific repo.
+// Case-insensitive comparison.
+func (g *GlobalConfig) IsTargetApprovedForRepo(firstCommitSHA, target string) bool {
+	if g.TrustedRepos == nil {
+		return false
+	}
+	repo, ok := g.TrustedRepos[firstCommitSHA]
+	if !ok {
+		return false
+	}
+	for _, t := range repo.ApprovedTargets {
+		if strings.EqualFold(t, target) {
+			return true
+		}
+	}
+	return false
+}
+
+// ApproveTargetForRepo adds a make target to the approved list for a repo and saves.
+// Stores lowercase for consistent matching. No-op if already approved.
+func (g *GlobalConfig) ApproveTargetForRepo(firstCommitSHA, target string) error {
+	if g.TrustedRepos == nil {
+		return fmt.Errorf("repository not trusted")
+	}
+	repo, ok := g.TrustedRepos[firstCommitSHA]
+	if !ok {
+		return fmt.Errorf("repository not trusted")
+	}
+
+	// Check if already approved
+	for _, t := range repo.ApprovedTargets {
+		if strings.EqualFold(t, target) {
+			return nil // Already approved
+		}
+	}
+
+	// Add to approved targets (store lowercase for consistency)
+	repo.ApprovedTargets = append(repo.ApprovedTargets, strings.ToLower(target))
+	g.TrustedRepos[firstCommitSHA] = repo
+	return SaveGlobalConfig(g)
 }

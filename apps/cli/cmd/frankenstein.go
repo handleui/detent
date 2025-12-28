@@ -16,6 +16,7 @@ import (
 	"github.com/detent/cli/internal/heal/client"
 	"github.com/detent/cli/internal/heal/tools"
 	"github.com/detent/cli/internal/tui"
+	"github.com/handleui/shimmer"
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 )
@@ -100,7 +101,7 @@ func (t *toolTracker) getCallStatus(name string) (called bool, errMsg string, ha
 
 // frankensteinModel is the Bubble Tea model for the frankenstein command.
 type frankensteinModel struct {
-	shimmer       tui.ShimmerModel
+	shimmer       shimmer.Model
 	tracker       *toolTracker
 	expectedTools []string
 	done          bool
@@ -119,7 +120,7 @@ func newFrankensteinModel(tracker *toolTracker, expectedTools []string, monster 
 		text = "Testing AI tools (full)"
 	}
 	return frankensteinModel{
-		shimmer:       tui.NewShimmerModel(text, "#00D787"), // Green matching brandingColor
+		shimmer:       shimmer.New(text, "#00D787"),
 		tracker:       tracker,
 		expectedTools: expectedTools,
 		monster:       monster,
@@ -143,7 +144,7 @@ func (m frankensteinModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.shimmer = m.shimmer.SetLoading(false)
 		return m, tea.Quit
 
-	case tui.ShimmerTickMsg:
+	case shimmer.TickMsg:
 		var cmd tea.Cmd
 		m.shimmer, cmd = m.shimmer.Update(msg)
 		return m, cmd

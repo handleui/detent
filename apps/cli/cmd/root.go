@@ -48,12 +48,12 @@ Requirements:
 			}
 		}
 
-		// Minimal branding: "detent v0.1.0 · branch main"
+		// Branding: "Detent v0.1.0 · branch main"
 		fmt.Println()
 		repoRoot, _ := filepath.Abs(".")
 		branch, _ := git.GetCurrentBranch(repoRoot)
 
-		header := tui.BrandStyle.Render("detent") + " " + tui.MutedStyle.Render("v"+Version)
+		header := tui.BrandStyle.Render("Detent") + " " + tui.MutedStyle.Render("v"+Version)
 		if branch != "" {
 			header += " " + tui.MutedStyle.Render("· "+branch)
 		}
@@ -72,6 +72,12 @@ Requirements:
 			}
 		}
 		globalConfig = cfg
+
+		// Trust check - FIRST thing before any command runs
+		// This ensures we never execute repo code without explicit trust
+		if err := ensureTrustedRepo(); err != nil {
+			return err
+		}
 
 		return nil
 	},
@@ -94,7 +100,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVarP(&workflowsDir, "workflows", "w", runner.WorkflowsDir, "workflows directory path")
 	rootCmd.PersistentFlags().StringVar(&workflowFile, "workflow", "", "specific workflow file (e.g., ci.yml)")
 
-	rootCmd.SetHelpTemplate(`detent v` + Version + `
+	rootCmd.SetHelpTemplate(`Detent v` + Version + `
 {{with (or .Long .Short)}}{{. | trimTrailingWhitespaces}}
 
 {{end}}{{if or .Runnable .HasSubCommands}}{{.UsageString}}{{end}}`)
@@ -147,4 +153,68 @@ func ensureAPIKey() (string, error) {
 	fmt.Fprintf(os.Stderr, "%s API key saved\n\n", tui.SuccessStyle.Render("✓"))
 
 	return result.Key, nil
+}
+
+// ensureTrustedRepo checks if the current repository is trusted, prompts if not.
+// Returns error if user declines trust, not in a git repo, or not interactive.
+func ensureTrustedRepo() error {
+	if globalConfig == nil {
+		return fmt.Errorf("internal error: configuration not initialized")
+	}
+
+	repoRoot, err := filepath.Abs(".")
+	if err != nil {
+		return fmt.Errorf("resolving current directory: %w", err)
+	}
+
+	firstCommitSHA, err := git.GetFirstCommitSHA(repoRoot)
+	if err != nil {
+		return fmt.Errorf("failed to identify repository: %w", err)
+	}
+	if firstCommitSHA == "" {
+		return fmt.Errorf("repository has no commits yet")
+	}
+
+	// Check if already trusted
+	if globalConfig.IsTrustedRepo(firstCommitSHA) {
+		return nil
+	}
+
+	// Not interactive? Fail with instructions
+	if !isatty.IsTerminal(os.Stdin.Fd()) {
+		return fmt.Errorf("repository not trusted: run 'detent check' interactively first")
+	}
+
+	// Show trust prompt
+	remoteURL, _ := git.GetRemoteURL(repoRoot)
+	shortSHA := firstCommitSHA
+	if len(shortSHA) > 12 {
+		shortSHA = shortSHA[:12]
+	}
+
+	model := tui.NewTrustPromptModel(tui.TrustPromptInfo{
+		RemoteURL:      remoteURL,
+		FirstCommitSHA: shortSHA,
+	})
+	program := tea.NewProgram(model)
+
+	if _, runErr := program.Run(); runErr != nil {
+		return fmt.Errorf("trust prompt failed: %w", runErr)
+	}
+
+	result := model.GetResult()
+	if result == nil || result.Cancelled {
+		return fmt.Errorf("trust prompt cancelled")
+	}
+	if !result.Trusted {
+		return fmt.Errorf("repository trust declined")
+	}
+
+	// Save trust to config
+	if trustErr := globalConfig.TrustRepo(firstCommitSHA, remoteURL); trustErr != nil {
+		return fmt.Errorf("failed to save trust: %w", trustErr)
+	}
+
+	fmt.Fprintf(os.Stderr, "%s Repository trusted\n\n", tui.SuccessStyle.Render("✓"))
+	return nil
 }

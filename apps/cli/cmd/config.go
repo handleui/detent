@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/detent/cli/internal/persistence"
 	"github.com/detent/cli/internal/tui"
@@ -90,6 +91,31 @@ func runConfigShow(_ *cobra.Command, _ []string) error {
 		fmt.Printf("  Verbose      %s\n", tui.PrimaryStyle.Render("on"))
 	} else {
 		fmt.Printf("  Verbose      %s\n", tui.MutedStyle.Render("off"))
+	}
+
+	// Section: Trusted Repositories
+	fmt.Printf("\n%s\n", tui.SecondaryStyle.Render("Trusted Repositories"))
+	if len(cfg.TrustedRepos) == 0 {
+		fmt.Printf("  %s\n", tui.MutedStyle.Render("none"))
+	} else {
+		for sha, repo := range cfg.TrustedRepos {
+			shortSHA := sha
+			if len(shortSHA) > 12 {
+				shortSHA = shortSHA[:12]
+			}
+			// Show repo URL or SHA if no URL
+			label := repo.RemoteURL
+			if label == "" {
+				label = shortSHA
+			}
+			fmt.Printf("  %s\n", tui.PrimaryStyle.Render(label))
+
+			// Show approved targets if any
+			if len(repo.ApprovedTargets) > 0 {
+				targets := strings.Join(repo.ApprovedTargets, ", ")
+				fmt.Printf("    targets: %s\n", tui.MutedStyle.Render(targets))
+			}
+		}
 	}
 
 	// Section: File

@@ -1,12 +1,15 @@
 module github.com/detent/cli
 
-go 1.25
+go 1.25.5
 
 require (
+	github.com/anthropics/anthropic-sdk-go v1.19.0
+	github.com/bmatcuk/doublestar/v4 v4.9.1
 	github.com/charmbracelet/bubbles v0.21.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/goccy/go-yaml v1.19.1
+	github.com/handleui/shimmer v0.0.0-20251228054044-4e67c63def7d
 	github.com/mattn/go-isatty v0.0.20
 	github.com/ncruces/go-sqlite3 v0.30.4
 	github.com/spf13/cobra v1.10.2
@@ -15,10 +18,8 @@ require (
 )
 
 require (
-	github.com/anthropics/anthropic-sdk-go v1.19.0 // indirect
 	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
-	github.com/bmatcuk/doublestar/v4 v4.9.1 // indirect
 	github.com/charmbracelet/colorprofile v0.4.1 // indirect
 	github.com/charmbracelet/x/ansi v0.11.3 // indirect
 	github.com/charmbracelet/x/cellbuf v0.0.14 // indirect

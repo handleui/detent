@@ -116,6 +116,31 @@ var BlockedPatterns = []string{
 	"exec",
 }
 
+// allowedMakeTargets are auto-allowed for any trusted repository.
+// Unknown targets require user approval (prompted via TargetApprover).
+var allowedMakeTargets = map[string]bool{
+	// Build & compile
+	"all": true, "build": true, "compile": true, "install": true,
+	// Testing
+	"test": true, "check": true, "verify": true, "validate": true,
+	// Code quality
+	"lint": true, "fmt": true, "format": true, "vet": true, "staticcheck": true,
+	// Cleaning
+	"clean": true, "distclean": true,
+	// Dependencies
+	"deps": true, "vendor": true, "mod": true, "tidy": true,
+	// Generation
+	"generate": true, "gen": true, "proto": true,
+	// Run
+	"run": true, "dev": true, "serve": true,
+}
+
+// isAllowedMakeTarget checks if a make target is in the allowlist.
+// Case-insensitive: "BUILD" and "build" are treated the same.
+func isAllowedMakeTarget(target string) bool {
+	return allowedMakeTargets[strings.ToLower(target)]
+}
+
 // allowedEnvVars is an allowlist of environment variable names that are safe to pass
 // to executed commands. Uses exact matches for specific variables.
 var allowedEnvVars = []string{
@@ -215,7 +240,11 @@ var blockedEnvSuffixes = []string{
 	"_TOKEN",
 	"_SECRET",
 	"_PASSWORD",
+	"_CREDS",
+	"_CREDENTIAL",
 	"_CREDENTIALS",
+	"_PRIVATE_KEY",
+	"_SIGNING_KEY",
 	"_AUTH",
 	"_API_KEY",
 }
@@ -330,7 +359,10 @@ func (t *RunCommandTool) Execute(ctx context.Context, input json.RawMessage) (Re
 		}
 	}
 
-	// Parse command
+	// Parse command using simple space-splitting.
+	// NOTE: This doesn't handle quoted arguments (e.g., `npm run "build --prod"`).
+	// For security, we intentionally avoid shell-like parsing to prevent escaping attacks.
+	// Commands requiring complex quoting should use multiple simple commands instead.
 	parts := strings.Fields(in.Command)
 	if len(parts) == 0 {
 		return ErrorResult("empty command"), nil
@@ -362,12 +394,76 @@ func (t *RunCommandTool) Execute(ctx context.Context, input json.RawMessage) (Re
 		}
 	}
 
+	// For make commands, validate ALL targets against allowlist.
+	// make can run multiple targets: `make build test deploy`
+	// We must validate each one, not just the first.
+	//
+	// EXTENSION POINT: gradle/mvn task approval
+	// gradle and mvn also have project-defined tasks (like make targets) that need validation.
+	// When implementing, extract this to a TargetValidator interface with per-tool implementations.
+	if baseCmd == "make" && len(parts) > 1 {
+		for _, arg := range parts[1:] {
+			// Skip flags (start with -)
+			if strings.HasPrefix(arg, "-") {
+				continue
+			}
+			// Skip variable assignments (contain =) - these modify behavior, not run targets
+			// e.g., `make CC=gcc build` - CC=gcc is not a target
+			if strings.Contains(arg, "=") {
+				continue
+			}
+
+			target := arg
+
+			// Check in order: hardcoded allowlist → per-repo config → session approved → session denied
+			if isAllowedMakeTarget(target) {
+				continue
+			}
+			if t.ctx.RepoTargetChecker != nil && t.ctx.RepoTargetChecker(target) {
+				continue
+			}
+			if t.ctx.IsTargetApproved(target) {
+				continue
+			}
+			// Check if already denied this session - don't prompt again
+			if t.ctx.IsTargetDenied(target) {
+				return ErrorResult(fmt.Sprintf("make target %q was denied earlier in this session", target)), nil
+			}
+
+			// Not approved anywhere - ask user
+			if t.ctx.TargetApprover != nil {
+				result, approveErr := t.ctx.TargetApprover(target)
+				if approveErr != nil {
+					return ErrorResult(fmt.Sprintf("target approval failed: %v", approveErr)), nil
+				}
+				if !result.Allowed {
+					t.ctx.DenyTarget(target) // Remember denial to prevent retry
+					return ErrorResult(fmt.Sprintf("make target %q denied by user", target)), nil
+				}
+
+				// Persist if user chose "always for this repo"
+				if result.Always && t.ctx.TargetPersister != nil {
+					if persistErr := t.ctx.TargetPersister(target); persistErr != nil {
+						// Log but don't fail - session approval still works
+						fmt.Fprintf(os.Stderr, "warning: failed to persist target approval: %v\n", persistErr)
+					}
+				}
+
+				t.ctx.ApproveTarget(target) // Remember for this session
+			} else {
+				return ErrorResult(fmt.Sprintf("make target %q not in allowlist (allowed: all, build, test, lint, fmt, check, clean, etc.)", target)), nil
+			}
+		}
+	}
+
 	// Create command with timeout
 	execCtx, cancel := context.WithTimeout(ctx, commandTimeout)
 	defer cancel()
 
 	// #nosec G204 - command is validated against whitelist and blocked patterns
 	cmd := exec.CommandContext(execCtx, parts[0], parts[1:]...)
+	// SECURITY NOTE: Symlinks inside the worktree are not validated. Commands could
+	// follow symlinks outside the worktree. Accepted limitation (same as any build tool).
 	cmd.Dir = t.ctx.WorktreePath
 	cmd.Env = safeCommandEnv()
 
