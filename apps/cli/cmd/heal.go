@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/detent/cli/internal/git"
 	"github.com/detent/cli/internal/heal/client"
 	"github.com/detent/cli/internal/persistence"
@@ -16,6 +17,12 @@ import (
 )
 
 var testAPI bool
+
+var (
+	healSuccessStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
+	healDimStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	healTextStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+)
 
 var healCmd = &cobra.Command{
 	Use:   "heal",
@@ -126,13 +133,23 @@ func runHealTest(ctx context.Context, apiKey string) error {
 		return err
 	}
 
-	fmt.Fprintf(os.Stderr, "Testing Claude API connection...\n")
+	fmt.Fprintf(os.Stderr, "%s %s\n",
+		healDimStyle.Render(">"),
+		healTextStyle.Render("Testing Claude API connection..."))
+
 	response, err := c.Test(ctx)
 	if err != nil {
 		return fmt.Errorf("API test failed: %w", err)
 	}
 
-	fmt.Printf("Claude says: %s\n", response)
+	fmt.Fprintf(os.Stderr, "%s %s\n",
+		healSuccessStyle.Render("+"),
+		healTextStyle.Render("Connected"))
+
+	fmt.Fprintf(os.Stderr, "\n%s\n%s\n\n",
+		healDimStyle.Render("Claude says:"),
+		response)
+
 	return nil
 }
 
@@ -174,6 +191,10 @@ func ensureAPIKey() (string, error) {
 		return "", fmt.Errorf("saving config: %w", saveErr)
 	}
 
-	fmt.Fprintf(os.Stderr, "API key saved to ~/.detent/config.yaml\n\n")
+	fmt.Fprintf(os.Stderr, "%s %s %s\n\n",
+		healSuccessStyle.Render("+"),
+		healTextStyle.Render("API key saved to"),
+		healDimStyle.Render("~/.detent/config.yaml"))
+
 	return result.Key, nil
 }

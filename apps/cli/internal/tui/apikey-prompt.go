@@ -24,7 +24,7 @@ type APIKeyPromptModel struct {
 }
 
 var (
-	apiKeyTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("42"))
+	apiKeyTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("208")) // Anthropic orange
 	apiKeyTextStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
 	apiKeyHintStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Italic(true)
 	apiKeyErrorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
@@ -108,12 +108,11 @@ func (m *APIKeyPromptModel) View() string {
 	}
 
 	var b strings.Builder
-	b.WriteString("\n")
 
 	b.WriteString(apiKeyTitleStyle.Render("Anthropic API Key Required"))
 	b.WriteString("\n\n")
 
-	b.WriteString(apiKeyTextStyle.Render("Heal uses Claude to automatically fix CI errors."))
+	b.WriteString(apiKeyTextStyle.Render("Detent uses Claude to automatically fix CI errors."))
 	b.WriteString("\n")
 	b.WriteString(apiKeyTextStyle.Render("Get your API key from: "))
 	b.WriteString(apiKeyDimStyle.Render("https://console.anthropic.com/settings/keys"))
@@ -130,9 +129,7 @@ func (m *APIKeyPromptModel) View() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(apiKeyHintStyle.Render("[enter to save, esc to cancel]"))
-	b.WriteString("\n")
-	b.WriteString(apiKeyDimStyle.Render("Key will be saved to ~/.detent/config.yaml"))
+	b.WriteString(apiKeyHintStyle.Render("[enter] save  [esc] cancel"))
 
 	return b.String()
 }
