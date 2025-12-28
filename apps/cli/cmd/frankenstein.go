@@ -14,7 +14,6 @@ import (
 	"github.com/detent/cli/internal/git"
 	"github.com/detent/cli/internal/heal/client"
 	"github.com/detent/cli/internal/heal/tools"
-	"github.com/detent/cli/internal/persistence"
 	"github.com/spf13/cobra"
 )
 
@@ -89,12 +88,8 @@ func (t *toolTracker) hasErrors() bool {
 }
 
 func runFrankenstein(cmd *cobra.Command, _ []string) error {
-	config, err := persistence.LoadGlobalConfig()
-	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
-	}
-
-	apiKey, err := ensureAPIKey(config)
+	// Use globalConfig from root.go
+	apiKey, err := ensureAPIKey(globalConfig)
 	if err != nil {
 		return err
 	}
@@ -172,6 +167,8 @@ func runFrankenstein(cmd *cobra.Command, _ []string) error {
 
 	// Display results
 	displayFrankensteinResults(tracker, expectedTools)
+
+	fmt.Fprintln(os.Stderr)
 
 	if tracker.hasErrors() {
 		return fmt.Errorf("some tools failed")

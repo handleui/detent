@@ -3,10 +3,12 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/detent/cli/internal/git"
+	"github.com/detent/cli/internal/persistence"
 	"github.com/detent/cli/internal/runner"
 	"github.com/detent/cli/internal/signal"
 	"github.com/spf13/cobra"
@@ -23,6 +25,13 @@ var (
 	workflowsDir string
 	workflowFile string
 )
+
+// globalConfig holds the loaded configuration, available to all commands.
+// Initialized in PersistentPreRunE.
+var globalConfig *persistence.GlobalConfig
+
+// warnStyle is used for warning messages.
+var warnStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
 
 var (
 	brandingStyle = lipgloss.NewStyle().
@@ -47,7 +56,13 @@ Requirements:
   - Docker (for running act containers)
   - act (nektos/act - automatically invoked)`,
 	Version: Version,
-	PersistentPreRun: func(cmd *cobra.Command, args []string) {
+	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		// Skip config loading for config subcommands (they handle it themselves)
+		if cmd.Name() == "config" || (cmd.Parent() != nil && cmd.Parent().Name() == "config") {
+			return nil
+		}
+
+		// Print branding
 		fmt.Println()
 		versionText := brandingStyle.Render(fmt.Sprintf("Detent v%s", Version))
 		commandText := commandStyle.Render(cmd.Name())
@@ -59,6 +74,25 @@ Requirements:
 				fmt.Printf("%s\n\n", contextStyle.Render(fmt.Sprintf("└─ on branch %s", branch)))
 			}
 		}
+
+		// Load and validate global config
+		cfg, configErr := persistence.LoadGlobalConfig()
+		if configErr != nil {
+			fmt.Fprintf(os.Stderr, "%s %s\n",
+				warnStyle.Render("⚠"),
+				contextStyle.Render(fmt.Sprintf("Config error: %v", configErr)))
+			fmt.Fprintf(os.Stderr, "  %s %s %s\n\n",
+				contextStyle.Render("Run"),
+				commandStyle.Render("detent config reset"),
+				contextStyle.Render("to fix"))
+			// Continue with defaults
+			cfg = &persistence.GlobalConfig{
+				Heal: persistence.DefaultHealConfig(),
+			}
+		}
+		globalConfig = cfg
+
+		return nil
 	},
 }
 
@@ -73,6 +107,7 @@ func init() {
 	rootCmd.AddCommand(healCmd)
 	rootCmd.AddCommand(injectCmd)
 	rootCmd.AddCommand(frankensteinCmd)
+	rootCmd.AddCommand(configCmd)
 
 	// Persistent flags available to all commands
 	rootCmd.PersistentFlags().StringVarP(&workflowsDir, "workflows", "w", runner.WorkflowsDir, "workflows directory path")

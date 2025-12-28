@@ -59,14 +59,8 @@ func init() {
 }
 
 func runHeal(cmd *cobra.Command, args []string) error {
-	// Load global config
-	config, err := persistence.LoadGlobalConfig()
-	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
-	}
-
-	// Preflight: ensure API key is available
-	apiKey, err := ensureAPIKey(config)
+	// Preflight: ensure API key is available (uses globalConfig from root.go)
+	apiKey, err := ensureAPIKey(globalConfig)
 	if err != nil {
 		return err
 	}
@@ -166,7 +160,7 @@ func runHeal(cmd *cobra.Command, args []string) error {
 	userPrompt := buildUserPrompt(errors)
 
 	// Create and run healing loop with config from global settings
-	loopConfig := loop.ConfigFromHealConfig(config.Heal)
+	loopConfig := loop.ConfigFromHealConfig(globalConfig.Heal)
 	healLoop := loop.New(c.API(), registry, loopConfig)
 
 	fmt.Fprintf(os.Stderr, "%s %s\n",
