@@ -57,6 +57,11 @@ func PrepareWorktree(ctx context.Context, repoRoot, worktreeDir string) (*Worktr
 			}
 			return existingInfo, cleanup, nil
 		}
+		// Directory exists but is not a valid worktree (orphaned/broken) - clean it up
+		if _, statErr := os.Stat(worktreeDir); statErr == nil {
+			_ = os.RemoveAll(worktreeDir)
+			pruneWorktrees(ctx, repoRoot)
+		}
 	}
 
 	if checkErr := checkTmpDiskSpace(); checkErr != nil {
