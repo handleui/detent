@@ -283,9 +283,11 @@ func TestCheckRunner_Cleanup_Idempotent(t *testing.T) {
 	runner.Cleanup()
 	runner.Cleanup()
 
-	// Verify worktree is removed
-	if _, err := os.Stat(worktreePath); !os.IsNotExist(err) {
-		t.Error("Worktree should be removed after Cleanup")
+	// Note: Worktree is persistent (not removed on cleanup)
+	// This is by design - worktrees are reused by heal command
+	// Verify worktree still exists (persistent design)
+	if _, err := os.Stat(worktreePath); os.IsNotExist(err) {
+		t.Error("Persistent worktree should still exist after Cleanup")
 	}
 }
 
