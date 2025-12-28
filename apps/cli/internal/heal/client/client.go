@@ -21,6 +21,11 @@ type Client struct {
 	api anthropic.Client
 }
 
+// API returns the underlying Anthropic client.
+func (c *Client) API() anthropic.Client {
+	return c.api
+}
+
 // New creates a new Anthropic client with the provided API key.
 // The key should already be resolved via persistence.ResolveAPIKey().
 func New(apiKey string) (*Client, error) {

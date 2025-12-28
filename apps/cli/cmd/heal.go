@@ -5,11 +5,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/detent/cli/internal/git"
 	"github.com/detent/cli/internal/heal/client"
+	"github.com/detent/cli/internal/heal/loop"
+	"github.com/detent/cli/internal/heal/prompt"
+	"github.com/detent/cli/internal/heal/tools"
 	"github.com/detent/cli/internal/persistence"
 	"github.com/detent/cli/internal/tui"
 	"github.com/mattn/go-isatty"
@@ -33,7 +37,8 @@ The command performs these steps:
   1. Checks if a prior run exists for the current codebase state
   2. If not, runs 'check' to identify errors and create a worktree
   3. Loads errors from the database
-  4. (Future) Uses AI to generate fixes in the isolated worktree
+  4. Uses Claude to read, analyze, and fix errors in the isolated worktree
+  5. Verifies fixes by re-running the relevant CI checks
 
 The same codebase state (tree hash + commit) always maps to the same run,
 so heal can reuse existing worktrees created by check.`,
@@ -119,11 +124,114 @@ func runHeal(cmd *cobra.Command, args []string) error {
 	}
 
 	// Display summary
-	fmt.Printf("\nFound %d errors in run %s\n", len(errors), runID)
-	fmt.Printf("Worktree ready at: %s\n", worktreePath)
-	fmt.Println("\nAI healing loop not yet implemented")
+	fmt.Fprintf(os.Stderr, "%s %s\n",
+		healDimStyle.Render(">"),
+		healTextStyle.Render(fmt.Sprintf("Found %d errors in run %s", len(errors), runID)))
+	fmt.Fprintf(os.Stderr, "%s %s\n\n",
+		healDimStyle.Render(">"),
+		healTextStyle.Render(fmt.Sprintf("Worktree: %s", worktreePath)))
+
+	// Create Anthropic client
+	c, err := client.New(apiKey)
+	if err != nil {
+		return err
+	}
+
+	// Set up tool context
+	toolCtx := &tools.Context{
+		WorktreePath: worktreePath,
+		RepoRoot:     repoPath,
+		RunID:        runID,
+	}
+
+	// Create tool registry and register tools
+	registry := tools.NewRegistry(toolCtx)
+	registry.Register(tools.NewReadFileTool(toolCtx))
+	registry.Register(tools.NewEditFileTool(toolCtx))
+	registry.Register(tools.NewGlobTool(toolCtx))
+	registry.Register(tools.NewGrepTool(toolCtx))
+	registry.Register(tools.NewVerifyTool(toolCtx))
+	registry.Register(tools.NewRunCommandTool(toolCtx))
+
+	// Build user prompt from errors
+	userPrompt := buildUserPrompt(errors)
+
+	// Create and run healing loop
+	healLoop := loop.New(c.API(), registry, loop.DefaultConfig())
+
+	fmt.Fprintf(os.Stderr, "%s %s\n",
+		healDimStyle.Render(">"),
+		healTextStyle.Render("Starting AI healing loop..."))
+
+	result, err := healLoop.Run(cmd.Context(), prompt.BuildSystemPrompt(), userPrompt)
+	if err != nil {
+		return fmt.Errorf("healing loop failed: %w", err)
+	}
+
+	// Display result
+	fmt.Fprintf(os.Stderr, "\n")
+	if result.Success {
+		fmt.Fprintf(os.Stderr, "%s %s\n",
+			healSuccessStyle.Render("+"),
+			healTextStyle.Render("Healing completed successfully"))
+	} else {
+		fmt.Fprintf(os.Stderr, "%s %s\n",
+			lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Render("!"),
+			healTextStyle.Render("Healing incomplete"))
+	}
+
+	fmt.Fprintf(os.Stderr, "%s %s\n",
+		healDimStyle.Render(">"),
+		healTextStyle.Render(fmt.Sprintf("Iterations: %d, Tool calls: %d, Duration: %s",
+			result.Iterations, result.ToolCalls, result.Duration.Round(100*1e6))))
+
+	if result.FinalMessage != "" {
+		fmt.Fprintf(os.Stderr, "\n%s\n%s\n",
+			healDimStyle.Render("Summary:"),
+			result.FinalMessage)
+	}
 
 	return nil
+}
+
+// buildUserPrompt formats error records into a prompt for Claude.
+func buildUserPrompt(errors []*persistence.ErrorRecord) string {
+	var sb strings.Builder
+
+	sb.WriteString("Fix the following CI errors:\n\n")
+
+	// Group errors by file
+	byFile := make(map[string][]*persistence.ErrorRecord)
+	for _, err := range errors {
+		byFile[err.FilePath] = append(byFile[err.FilePath], err)
+	}
+
+	for filePath, fileErrors := range byFile {
+		sb.WriteString(fmt.Sprintf("## %s (%d errors)\n\n", filePath, len(fileErrors)))
+
+		for _, err := range fileErrors {
+			// Format: [category] file:line:column: message
+			sb.WriteString(fmt.Sprintf("[%s] %s:%d:%d: %s\n",
+				err.ErrorType, err.FilePath, err.LineNumber, err.ColumnNumber, err.Message))
+
+			if err.RuleID != "" {
+				sb.WriteString(fmt.Sprintf("  Rule: %s | Source: %s\n", err.RuleID, err.Source))
+			}
+
+			if err.StackTrace != "" {
+				sb.WriteString("  Stack trace:\n")
+				for _, line := range strings.Split(err.StackTrace, "\n")[:min(10, len(strings.Split(err.StackTrace, "\n")))] {
+					sb.WriteString(fmt.Sprintf("    %s\n", line))
+				}
+			}
+
+			sb.WriteString("\n")
+		}
+	}
+
+	sb.WriteString("\nUse the available tools to read files, make edits, and verify your fixes.")
+
+	return sb.String()
 }
 
 // runHealTest tests the Claude API connection.
