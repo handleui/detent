@@ -212,8 +212,6 @@ func (m *Model) handleEnter() {
 
 	field := EditableFields[m.cursor]
 	switch field.Key {
-	case "verbose":
-		m.toggleVerbose()
 	case "budget":
 		m.startTextEdit("budget", formatBudgetRaw(m.config.BudgetUSD.Value))
 	case "api_key":
@@ -252,14 +250,6 @@ func (m *Model) adjustTimeout(delta int) {
 	}
 	m.config.TimeoutMins.Value = newValue
 	m.config.TimeoutMins.Source = persistence.SourceLocal
-	m.values = GetFieldValues(m.config)
-	m.dirty = true
-}
-
-// toggleVerbose toggles the verbose flag.
-func (m *Model) toggleVerbose() {
-	m.config.Verbose.Value = !m.config.Verbose.Value
-	m.config.Verbose.Source = persistence.SourceLocal
 	m.values = GetFieldValues(m.config)
 	m.dirty = true
 }
@@ -320,8 +310,6 @@ func (m *Model) saveConfig() error {
 	m.config.Local.TimeoutMins = &timeout
 	budget := m.config.BudgetUSD.Value
 	m.config.Local.BudgetUSD = &budget
-	verbose := m.config.Verbose.Value
-	m.config.Local.Verbose = &verbose
 
 	// Save local config
 	if m.config.RepoRoot != "" {

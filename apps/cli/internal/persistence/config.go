@@ -7,16 +7,14 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/tidwall/jsonc"
 )
 
 // --- File paths ---
 
 const (
 	detentDirName    = ".detent"
-	globalConfigFile = "config.jsonc"
-	localConfigFile  = "detent.jsonc"
+	globalConfigFile = "config.json"
+	localConfigFile  = "detent.json"
 
 	// DetentHomeEnv overrides ~/.detent for testing.
 	DetentHomeEnv = "DETENT_HOME"
@@ -30,12 +28,11 @@ var cachedDetentDir string
 // TrustedRepo stores trust information for a repository.
 // The key in TrustedRepos map is the first commit SHA (immutable identifier).
 type TrustedRepo struct {
-	RemoteURL       string    `json:"remote_url,omitempty"`
-	TrustedAt       time.Time `json:"trusted_at"`
-	ApprovedTargets []string  `json:"approved_targets,omitempty"`
+	RemoteURL string    `json:"remote_url,omitempty"`
+	TrustedAt time.Time `json:"trusted_at"`
 }
 
-// GlobalConfig is the user's global settings (~/.detent/config.jsonc).
+// GlobalConfig is the user's global settings (~/.detent/config.json).
 // This is the raw structure that gets persisted to disk.
 type GlobalConfig struct {
 	Schema       string                 `json:"$schema,omitempty"`
@@ -43,27 +40,17 @@ type GlobalConfig struct {
 	Model        string                 `json:"model,omitempty"`
 	BudgetUSD    *float64               `json:"budget_usd,omitempty"`
 	TimeoutMins  *int                   `json:"timeout_mins,omitempty"`
-	Verbose      bool                   `json:"verbose,omitempty"`
 	TrustedRepos map[string]TrustedRepo `json:"trusted_repos,omitempty"`
 }
 
-// LocalConfig is per-repository settings (detent.jsonc in repo root).
+// LocalConfig is per-repository settings (detent.json in repo root).
 // This overrides global config for the specific project.
 type LocalConfig struct {
-	Schema      string       `json:"$schema,omitempty"`
-	Model       string       `json:"model,omitempty"`
-	BudgetUSD   *float64     `json:"budget_usd,omitempty"`
-	TimeoutMins *int         `json:"timeout_mins,omitempty"`
-	Verbose     *bool        `json:"verbose,omitempty"`
-	Commands    []string     `json:"commands,omitempty"` // Extra allowed commands
-	Targets     []string     `json:"targets,omitempty"`  // Extra allowed make targets
-	Cloud       *CloudConfig `json:"cloud,omitempty"`    // Future: cloud linking
-}
-
-// CloudConfig holds future cloud linking configuration.
-type CloudConfig struct {
-	ProjectID string `json:"projectId,omitempty"`
-	OrgID     string `json:"orgId,omitempty"`
+	Schema      string   `json:"$schema,omitempty"`
+	Model       string   `json:"model,omitempty"`
+	BudgetUSD   *float64 `json:"budget_usd,omitempty"`
+	TimeoutMins *int     `json:"timeout_mins,omitempty"`
+	Commands    []string `json:"commands,omitempty"` // Extra allowed commands
 }
 
 // Config is the merged, resolved config used by the application.
@@ -74,14 +61,9 @@ type Config struct {
 	Model       string
 	BudgetUSD   float64
 	TimeoutMins int
-	Verbose     bool
 
 	// Aggregated allowlists (from local config)
 	ExtraCommands []string
-	ExtraTargets  []string
-
-	// Cloud config (from local only)
-	Cloud *CloudConfig
 
 	// Internal references for mutation
 	global   *GlobalConfig
@@ -147,12 +129,9 @@ type ConfigWithSources struct {
 	Model       ConfigValue[string]
 	BudgetUSD   ConfigValue[float64]
 	TimeoutMins ConfigValue[int]
-	Verbose     ConfigValue[bool]
 
 	// Read-only (local config only)
 	ExtraCommands []string
-	ExtraTargets  []string
-	Cloud         *CloudConfig
 
 	// Internal references
 	Global   *GlobalConfig
@@ -240,7 +219,6 @@ func mergeWithSources(global *GlobalConfig, local *LocalConfig, repoRoot string)
 		Model:       ConfigValue[string]{Value: DefaultModel, Source: SourceDefault},
 		BudgetUSD:   ConfigValue[float64]{Value: DefaultBudgetUSD, Source: SourceDefault},
 		TimeoutMins: ConfigValue[int]{Value: DefaultTimeoutMins, Source: SourceDefault},
-		Verbose:     ConfigValue[bool]{Value: false, Source: SourceDefault},
 		APIKey:      ConfigValue[string]{Value: "", Source: SourceDefault},
 		Global:      global,
 		Local:       local,
@@ -269,9 +247,6 @@ func mergeWithSources(global *GlobalConfig, local *LocalConfig, repoRoot string)
 				Source: SourceGlobal,
 			}
 		}
-		if global.Verbose {
-			c.Verbose = ConfigValue[bool]{Value: true, Source: SourceGlobal}
-		}
 	}
 
 	// Apply local config (overrides global)
@@ -293,12 +268,7 @@ func mergeWithSources(global *GlobalConfig, local *LocalConfig, repoRoot string)
 				Source: SourceLocal,
 			}
 		}
-		if local.Verbose != nil {
-			c.Verbose = ConfigValue[bool]{Value: *local.Verbose, Source: SourceLocal}
-		}
 		c.ExtraCommands = local.Commands
-		c.ExtraTargets = local.Targets
-		c.Cloud = local.Cloud
 	}
 
 	// Environment variable overrides everything for API key
@@ -309,7 +279,7 @@ func mergeWithSources(global *GlobalConfig, local *LocalConfig, repoRoot string)
 	return c
 }
 
-// loadGlobal loads the global config from ~/.detent/config.jsonc.
+// loadGlobal loads the global config from ~/.detent/config.json.
 func loadGlobal() (*GlobalConfig, error) {
 	path, err := GetConfigPath()
 	if err != nil {
@@ -330,20 +300,15 @@ func loadGlobal() (*GlobalConfig, error) {
 		return &GlobalConfig{}, nil
 	}
 
-	jsonData := jsonc.ToJSON(data)
-	if len(jsonData) == 0 {
-		return &GlobalConfig{}, nil
-	}
-
 	var cfg GlobalConfig
-	if unmarshalErr := json.Unmarshal(jsonData, &cfg); unmarshalErr != nil {
+	if unmarshalErr := json.Unmarshal(data, &cfg); unmarshalErr != nil {
 		return nil, fmt.Errorf("parsing: %w", unmarshalErr)
 	}
 
 	return &cfg, nil
 }
 
-// loadLocal loads the local config from detent.jsonc in the given directory.
+// loadLocal loads the local config from detent.json in the given directory.
 func loadLocal(dir string) (*LocalConfig, error) {
 	path := filepath.Join(dir, localConfigFile)
 
@@ -361,13 +326,8 @@ func loadLocal(dir string) (*LocalConfig, error) {
 		return nil, nil
 	}
 
-	jsonData := jsonc.ToJSON(data)
-	if len(jsonData) == 0 {
-		return nil, nil
-	}
-
 	var cfg LocalConfig
-	if unmarshalErr := json.Unmarshal(jsonData, &cfg); unmarshalErr != nil {
+	if unmarshalErr := json.Unmarshal(data, &cfg); unmarshalErr != nil {
 		return nil, fmt.Errorf("parsing: %w", unmarshalErr)
 	}
 
@@ -380,7 +340,6 @@ func merge(global *GlobalConfig, local *LocalConfig, repoRoot string) *Config {
 		Model:       DefaultModel,
 		BudgetUSD:   DefaultBudgetUSD,
 		TimeoutMins: DefaultTimeoutMins,
-		Verbose:     false,
 		global:      global,
 		local:       local,
 		repoRoot:    repoRoot,
@@ -404,9 +363,6 @@ func merge(global *GlobalConfig, local *LocalConfig, repoRoot string) *Config {
 		if global.TimeoutMins != nil {
 			c.TimeoutMins = clampTimeout(*global.TimeoutMins)
 		}
-		if global.Verbose {
-			c.Verbose = true
-		}
 	}
 
 	// Apply local config (overrides global)
@@ -424,12 +380,7 @@ func merge(global *GlobalConfig, local *LocalConfig, repoRoot string) *Config {
 		if local.TimeoutMins != nil {
 			c.TimeoutMins = clampTimeout(*local.TimeoutMins)
 		}
-		if local.Verbose != nil {
-			c.Verbose = *local.Verbose
-		}
 		c.ExtraCommands = local.Commands
-		c.ExtraTargets = local.Targets
-		c.Cloud = local.Cloud
 	}
 
 	// Environment variable overrides everything for API key
@@ -471,7 +422,7 @@ func (c *Config) SaveGlobal() error {
 	}
 
 	// Set schema
-	c.global.Schema = "https://detent.sh/schema.json#global"
+	c.global.Schema = "https://detent.sh/schema.json"
 
 	dir, err := GetDetentDir()
 	if err != nil {
@@ -518,7 +469,7 @@ func (c *Config) SaveLocal() error {
 	}
 
 	// Set schema
-	c.local.Schema = "https://detent.sh/schema.json#local"
+	c.local.Schema = "https://detent.sh/schema.json"
 
 	data, marshalErr := json.MarshalIndent(c.local, "", "  ")
 	if marshalErr != nil {
@@ -544,7 +495,7 @@ func SaveLocalWithSources(cfg *ConfigWithSources) error {
 	}
 
 	// Set schema
-	cfg.Local.Schema = "https://detent.sh/schema.json#local"
+	cfg.Local.Schema = "https://detent.sh/schema.json"
 
 	data, marshalErr := json.MarshalIndent(cfg.Local, "", "  ")
 	if marshalErr != nil {
@@ -580,54 +531,10 @@ func (c *Config) TrustRepo(firstCommitSHA, remoteURL string) error {
 		c.global.TrustedRepos = make(map[string]TrustedRepo)
 	}
 
-	// Preserve existing approved targets if re-trusting
-	existing := c.global.TrustedRepos[firstCommitSHA]
 	c.global.TrustedRepos[firstCommitSHA] = TrustedRepo{
-		RemoteURL:       remoteURL,
-		TrustedAt:       time.Now(),
-		ApprovedTargets: existing.ApprovedTargets,
+		RemoteURL: remoteURL,
+		TrustedAt: time.Now(),
 	}
-	return c.SaveGlobal()
-}
-
-// IsTargetApprovedForRepo checks if a make target is approved for a repo.
-// Case-insensitive comparison.
-func (c *Config) IsTargetApprovedForRepo(firstCommitSHA, target string) bool {
-	if c.global == nil || c.global.TrustedRepos == nil {
-		return false
-	}
-	repo, ok := c.global.TrustedRepos[firstCommitSHA]
-	if !ok {
-		return false
-	}
-	for _, t := range repo.ApprovedTargets {
-		if strings.EqualFold(t, target) {
-			return true
-		}
-	}
-	return false
-}
-
-// ApproveTargetForRepo adds a make target to the approved list and saves.
-func (c *Config) ApproveTargetForRepo(firstCommitSHA, target string) error {
-	if c.global == nil || c.global.TrustedRepos == nil {
-		return fmt.Errorf("repository not trusted")
-	}
-	repo, ok := c.global.TrustedRepos[firstCommitSHA]
-	if !ok {
-		return fmt.Errorf("repository not trusted")
-	}
-
-	// Check if already approved
-	for _, t := range repo.ApprovedTargets {
-		if strings.EqualFold(t, target) {
-			return nil
-		}
-	}
-
-	// Add to approved targets
-	repo.ApprovedTargets = append(repo.ApprovedTargets, strings.ToLower(target))
-	c.global.TrustedRepos[firstCommitSHA] = repo
 	return c.SaveGlobal()
 }
 

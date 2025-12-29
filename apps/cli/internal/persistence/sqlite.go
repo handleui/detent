@@ -734,6 +734,13 @@ func (w *SQLiteWriter) RecordError(finding *FindingRecord) error {
 	return nil
 }
 
+// Flush forces any pending batched errors to be written to the database
+func (w *SQLiteWriter) Flush() error {
+	w.batchMutex.Lock()
+	defer w.batchMutex.Unlock()
+	return w.flushBatch()
+}
+
 // flushBatch processes all batched errors in a single transaction
 // Must be called with batchMutex locked
 func (w *SQLiteWriter) flushBatch() (err error) {

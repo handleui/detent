@@ -117,6 +117,11 @@ func TestRecorder_RecordFinding(t *testing.T) {
 		t.Fatalf("RecordFinding() error = %v", err)
 	}
 
+	// Flush pending batch before checking count
+	if err := recorder.sqlite.Flush(); err != nil {
+		t.Fatalf("Flush() error = %v", err)
+	}
+
 	// Verify error was recorded in database
 	errorCount := recorder.sqlite.GetErrorCount()
 	if errorCount != 1 {
@@ -162,6 +167,11 @@ func TestRecorder_RecordFinding_MultipleFindingsPersisted(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to record warning: %v", err)
 		}
+	}
+
+	// Flush pending batch before checking count
+	if err := recorder.sqlite.Flush(); err != nil {
+		t.Fatalf("Flush() error = %v", err)
 	}
 
 	// Verify total count in database (deduplication may reduce count)
@@ -318,6 +328,11 @@ func TestRecorder_WorkflowContextPersistence(t *testing.T) {
 		t.Fatalf("RecordFinding() failed: %v", err)
 	}
 
+	// Flush pending batch before checking count
+	if err := recorder.sqlite.Flush(); err != nil {
+		t.Fatalf("Flush() error = %v", err)
+	}
+
 	// Verify it was recorded in database
 	errorCount := recorder.sqlite.GetErrorCount()
 	if errorCount != 1 {
@@ -376,6 +391,11 @@ func TestRecorder_ErrorCategoryTracking(t *testing.T) {
 		}
 	}
 
+	// Flush pending batch before checking count
+	if err := recorder.sqlite.Flush(); err != nil {
+		t.Fatalf("Flush() error = %v", err)
+	}
+
 	// Verify all categories were recorded in database
 	errorCount := recorder.sqlite.GetErrorCount()
 	if errorCount != len(categories) {
@@ -400,6 +420,11 @@ func TestRecorder_RecordFinding_WithoutFile(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("RecordFinding() error = %v", err)
+	}
+
+	// Flush pending batch before checking count
+	if err := recorder.sqlite.Flush(); err != nil {
+		t.Fatalf("Flush() error = %v", err)
 	}
 
 	// Verify error was recorded in database

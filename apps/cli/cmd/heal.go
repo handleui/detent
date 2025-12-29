@@ -163,7 +163,7 @@ func runHeal(cmd *cobra.Command, args []string) error {
 	userPrompt := buildUserPrompt(errRecords)
 
 	// Create and run healing loop with merged config
-	loopConfig := loop.ConfigFromSettings(cfg.Model, cfg.TimeoutMins, cfg.BudgetUSD, cfg.Verbose)
+	loopConfig := loop.ConfigFromSettings(cfg.Model, cfg.TimeoutMins, cfg.BudgetUSD)
 	healLoop := loop.New(c.API(), registry, loopConfig)
 
 	fmt.Fprintf(os.Stderr, "%s Starting healing...\n", tui.Bullet())

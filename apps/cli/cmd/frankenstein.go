@@ -296,10 +296,6 @@ func runFrankenstein(cmd *cobra.Command, _ []string) error {
 	if monsterMode {
 		timeout = 120 * time.Second
 	}
-	// Override verbose from config if set
-	if cfg != nil && cfg.Verbose {
-		verboseMode = true
-	}
 	ctx, cancel := context.WithTimeout(cmd.Context(), timeout)
 	defer cancel()
 

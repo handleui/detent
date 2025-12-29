@@ -47,9 +47,10 @@ func DefaultConfig() Config {
 	}
 }
 
-// ConfigFromSettings creates a loop Config from model, timeout, budget and verbose settings.
+// ConfigFromSettings creates a loop Config from model, timeout, and budget settings.
 // This is the canonical way to configure the healing loop from application settings.
-func ConfigFromSettings(model string, timeoutMins int, budgetUSD float64, verbose bool) Config {
+// Verbose mode should be set separately via the Verbose field if needed.
+func ConfigFromSettings(model string, timeoutMins int, budgetUSD float64) Config {
 	cfg := DefaultConfig()
 	if model != "" {
 		cfg.Model = anthropic.Model(model)
@@ -60,7 +61,6 @@ func ConfigFromSettings(model string, timeoutMins int, budgetUSD float64, verbos
 	if budgetUSD >= 0 {
 		cfg.BudgetUSD = budgetUSD
 	}
-	cfg.Verbose = verbose
 	return cfg
 }
 

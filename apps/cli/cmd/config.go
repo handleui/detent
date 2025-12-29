@@ -101,21 +101,10 @@ func runConfigShow(_ *cobra.Command, _ []string) error {
 		fmt.Printf("  Budget       %-20s %s\n", tui.PrimaryStyle.Render(fmt.Sprintf("$%.2f", showCfg.BudgetUSD.Value)), sourceBadge(showCfg.BudgetUSD.Source))
 	}
 
-	if showCfg.Verbose.Value {
-		fmt.Printf("  Verbose      %-20s %s\n", tui.PrimaryStyle.Render("on"), sourceBadge(showCfg.Verbose.Source))
-	} else {
-		fmt.Printf("  Verbose      %-20s %s\n", tui.MutedStyle.Render("off"), sourceBadge(showCfg.Verbose.Source))
-	}
-
 	// Section: Local Config
-	if len(showCfg.ExtraCommands) > 0 || len(showCfg.ExtraTargets) > 0 {
-		fmt.Printf("\n%s\n", tui.SecondaryStyle.Render("Local Config (detent.jsonc)"))
-		if len(showCfg.ExtraCommands) > 0 {
-			fmt.Printf("  Commands     %s\n", tui.MutedStyle.Render(strings.Join(showCfg.ExtraCommands, ", ")))
-		}
-		if len(showCfg.ExtraTargets) > 0 {
-			fmt.Printf("  Targets      %s\n", tui.MutedStyle.Render(strings.Join(showCfg.ExtraTargets, ", ")))
-		}
+	if len(showCfg.ExtraCommands) > 0 {
+		fmt.Printf("\n%s\n", tui.SecondaryStyle.Render("Local Config (detent.json)"))
+		fmt.Printf("  Commands     %s\n", tui.MutedStyle.Render(strings.Join(showCfg.ExtraCommands, ", ")))
 	}
 
 	// Section: File

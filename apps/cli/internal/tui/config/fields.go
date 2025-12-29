@@ -31,7 +31,6 @@ var EditableFields = []Field{
 	{Key: "model", FieldType: FieldString, Description: "Claude model for AI healing"},
 	{Key: "timeout", FieldType: FieldInt, Description: "Maximum time per run (minutes)"},
 	{Key: "budget", FieldType: FieldFloat, Description: "Maximum spend per run (0 = unlimited)"},
-	{Key: "verbose", FieldType: FieldBool, Description: "Show tool calls in real-time"},
 }
 
 // FieldValue holds the current value and source for a field.
@@ -72,12 +71,6 @@ func GetFieldValues(cfg *persistence.ConfigWithSources) map[string]FieldValue {
 		Source:       cfg.BudgetUSD.Source,
 	}
 
-	// Verbose
-	values["verbose"] = FieldValue{
-		DisplayValue: formatBool(cfg.Verbose.Value),
-		Source:       cfg.Verbose.Source,
-	}
-
 	return values
 }
 
@@ -90,11 +83,4 @@ func formatBudget(usd float64) string {
 		return "unlimited"
 	}
 	return fmt.Sprintf("$%.2f", usd)
-}
-
-func formatBool(b bool) string {
-	if b {
-		return "on"
-	}
-	return "off"
 }

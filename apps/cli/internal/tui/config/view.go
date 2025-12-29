@@ -36,24 +36,15 @@ func (m *Model) View() string {
 	}
 
 	// Extra local config info (always show if present)
-	if len(m.config.ExtraCommands) > 0 || len(m.config.ExtraTargets) > 0 {
+	if len(m.config.ExtraCommands) > 0 {
 		b.WriteString("\n")
 		b.WriteString(tui.SecondaryStyle.Render("Local Allowlists"))
 		b.WriteString("\n")
-		if len(m.config.ExtraCommands) > 0 {
-			b.WriteString("  ")
-			b.WriteString(fieldStyle.Render("commands"))
-			b.WriteString("    ")
-			b.WriteString(mutedValue.Render(strings.Join(m.config.ExtraCommands, ", ")))
-			b.WriteString("\n")
-		}
-		if len(m.config.ExtraTargets) > 0 {
-			b.WriteString("  ")
-			b.WriteString(fieldStyle.Render("targets"))
-			b.WriteString("     ")
-			b.WriteString(mutedValue.Render(strings.Join(m.config.ExtraTargets, ", ")))
-			b.WriteString("\n")
-		}
+		b.WriteString("  ")
+		b.WriteString(fieldStyle.Render("commands"))
+		b.WriteString("    ")
+		b.WriteString(mutedValue.Render(strings.Join(m.config.ExtraCommands, ", ")))
+		b.WriteString("\n")
 	}
 
 	// Help footer
@@ -152,8 +143,6 @@ func (m *Model) renderHelp() string {
 			hints = append(hints, "[←/→] adjust")
 		case "budget":
 			hints = append(hints, "[enter] edit")
-		case "verbose":
-			hints = append(hints, "[space] toggle")
 		case "api_key":
 			hints = append(hints, "[enter] edit")
 		}
