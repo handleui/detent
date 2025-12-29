@@ -10,8 +10,9 @@ import (
 
 // Registry holds all registered tools and handles dispatch.
 type Registry struct {
-	tools   map[string]Tool
-	toolCtx *Context
+	tools       map[string]Tool
+	toolCtx     *Context
+	cachedTools []anthropic.ToolUnionParam // cached SDK format, invalidated on Register
 }
 
 // NewRegistry creates a new tool registry with the given context.
@@ -25,6 +26,7 @@ func NewRegistry(ctx *Context) *Registry {
 // Register adds a tool to the registry.
 func (r *Registry) Register(tool Tool) {
 	r.tools[tool.Name()] = tool
+	r.cachedTools = nil // invalidate cache
 }
 
 // Get returns a tool by name, or nil if not found.
@@ -51,7 +53,12 @@ func (r *Registry) Dispatch(ctx context.Context, name string, input json.RawMess
 }
 
 // ToAnthropicTools converts registered tools to Anthropic SDK format.
+// Results are cached to avoid repeated allocations in the healing loop.
 func (r *Registry) ToAnthropicTools() []anthropic.ToolUnionParam {
+	if r.cachedTools != nil {
+		return r.cachedTools
+	}
+
 	tools := make([]anthropic.ToolUnionParam, 0, len(r.tools))
 
 	for _, tool := range r.tools {
@@ -82,6 +89,7 @@ func (r *Registry) ToAnthropicTools() []anthropic.ToolUnionParam {
 		tools = append(tools, anthropic.ToolUnionParam{OfTool: &toolParam})
 	}
 
+	r.cachedTools = tools
 	return tools
 }
 

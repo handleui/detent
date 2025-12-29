@@ -7,6 +7,9 @@ dist/dt
 bin/
 node_modules/
 
+# Test binaries
+*.test
+
 # Coverage
 coverage.txt
 *.out

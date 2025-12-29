@@ -71,7 +71,7 @@ func formatAPIError(err error) error {
 	if errors.As(err, &apiErr) {
 		switch apiErr.StatusCode {
 		case 401:
-			return fmt.Errorf("invalid API key: check your ANTHROPIC_API_KEY or ~/.detent/config.yaml")
+			return fmt.Errorf("invalid API key: check your ANTHROPIC_API_KEY or ~/.detent/config.jsonc")
 		case 403:
 			return fmt.Errorf("API key lacks permission: %w", err)
 		case 429:

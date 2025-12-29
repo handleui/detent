@@ -58,3 +58,24 @@ func Bullet() string {
 func Arrow() string {
 	return MutedStyle.Render("→")
 }
+
+// Badge renders a source badge for config values.
+// Badges are muted and on-brand to avoid visual noise.
+func Badge(source string) string {
+	return MutedStyle.Render("[" + source + "]")
+}
+
+// BadgeLocal renders a local badge with emphasis (white).
+func BadgeLocal() string {
+	return SecondaryStyle.Render("[local]")
+}
+
+// Header renders the standard detent branding header.
+// Format: "Detent v0.1.0 · owner/repo"
+func Header(version, repoIdentifier string) string {
+	header := BrandStyle.Render("Detent") + " " + MutedStyle.Render("v"+version)
+	if repoIdentifier != "" && repoIdentifier != "." {
+		header += " " + MutedStyle.Render("· "+repoIdentifier)
+	}
+	return header
+}

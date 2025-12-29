@@ -131,10 +131,16 @@ func runHeal(cmd *cobra.Command, args []string) error {
 		ApprovedTargets: make(map[string]bool),
 		TargetApprover:  promptForMakeTarget,
 		TargetPersister: func(target string) error {
-			return globalConfig.ApproveTargetForRepo(repoCtx.FirstCommitSHA, target)
+			return cfg.ApproveTargetForRepo(repoCtx.FirstCommitSHA, target)
 		},
 		RepoTargetChecker: func(target string) bool {
-			return globalConfig.IsTargetApprovedForRepo(repoCtx.FirstCommitSHA, target)
+			return cfg.IsTargetApprovedForRepo(repoCtx.FirstCommitSHA, target)
+		},
+		LocalTargetChecker: func(target string) bool {
+			return cfg.IsLocalTarget(target)
+		},
+		LocalCommandChecker: func(cmd string) bool {
+			return cfg.MatchesLocalCommand(cmd)
 		},
 	}
 
@@ -150,8 +156,8 @@ func runHeal(cmd *cobra.Command, args []string) error {
 	// Build user prompt from errors
 	userPrompt := buildUserPrompt(errRecords)
 
-	// Create and run healing loop with config from global settings
-	loopConfig := loop.ConfigFromHealConfig(globalConfig.Heal)
+	// Create and run healing loop with merged config
+	loopConfig := loop.ConfigFromSettings(cfg.Model, cfg.TimeoutMins, cfg.BudgetUSD, cfg.Verbose)
 	healLoop := loop.New(c.API(), registry, loopConfig)
 
 	fmt.Fprintf(os.Stderr, "%s Starting healing...\n", tui.Bullet())
@@ -187,7 +193,7 @@ func runHeal(cmd *cobra.Command, args []string) error {
 	}
 
 	if result.BudgetExceeded {
-		return fmt.Errorf("budget limit ($%.2f) exceeded", globalConfig.Heal.BudgetUSD)
+		return fmt.Errorf("budget limit ($%.2f) exceeded", cfg.BudgetUSD)
 	}
 
 	return nil
@@ -219,7 +225,8 @@ func buildUserPrompt(errRecords []*persistence.ErrorRecord) string {
 
 			if err.StackTrace != "" {
 				sb.WriteString("  Stack trace:\n")
-				for _, line := range strings.Split(err.StackTrace, "\n")[:min(10, len(strings.Split(err.StackTrace, "\n")))] {
+				lines := strings.Split(err.StackTrace, "\n")
+				for _, line := range lines[:min(10, len(lines))] {
 					sb.WriteString(fmt.Sprintf("    %s\n", line))
 				}
 			}

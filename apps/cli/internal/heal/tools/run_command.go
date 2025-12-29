@@ -371,6 +371,12 @@ func (t *RunCommandTool) Execute(ctx context.Context, input json.RawMessage) (Re
 	baseCmd := parts[0]
 	spec, allowed := CommandWhitelist[baseCmd]
 	if !allowed {
+		// Check local config allowlist
+		if t.ctx.LocalCommandChecker != nil && t.ctx.LocalCommandChecker(in.Command) {
+			allowed = true
+		}
+	}
+	if !allowed {
 		return ErrorResult(fmt.Sprintf("command %q not in whitelist", baseCmd)), nil
 	}
 
@@ -415,8 +421,11 @@ func (t *RunCommandTool) Execute(ctx context.Context, input json.RawMessage) (Re
 
 			target := arg
 
-			// Check in order: hardcoded allowlist → per-repo config → session approved → session denied
+			// Check in order: hardcoded allowlist → local config → per-repo config → session approved → session denied
 			if isAllowedMakeTarget(target) {
+				continue
+			}
+			if t.ctx.LocalTargetChecker != nil && t.ctx.LocalTargetChecker(target) {
 				continue
 			}
 			if t.ctx.RepoTargetChecker != nil && t.ctx.RepoTargetChecker(target) {

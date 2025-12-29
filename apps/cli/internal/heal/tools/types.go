@@ -84,6 +84,14 @@ type Context struct {
 	// RepoTargetChecker checks if a target is approved for this repo in global config.
 	// Returns true if the target is persisted in the repo's approved_targets list.
 	RepoTargetChecker func(target string) bool
+
+	// LocalTargetChecker checks if a target is allowed by local config (detent.jsonc).
+	// Returns true if the target is in the local config's targets list.
+	LocalTargetChecker func(target string) bool
+
+	// LocalCommandChecker checks if a command matches local config's command allowlist.
+	// Returns true if the command matches a pattern in local config's commands list.
+	LocalCommandChecker func(cmd string) bool
 }
 
 // IsTargetApproved checks if a make target has been approved for this session.

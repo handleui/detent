@@ -10,7 +10,6 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/detent/cli/internal/heal/tools"
-	"github.com/detent/cli/internal/persistence"
 )
 
 const (
@@ -48,16 +47,21 @@ func DefaultConfig() Config {
 	}
 }
 
-// ConfigFromHealConfig creates a loop Config from a persistence.HealConfig.
-// Applies defaults for any zero values.
-func ConfigFromHealConfig(hc persistence.HealConfig) Config {
-	hc = hc.WithDefaults()
-	return Config{
-		Timeout:   time.Duration(hc.TimeoutMins) * time.Minute,
-		Model:     anthropic.Model(hc.Model),
-		BudgetUSD: hc.BudgetUSD,
-		Verbose:   hc.Verbose,
+// ConfigFromSettings creates a loop Config from model, timeout, budget and verbose settings.
+// This is the canonical way to configure the healing loop from application settings.
+func ConfigFromSettings(model string, timeoutMins int, budgetUSD float64, verbose bool) Config {
+	cfg := DefaultConfig()
+	if model != "" {
+		cfg.Model = anthropic.Model(model)
 	}
+	if timeoutMins > 0 {
+		cfg.Timeout = time.Duration(timeoutMins) * time.Minute
+	}
+	if budgetUSD >= 0 {
+		cfg.BudgetUSD = budgetUSD
+	}
+	cfg.Verbose = verbose
+	return cfg
 }
 
 // Result contains the outcome of a healing attempt.
@@ -233,21 +237,21 @@ func (l *HealLoop) logToolCall(toolName, inputRaw string) {
 	}
 }
 
+// keyParamNames maps tool names to their key parameter for verbose output.
+var keyParamNames = map[string]string{
+	"read_file":   "path",
+	"edit_file":   "path",
+	"glob":        "pattern",
+	"grep":        "pattern",
+	"run_check":   "category",
+	"run_command": "command",
+}
+
 // extractKeyParam extracts the most relevant parameter for verbose output.
 func extractKeyParam(toolName, inputRaw string) string {
 	var params map[string]any
 	if err := json.Unmarshal([]byte(inputRaw), &params); err != nil {
 		return ""
-	}
-
-	// Map tool names to their key parameter
-	keyParamNames := map[string]string{
-		"read_file":   "path",
-		"edit_file":   "path",
-		"glob":        "pattern",
-		"grep":        "pattern",
-		"run_check":   "category",
-		"run_command": "command",
 	}
 
 	if paramName, ok := keyParamNames[toolName]; ok {

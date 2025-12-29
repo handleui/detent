@@ -22,9 +22,9 @@ var (
 	workflowFile string
 )
 
-// globalConfig holds the loaded configuration, available to all commands.
+// cfg holds the loaded and merged configuration, available to all commands.
 // Initialized in PersistentPreRunE.
-var globalConfig *persistence.GlobalConfig
+var cfg *persistence.Config
 
 var rootCmd = &cobra.Command{
 	Use:   "detent",
@@ -48,30 +48,24 @@ Requirements:
 			}
 		}
 
-		// Branding: "Detent v0.1.0 · branch main"
+		// Branding header
 		fmt.Println()
 		repoRoot, _ := filepath.Abs(".")
-		branch, _ := git.GetCurrentBranch(repoRoot)
-
-		header := tui.BrandStyle.Render("Detent") + " " + tui.MutedStyle.Render("v"+Version)
-		if branch != "" {
-			header += " " + tui.MutedStyle.Render("· "+branch)
-		}
-		fmt.Println(header)
+		repoIdentifier := git.GetRepoIdentifier(repoRoot)
+		fmt.Println(tui.Header(Version, repoIdentifier))
 		fmt.Println()
 
-		// Load config
-		cfg, configErr := persistence.LoadGlobalConfig()
+		// Load config (global + local merged)
+		loadedCfg, configErr := persistence.Load(repoRoot)
 		if configErr != nil {
 			fmt.Fprintf(os.Stderr, "%s Config error: %s\n",
 				tui.WarningStyle.Render("!"),
 				tui.MutedStyle.Render(configErr.Error()))
 			fmt.Fprintf(os.Stderr, "%s Run: detent config reset\n\n", tui.Bullet())
-			cfg = &persistence.GlobalConfig{
-				Heal: persistence.DefaultHealConfig(),
-			}
+			// Create empty config with defaults
+			loadedCfg, _ = persistence.Load("")
 		}
-		globalConfig = cfg
+		cfg = loadedCfg
 
 		// Trust check - FIRST thing before any command runs
 		// This ensures we never execute repo code without explicit trust
@@ -107,19 +101,18 @@ func init() {
 }
 
 // ensureAPIKey checks for API key and prompts interactively if missing.
-// Uses globalConfig and saves the key if prompted.
+// Uses cfg and saves the key if prompted.
 // Returns the API key or an error if unavailable.
 func ensureAPIKey() (string, error) {
-	if globalConfig == nil {
+	if cfg == nil {
 		// This indicates a programming error - config should always be loaded
 		// before commands that need API keys are run
 		return "", fmt.Errorf("internal error: configuration not initialized")
 	}
 
-	// Check existing key (config takes precedence over env)
-	existingKey := persistence.ResolveAPIKey(globalConfig.AnthropicAPIKey)
-	if existingKey != "" {
-		return existingKey, nil
+	// Config already has merged API key (env > global)
+	if cfg.APIKey != "" {
+		return cfg.APIKey, nil
 	}
 
 	// No key found - prompt if interactive terminal
@@ -140,15 +133,10 @@ func ensureAPIKey() (string, error) {
 		return "", fmt.Errorf("API key input cancelled")
 	}
 
-	// Save key to global config (create a copy to avoid partial state on error)
-	updatedConfig := *globalConfig
-	updatedConfig.AnthropicAPIKey = result.Key
-	if saveErr := persistence.SaveGlobalConfig(&updatedConfig); saveErr != nil {
+	// Save key to config
+	if saveErr := cfg.SetAPIKey(result.Key); saveErr != nil {
 		return "", fmt.Errorf("failed to save API key: %w", saveErr)
 	}
-
-	// Only update the global after successful save
-	globalConfig.AnthropicAPIKey = result.Key
 
 	fmt.Fprintf(os.Stderr, "%s API key saved\n\n", tui.SuccessStyle.Render("✓"))
 
@@ -158,7 +146,7 @@ func ensureAPIKey() (string, error) {
 // ensureTrustedRepo checks if the current repository is trusted, prompts if not.
 // Returns error if user declines trust, not in a git repo, or not interactive.
 func ensureTrustedRepo() error {
-	if globalConfig == nil {
+	if cfg == nil {
 		return fmt.Errorf("internal error: configuration not initialized")
 	}
 
@@ -176,7 +164,7 @@ func ensureTrustedRepo() error {
 	}
 
 	// Check if already trusted
-	if globalConfig.IsTrustedRepo(firstCommitSHA) {
+	if cfg.IsTrustedRepo(firstCommitSHA) {
 		return nil
 	}
 
@@ -211,7 +199,7 @@ func ensureTrustedRepo() error {
 	}
 
 	// Save trust to config
-	if trustErr := globalConfig.TrustRepo(firstCommitSHA, remoteURL); trustErr != nil {
+	if trustErr := cfg.TrustRepo(firstCommitSHA, remoteURL); trustErr != nil {
 		return fmt.Errorf("failed to save trust: %w", trustErr)
 	}
 

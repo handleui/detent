@@ -3,10 +3,14 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/detent/cli/internal/git"
 	"github.com/detent/cli/internal/persistence"
 	"github.com/detent/cli/internal/tui"
+	tuiconfig "github.com/detent/cli/internal/tui/config"
 	"github.com/spf13/cobra"
 )
 
@@ -21,7 +25,13 @@ Settings:
   model        Claude model for AI healing
   timeout      Maximum time per healing run
   budget       Maximum spend per run (0 = unlimited)
-  verbose      Show tool calls in real-time`,
+  verbose      Show tool calls in real-time
+
+Interactive mode:
+  Navigate with j/k or arrow keys.
+  Toggle between global and local config with 'g'.
+  Open config in editor with 'e'.`,
+	RunE: runConfigInteractive,
 }
 
 var configShowCmd = &cobra.Command{
@@ -54,67 +64,57 @@ func init() {
 }
 
 func runConfigShow(_ *cobra.Command, _ []string) error {
-	cfg, err := persistence.LoadGlobalConfig()
+	// Show header
+	repoRoot, _ := filepath.Abs(".")
+	repoIdentifier := git.GetRepoIdentifier(repoRoot)
+	fmt.Println()
+	fmt.Println(tui.Header(Version, repoIdentifier))
+	fmt.Println()
+
+	showCfg, err := persistence.LoadWithSources(repoRoot)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "\n%s Failed to load configuration\n", tui.ErrorStyle.Render("✗"))
+		fmt.Fprintf(os.Stderr, "%s Failed to load configuration\n", tui.ErrorStyle.Render("✗"))
 		fmt.Fprintf(os.Stderr, "%s %s\n", tui.Bullet(), tui.MutedStyle.Render(err.Error()))
-		fmt.Fprintf(os.Stderr, "\n%s %s\n\n", tui.Bullet(), tui.SecondaryStyle.Render("Run: detent config reset"))
+		fmt.Fprintf(os.Stderr, "%s %s\n\n", tui.Bullet(), tui.SecondaryStyle.Render("Run: detent config reset"))
 		return nil
 	}
 
-	healCfg := cfg.Heal.WithDefaults()
 	configPath, _ := persistence.GetConfigPath()
-
-	fmt.Println()
 
 	// Section: Authentication
 	fmt.Printf("%s\n", tui.SecondaryStyle.Render("Authentication"))
-	if cfg.AnthropicAPIKey != "" {
-		masked := "····" + cfg.AnthropicAPIKey[max(0, len(cfg.AnthropicAPIKey)-4):]
-		fmt.Printf("  API Key      %s\n", tui.PrimaryStyle.Render(masked))
+	if showCfg.APIKey.Value != "" {
+		masked := persistence.MaskAPIKey(showCfg.APIKey.Value)
+		fmt.Printf("  API Key      %-20s %s\n", tui.PrimaryStyle.Render(masked), sourceBadge(showCfg.APIKey.Source))
 	} else {
 		fmt.Printf("  API Key      %s\n", tui.WarningStyle.Render("not configured"))
 	}
 
 	// Section: Healing
 	fmt.Printf("\n%s\n", tui.SecondaryStyle.Render("Healing"))
-	fmt.Printf("  Model        %s\n", tui.PrimaryStyle.Render(healCfg.Model))
-	fmt.Printf("  Timeout      %s\n", tui.PrimaryStyle.Render(fmt.Sprintf("%d min", healCfg.TimeoutMins)))
+	fmt.Printf("  Model        %-20s %s\n", tui.PrimaryStyle.Render(showCfg.Model.Value), sourceBadge(showCfg.Model.Source))
+	fmt.Printf("  Timeout      %-20s %s\n", tui.PrimaryStyle.Render(fmt.Sprintf("%d min", showCfg.TimeoutMins.Value)), sourceBadge(showCfg.TimeoutMins.Source))
 
-	if healCfg.BudgetUSD == 0 {
-		fmt.Printf("  Budget       %s\n", tui.MutedStyle.Render("unlimited"))
+	if showCfg.BudgetUSD.Value == 0 {
+		fmt.Printf("  Budget       %-20s %s\n", tui.MutedStyle.Render("unlimited"), sourceBadge(showCfg.BudgetUSD.Source))
 	} else {
-		fmt.Printf("  Budget       %s\n", tui.PrimaryStyle.Render(fmt.Sprintf("$%.2f", healCfg.BudgetUSD)))
+		fmt.Printf("  Budget       %-20s %s\n", tui.PrimaryStyle.Render(fmt.Sprintf("$%.2f", showCfg.BudgetUSD.Value)), sourceBadge(showCfg.BudgetUSD.Source))
 	}
 
-	if healCfg.Verbose {
-		fmt.Printf("  Verbose      %s\n", tui.PrimaryStyle.Render("on"))
+	if showCfg.Verbose.Value {
+		fmt.Printf("  Verbose      %-20s %s\n", tui.PrimaryStyle.Render("on"), sourceBadge(showCfg.Verbose.Source))
 	} else {
-		fmt.Printf("  Verbose      %s\n", tui.MutedStyle.Render("off"))
+		fmt.Printf("  Verbose      %-20s %s\n", tui.MutedStyle.Render("off"), sourceBadge(showCfg.Verbose.Source))
 	}
 
-	// Section: Trusted Repositories
-	fmt.Printf("\n%s\n", tui.SecondaryStyle.Render("Trusted Repositories"))
-	if len(cfg.TrustedRepos) == 0 {
-		fmt.Printf("  %s\n", tui.MutedStyle.Render("none"))
-	} else {
-		for sha, repo := range cfg.TrustedRepos {
-			shortSHA := sha
-			if len(shortSHA) > 12 {
-				shortSHA = shortSHA[:12]
-			}
-			// Show repo URL or SHA if no URL
-			label := repo.RemoteURL
-			if label == "" {
-				label = shortSHA
-			}
-			fmt.Printf("  %s\n", tui.PrimaryStyle.Render(label))
-
-			// Show approved targets if any
-			if len(repo.ApprovedTargets) > 0 {
-				targets := strings.Join(repo.ApprovedTargets, ", ")
-				fmt.Printf("    targets: %s\n", tui.MutedStyle.Render(targets))
-			}
+	// Section: Local Config
+	if len(showCfg.ExtraCommands) > 0 || len(showCfg.ExtraTargets) > 0 {
+		fmt.Printf("\n%s\n", tui.SecondaryStyle.Render("Local Config (detent.jsonc)"))
+		if len(showCfg.ExtraCommands) > 0 {
+			fmt.Printf("  Commands     %s\n", tui.MutedStyle.Render(strings.Join(showCfg.ExtraCommands, ", ")))
+		}
+		if len(showCfg.ExtraTargets) > 0 {
+			fmt.Printf("  Targets      %s\n", tui.MutedStyle.Render(strings.Join(showCfg.ExtraTargets, ", ")))
 		}
 	}
 
@@ -124,6 +124,14 @@ func runConfigShow(_ *cobra.Command, _ []string) error {
 
 	fmt.Println()
 	return nil
+}
+
+// sourceBadge returns a styled badge for the given source.
+func sourceBadge(source persistence.ValueSource) string {
+	if source == persistence.SourceLocal {
+		return tui.BadgeLocal()
+	}
+	return tui.Badge(source.String())
 }
 
 func runConfigReset(_ *cobra.Command, _ []string) error {
@@ -143,28 +151,25 @@ func runConfigReset(_ *cobra.Command, _ []string) error {
 	}
 
 	// Load existing config to preserve API key
-	existingCfg, _ := persistence.LoadGlobalConfig()
+	existingCfg, _ := persistence.Load("")
 	apiKey := ""
 	if existingCfg != nil {
-		apiKey = existingCfg.AnthropicAPIKey
+		apiKey = existingCfg.APIKey
 	}
 
-	// Create new config with defaults
-	newCfg := &persistence.GlobalConfig{
-		AnthropicAPIKey: apiKey,
-		Heal:            persistence.DefaultHealConfig(),
+	// Create new config with defaults and save
+	newCfg, _ := persistence.Load("")
+	if apiKey != "" {
+		_ = newCfg.SetAPIKey(apiKey)
 	}
-
-	if err := persistence.SaveGlobalConfig(newCfg); err != nil {
+	if err := newCfg.SaveGlobal(); err != nil {
 		return fmt.Errorf("saving config: %w", err)
 	}
 
-	healCfg := newCfg.Heal
-
 	fmt.Printf("%s Configuration reset\n\n", tui.SuccessStyle.Render("✓"))
-	fmt.Printf("  Model        %s\n", tui.PrimaryStyle.Render(healCfg.Model))
-	fmt.Printf("  Timeout      %s\n", tui.PrimaryStyle.Render(fmt.Sprintf("%d min", healCfg.TimeoutMins)))
-	fmt.Printf("  Budget       %s\n", tui.PrimaryStyle.Render(fmt.Sprintf("$%.2f", healCfg.BudgetUSD)))
+	fmt.Printf("  Model        %s\n", tui.PrimaryStyle.Render(persistence.DefaultModel))
+	fmt.Printf("  Timeout      %s\n", tui.PrimaryStyle.Render(fmt.Sprintf("%d min", persistence.DefaultTimeoutMins)))
+	fmt.Printf("  Budget       %s\n", tui.PrimaryStyle.Render(fmt.Sprintf("$%.2f", persistence.DefaultBudgetUSD)))
 	fmt.Printf("  Verbose      %s\n\n", tui.MutedStyle.Render("off"))
 
 	return nil
@@ -180,6 +185,52 @@ func runConfigPath(_ *cobra.Command, _ []string) error {
 
 	if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
 		fmt.Fprintf(os.Stderr, "%s file does not exist yet\n", tui.Bullet())
+	}
+
+	return nil
+}
+
+func runConfigInteractive(_ *cobra.Command, _ []string) error {
+	// Detect if in a git repo
+	repoRoot, _ := filepath.Abs(".")
+	_, branchErr := os.Stat(filepath.Join(repoRoot, ".git"))
+	inRepo := branchErr == nil
+	repoIdentifier := git.GetRepoIdentifier(repoRoot)
+
+	if !inRepo {
+		repoRoot = "" // Force global-only mode
+	}
+
+	// Load config with sources
+	cfg, err := persistence.LoadWithSources(repoRoot)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "\n%s Failed to load configuration\n", tui.ErrorStyle.Render("✗"))
+		fmt.Fprintf(os.Stderr, "%s %s\n\n", tui.Bullet(), tui.MutedStyle.Render(err.Error()))
+		return nil
+	}
+
+	// Create TUI model
+	model := tuiconfig.NewModel(cfg, tuiconfig.Options{
+		InRepo:         inRepo,
+		GlobalPath:     tuiconfig.GetGlobalPath(),
+		LocalPath:      tuiconfig.GetLocalPath(repoRoot),
+		Version:        Version,
+		RepoIdentifier: repoIdentifier,
+	})
+
+	// Run interactive TUI with alt screen to avoid duplication on editor open
+	program := tea.NewProgram(model, tea.WithAltScreen())
+	if _, err := program.Run(); err != nil {
+		return err
+	}
+
+	// Outro: show header again after alt screen clears, then status
+	fmt.Println()
+	fmt.Println(tui.Header(Version, repoIdentifier))
+	if model.WasSaved() {
+		fmt.Printf("  %s Config updated\n\n", tui.SuccessStyle.Render("✓"))
+	} else {
+		fmt.Printf("  %s No changes\n\n", tui.MutedStyle.Render("·"))
 	}
 
 	return nil
