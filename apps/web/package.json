@@ -4,6 +4,7 @@
   "type": "module",
   "private": true,
   "scripts": {
+    "prebuild": "cp ../../install.sh public/install.sh && cp ../cli/schema/detent.schema.json public/detent.schema.json",
     "dev": "next dev --port 3000",
     "build": "next build",
     "start": "next start",

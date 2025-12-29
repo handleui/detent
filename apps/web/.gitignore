@@ -34,3 +34,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# copied from source during prebuild
+/public/install.sh
+/public/detent.schema.json

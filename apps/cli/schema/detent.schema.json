@@ -1,5 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema",
+  "$id": "https://detent.sh/detent.schema.json",
   "title": "Detent Configuration",
   "description": "Configuration for Detent CLI - GitHub Actions local runner with AI-powered error fixing",
   "type": "object",
