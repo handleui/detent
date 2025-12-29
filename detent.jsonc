@@ -1,0 +1,7 @@
+{
+  "$schema": "https://detent.sh/schema.json#local",
+  "model": "claude-sonnet-4-5",
+  "budget_usd": 20,
+  "timeout_mins": 10,
+  "verbose": false
+}
