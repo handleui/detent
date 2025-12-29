@@ -244,9 +244,9 @@ func runCheck(cmd *cobra.Command, args []string) error {
 		}
 	} else {
 		if cfg.IsAgentMode {
-			_, _ = fmt.Fprintf(os.Stderr, "[detent] Executing workflows with event '%s'...\n", cfg.Event)
+			_, _ = fmt.Fprintln(os.Stderr, "  · Running workflows...")
 		} else {
-			_, _ = fmt.Fprintf(os.Stderr, "Running workflows... ")
+			_, _ = fmt.Fprint(os.Stderr, "Running workflows... ")
 		}
 		err = r.Run(ctx)
 		if err != nil {
@@ -254,16 +254,10 @@ func runCheck(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("running act: %w", err)
 		}
 		result := r.GetResult()
-		if cfg.IsAgentMode {
-			_, _ = fmt.Fprintf(os.Stderr, "[detent] Workflow execution completed in %s (exit code: %d)\n", result.Duration, result.ExitCode)
-			if result.HasErrors() {
-				_, _ = fmt.Fprintf(os.Stderr, "[detent] Found %d issues to fix\n", result.Grouped.Total)
-			} else {
-				_, _ = fmt.Fprintf(os.Stderr, "[detent] No issues found\n")
-			}
-		} else {
+		if !cfg.IsAgentMode {
 			_, _ = fmt.Fprintf(os.Stderr, "done (%s)\n", result.Duration)
 		}
+		// Agent mode: error report output provides all needed context
 	}
 
 	// Handle cancellation
