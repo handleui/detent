@@ -183,7 +183,7 @@ func (l *HealLoop) Run(ctx context.Context, systemPrompt, userPrompt string) (*R
 		})
 
 		// Check per-run budget (don't return error - let caller decide how to handle)
-		if l.config.BudgetPerRunUSD > 0 && result.CostUSD >= l.config.BudgetPerRunUSD {
+		if l.config.BudgetPerRunUSD > 0 && result.CostUSD > l.config.BudgetPerRunUSD {
 			result.BudgetExceeded = true
 			result.BudgetExceededReason = "per-run"
 			result.Duration = time.Since(startTime)
@@ -191,7 +191,7 @@ func (l *HealLoop) Run(ctx context.Context, systemPrompt, userPrompt string) (*R
 		}
 
 		// Check monthly budget (-1 = unlimited, >= 0 = remaining budget)
-		if l.config.RemainingMonthlyUSD >= 0 && result.CostUSD >= l.config.RemainingMonthlyUSD {
+		if l.config.RemainingMonthlyUSD >= 0 && result.CostUSD > l.config.RemainingMonthlyUSD {
 			result.BudgetExceeded = true
 			result.BudgetExceededReason = "monthly"
 			result.Duration = time.Since(startTime)
