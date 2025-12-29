@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema",
+  "title": "Detent Configuration",
+  "description": "Configuration for Detent CLI - GitHub Actions local runner with AI-powered error fixing",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "JSON Schema reference URL"
+    },
+    "api_key": {
+      "type": "string",
+      "description": "Anthropic API key (global config only, prefer ANTHROPIC_API_KEY env var)"
+    },
+    "model": {
+      "type": "string",
+      "pattern": "^claude-",
+      "default": "claude-sonnet-4-5",
+      "description": "Claude model to use for AI features"
+    },
+    "budget_per_run_usd": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100,
+      "default": 1.0,
+      "description": "Maximum spend per heal run in USD"
+    },
+    "budget_monthly_usd": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1000,
+      "description": "Monthly budget limit in USD"
+    },
+    "timeout_mins": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 60,
+      "default": 10,
+      "description": "Timeout for AI operations in minutes"
+    },
+    "commands": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Additional allowed shell commands (local config only)"
+    },
+    "trusted_repos": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "remote_url": {
+            "type": "string"
+          },
+          "trusted_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "description": "Trusted repository records (global config only, managed by CLI)"
+    },
+    "spend_history": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "number"
+      },
+      "description": "Monthly spend tracking with YYYY-MM keys (global config only, managed by CLI)"
+    }
+  },
+  "additionalProperties": false
+}

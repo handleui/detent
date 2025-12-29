@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/detent/cli/schema"
 )
 
 // --- File paths ---
@@ -16,6 +18,10 @@ const (
 	detentDirName    = ".detent"
 	globalConfigFile = "config.json"
 	localConfigFile  = "detent.json"
+
+	// SchemaURL is the JSON Schema reference for config files.
+	// Uses relative path since schema is written alongside config.
+	SchemaURL = "./schema.json"
 
 	// DetentHomeEnv overrides ~/.detent for testing.
 	DetentHomeEnv = "DETENT_HOME"
@@ -469,7 +475,7 @@ func (c *Config) SaveGlobal() error {
 	}
 
 	// Set schema
-	c.global.Schema = "https://detent.sh/schema.json"
+	c.global.Schema = SchemaURL
 
 	dir, err := GetDetentDir()
 	if err != nil {
@@ -493,6 +499,13 @@ func (c *Config) SaveGlobal() error {
 	// #nosec G306 - 0600 is intentionally restrictive
 	if writeErr := os.WriteFile(path, data, 0o600); writeErr != nil {
 		return fmt.Errorf("writing: %w", writeErr)
+	}
+
+	// Write schema file alongside config for IDE support
+	schemaPath := filepath.Join(dir, "schema.json")
+	// #nosec G306 - 0644 is fine for schema file
+	if schemaErr := os.WriteFile(schemaPath, []byte(schema.JSON), 0o644); schemaErr != nil {
+		return fmt.Errorf("writing schema: %w", schemaErr)
 	}
 
 	return nil
@@ -528,7 +541,7 @@ func (c *Config) SaveLocal() error {
 	}
 
 	// Set schema
-	c.local.Schema = "https://detent.sh/schema.json"
+	c.local.Schema = SchemaURL
 
 	data, marshalErr := json.MarshalIndent(c.local, "", "  ")
 	if marshalErr != nil {
@@ -556,7 +569,7 @@ func SaveLocalWithSources(cfg *ConfigWithSources) error {
 	}
 
 	// Set schema
-	cfg.Local.Schema = "https://detent.sh/schema.json"
+	cfg.Local.Schema = SchemaURL
 
 	data, marshalErr := json.MarshalIndent(cfg.Local, "", "  ")
 	if marshalErr != nil {

@@ -25,6 +25,7 @@
 - Follow golangci-lint standard preset with gosec, gocritic, misspell, errname, exhaustive enabled
 - Handle errors explicitly, use clear naming conventions (errors prefixed with Err)
 - Enable shadow and nilness checks via govet
+- Build with `bun run build` only, never create temp binaries (e.g., /tmp/detent-test)
 
 ## Project Structure
 

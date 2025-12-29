@@ -11,6 +11,7 @@ import (
 	"github.com/detent/cli/internal/persistence"
 	"github.com/detent/cli/internal/tui"
 	tuiconfig "github.com/detent/cli/internal/tui/config"
+	"github.com/detent/cli/schema"
 	"github.com/spf13/cobra"
 )
 
@@ -56,10 +57,25 @@ var configPathCmd = &cobra.Command{
 	RunE:  runConfigPath,
 }
 
+var configSchemaCmd = &cobra.Command{
+	Use:   "schema",
+	Short: "Output JSON schema for config files",
+	Long: `Output the JSON schema for detent configuration files.
+
+Use this for IDE support or offline validation:
+  detent config schema > ~/.detent/schema.json
+
+Then reference in your config:
+  {"$schema": "./schema.json", ...}`,
+	Args: cobra.NoArgs,
+	RunE: runConfigSchema,
+}
+
 func init() {
 	configCmd.AddCommand(configShowCmd)
 	configCmd.AddCommand(configResetCmd)
 	configCmd.AddCommand(configPathCmd)
+	configCmd.AddCommand(configSchemaCmd)
 
 	configResetCmd.Flags().BoolVarP(&forceReset, "force", "f", false, "skip confirmation")
 }
@@ -190,6 +206,11 @@ func runConfigPath(_ *cobra.Command, _ []string) error {
 		fmt.Fprintf(os.Stderr, "%s file does not exist yet\n", tui.Bullet())
 	}
 
+	return nil
+}
+
+func runConfigSchema(_ *cobra.Command, _ []string) error {
+	fmt.Print(schema.JSON)
 	return nil
 }
 
