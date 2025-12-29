@@ -58,9 +58,16 @@ func PrepareWorktree(ctx context.Context, repoRoot, worktreeDir string) (*Worktr
 			return existingInfo, cleanup, nil
 		}
 		// Directory exists but is not a valid worktree (orphaned/broken) - clean it up
-		if _, statErr := os.Stat(worktreeDir); statErr == nil {
-			_ = os.RemoveAll(worktreeDir)
-			pruneWorktrees(ctx, repoRoot)
+		// SECURITY: Use Lstat to detect symlinks before removal
+		if info, statErr := os.Lstat(worktreeDir); statErr == nil {
+			// Only remove if it's an actual directory, not a symlink
+			if info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+				_ = os.RemoveAll(worktreeDir)
+				pruneWorktrees(ctx, repoRoot)
+			} else if info.Mode()&os.ModeSymlink != 0 {
+				// Symlink found where worktree should be - security issue
+				return nil, nil, fmt.Errorf("worktree path %s is a symlink, refusing to proceed", worktreeDir)
+			}
 		}
 	}
 
@@ -80,15 +87,20 @@ func PrepareWorktree(ctx context.Context, repoRoot, worktreeDir string) (*Worktr
 		}
 	}
 
-	// Defense in depth: verify not a symlink
+	// Defense in depth: verify not a symlink after creation
 	info, err := os.Lstat(worktreeDir)
-	if err != nil || info.Mode()&os.ModeSymlink != 0 {
-		_ = os.RemoveAll(worktreeDir)
-		return nil, nil, fmt.Errorf("worktree directory security check failed")
+	if err != nil {
+		return nil, nil, fmt.Errorf("worktree directory security check failed: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, nil, fmt.Errorf("worktree path %s is a symlink, refusing to proceed", worktreeDir)
+	}
+	if !info.IsDir() {
+		return nil, nil, fmt.Errorf("worktree path %s is not a directory", worktreeDir)
 	}
 
 	if err := createWorktree(ctx, repoRoot, worktreeDir, commitSHA); err != nil {
-		_ = os.RemoveAll(worktreeDir)
+		_ = safeRemoveDir(worktreeDir)
 		pruneWorktrees(ctx, repoRoot)
 		return nil, nil, fmt.Errorf("creating worktree: %w", err)
 	}
@@ -232,6 +244,30 @@ func removeWorktree(ctx context.Context, repoRoot, worktreePath string) error {
 	return nil
 }
 
+// safeRemoveDir removes a directory only if it's a real directory (not a symlink).
+// This is a defense-in-depth measure to prevent TOCTOU attacks where an attacker
+// might replace a directory with a symlink between security checks.
+// Returns nil if path doesn't exist or is a symlink (no action taken).
+func safeRemoveDir(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // Already gone
+		}
+		return err
+	}
+
+	// Only remove actual directories, never symlinks
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil // Don't remove symlinks
+	}
+	if !info.IsDir() {
+		return nil // Don't remove non-directories
+	}
+
+	return os.RemoveAll(path)
+}
+
 // pruneWorktrees cleans up orphaned git worktree metadata.
 // Uses context for cancellation and wraps it with a cleanup timeout.
 func pruneWorktrees(ctx context.Context, repoRoot string) {
@@ -264,60 +300,25 @@ func ComputeCurrentRunID(repoRoot string) (runID, treeHash, commitSHA string, er
 	return runID, refs.TreeHash, refs.CommitSHA, nil
 }
 
-// GetDetentWorktreesDir returns the directory where persistent worktrees are stored.
-// Returns ~/.detent/worktrees/
-func GetDetentWorktreesDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("failed to get user home directory: %w", err)
-	}
-	return filepath.Join(home, ".detent", "worktrees"), nil
-}
-
-// GetWorktreePath returns the persistent worktree path for a given run ID.
-// Returns ~/.detent/worktrees/{runID}/
+// CreateEphemeralWorktreePath returns a path for an ephemeral worktree in the system temp directory.
+// Format: {tempDir}/detent-{runID}
 // Validates that the runID is a safe hex string to prevent path traversal attacks.
-func GetWorktreePath(runID string) (string, error) {
+func CreateEphemeralWorktreePath(runID string) (string, error) {
 	// Validate runID is a hex string (as produced by ComputeRunID)
 	// This prevents path traversal attacks with "../" or other malicious input
 	if !isValidRunID(runID) {
 		return "", fmt.Errorf("invalid run ID: must be a hex string")
 	}
 
-	worktreesDir, err := GetDetentWorktreesDir()
-	if err != nil {
-		return "", err
-	}
+	tempDir := os.TempDir()
+	result := filepath.Join(tempDir, "detent-"+runID)
 
-	result := filepath.Join(worktreesDir, runID)
-
-	// Defense in depth: verify the result is still within worktreesDir
-	// This protects against edge cases in filepath.Join behavior
-	if !strings.HasPrefix(filepath.Clean(result), filepath.Clean(worktreesDir)) {
+	// Defense in depth: verify the result is still within tempDir
+	if !strings.HasPrefix(filepath.Clean(result), filepath.Clean(tempDir)) {
 		return "", fmt.Errorf("path traversal detected in run ID")
 	}
 
 	return result, nil
-}
-
-// WorktreeExists checks if a worktree exists for the given run ID.
-// Uses Lstat to prevent symlink attacks - a symlink to a directory
-// is not considered a valid worktree.
-func WorktreeExists(runID string) bool {
-	path, err := GetWorktreePath(runID)
-	if err != nil {
-		return false
-	}
-	// Use Lstat instead of Stat to detect symlinks
-	info, err := os.Lstat(path)
-	if err != nil {
-		return false
-	}
-	// Reject symlinks - only accept actual directories
-	if info.Mode()&os.ModeSymlink != 0 {
-		return false
-	}
-	return info.IsDir()
 }
 
 // isValidRunID validates that a run ID contains only hexadecimal characters.

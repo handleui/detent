@@ -23,13 +23,11 @@ const (
 
 	// Log tail display settings
 	tailLinesToShow = 3
+	maxLogLines     = 10000 // Cap log history to prevent unbounded memory growth
 
-	// Color codes for spinner and status
-	spinnerColor        = "205"
-	checkStatusGreen    = "42"
-	checkStatusRed      = "196"
-	hintTextGray        = "241"
-	logBoxBorderColor   = "63"
+	// Color codes for unique elements
+	spinnerColor      = "205" // Pink spinner animation
+	logBoxBorderColor = "63"  // Purple log box border
 )
 
 // LogMsg is sent when new log content arrives
@@ -170,6 +168,12 @@ func (m *CheckModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Append to full log history
 		m.allLogs = append(m.allLogs, string(msg))
 
+		// Cap log history to prevent unbounded memory growth
+		if len(m.allLogs) > maxLogLines {
+			// Keep the last maxLogLines entries
+			m.allLogs = m.allLogs[len(m.allLogs)-maxLogLines:]
+		}
+
 		// Update tail lines (last N lines)
 		if len(m.allLogs) > tailLinesToShow {
 			m.tailLines = m.allLogs[len(m.allLogs)-tailLinesToShow:]
@@ -250,8 +254,7 @@ func (m *CheckModel) renderCompactView() string {
 	}
 
 	// Toggle hint
-	hintStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(hintTextGray))
-	b.WriteString(hintStyle.Render("⊕ Full logs (press 'o' to expand, 'q' to quit)\n"))
+	b.WriteString(MutedStyle.Render("⊕ Full logs (press 'o' to expand, 'q' to quit)\n"))
 
 	return b.String()
 }
@@ -281,8 +284,7 @@ func (m *CheckModel) renderExpandedView() string {
 	b.WriteString(logBoxStyle.Render(m.viewport.View()) + "\n")
 
 	// Toggle hint
-	hintStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(hintTextGray))
-	b.WriteString(hintStyle.Render("⊖ Full logs (press 'o' to collapse, 'q' to quit)\n"))
+	b.WriteString(MutedStyle.Render("⊖ Full logs (press 'o' to collapse, 'q' to quit)\n"))
 
 	return b.String()
 }
@@ -302,15 +304,11 @@ func (m *CheckModel) renderCompletionView() string {
 		b.WriteString(errBuf.String())
 	case workflowFailed:
 		// Workflow failed but no issues extracted - actual failure
-		headerStyle := lipgloss.NewStyle().
-			Foreground(lipgloss.Color(checkStatusRed)).
-			Bold(true)
+		headerStyle := ErrorStyle.Bold(true)
 		b.WriteString(headerStyle.Render(fmt.Sprintf("✗ Check failed in %s\n", m.duration)))
 	default:
 		// All good - no issues found
-		headerStyle := lipgloss.NewStyle().
-			Foreground(lipgloss.Color(checkStatusGreen)).
-			Bold(true)
+		headerStyle := SuccessStyle.Bold(true)
 		b.WriteString(headerStyle.Render(fmt.Sprintf("✓ Check passed in %s\n", m.duration)))
 	}
 

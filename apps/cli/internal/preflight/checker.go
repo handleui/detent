@@ -12,7 +12,6 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/detent/cli/internal/commands"
 	"github.com/detent/cli/internal/docker"
 	"github.com/detent/cli/internal/git"
@@ -24,7 +23,7 @@ import (
 var ErrCancelled = errors.New("cancelled")
 
 // cancelledMessage is the friendly goodbye shown when user cancels
-var cancelledMessage = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render("Action cancelled. Maybe next time?")
+var cancelledMessage = tui.SecondaryStyle.Render("Action cancelled. Maybe next time?")
 
 const (
 	// preflightVisualDelay allows the spinner to render before check execution begins.
@@ -50,6 +49,7 @@ type Result struct {
 	CleanupWorkflows func()
 	CleanupWorktree  func()
 	StashInfo        *git.StashInfo // Tracks if changes were stashed during preflight
+	RepoRoot         string         // Repository root path for stash restoration
 }
 
 // workflowPrepResult holds the results from workflow preparation.
@@ -77,7 +77,11 @@ func (r *Result) Cleanup() {
 	}
 
 	// Restore stashed changes if we stashed them during preflight
-	git.RestoreStashIfNeeded(".", r.StashInfo)
+	repoRoot := r.RepoRoot
+	if repoRoot == "" {
+		repoRoot = "." // Fallback for backwards compatibility
+	}
+	git.RestoreStashIfNeeded(repoRoot, r.StashInfo)
 }
 
 // preflightChecker helps execute individual preflight checks with consistent error handling.
@@ -303,21 +307,21 @@ func RunPreflightChecks(ctx context.Context, workflowPath, repoRoot, runID, work
 		return nil, err
 	}
 
-	// Check 6: Create worktree (persistent, at ~/.detent/worktrees/{runID})
+	// Check 6: Create worktree (ephemeral, cleaned up after use)
 	worktreeResult, err := checker.executeWorktreePrep(
 		"Creating isolated worktree",
 		func() (worktreePrepResult, error) {
-			worktreePath, pathErr := git.GetWorktreePath(runID)
+			worktreePath, pathErr := git.CreateEphemeralWorktreePath(runID)
 			if pathErr != nil {
 				workflowResult.cleanup()
 				return worktreePrepResult{}, fmt.Errorf("getting worktree path: %w", pathErr)
 			}
-			info, _, wtErr := git.PrepareWorktree(ctx, repoRoot, worktreePath)
+			info, cleanup, wtErr := git.PrepareWorktree(ctx, repoRoot, worktreePath)
 			if wtErr != nil {
 				workflowResult.cleanup()
 				return worktreePrepResult{}, fmt.Errorf("creating worktree: %w", wtErr)
 			}
-			return worktreePrepResult{info: info, cleanup: nil}, nil // Persistent, no cleanup
+			return worktreePrepResult{info: info, cleanup: cleanup}, nil
 		},
 	)
 	if err != nil {
@@ -336,5 +340,6 @@ func RunPreflightChecks(ctx context.Context, workflowPath, repoRoot, runID, work
 		CleanupWorkflows: workflowResult.cleanup,
 		CleanupWorktree:  worktreeResult.cleanup,
 		StashInfo:        stashInfo,
+		RepoRoot:         repoRoot,
 	}, nil
 }

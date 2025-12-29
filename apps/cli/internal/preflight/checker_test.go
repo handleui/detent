@@ -16,6 +16,7 @@ func TestPreflightResultStruct(t *testing.T) {
 		WorktreeInfo:     &git.WorktreeInfo{},
 		CleanupWorkflows: cleanup,
 		CleanupWorktree:  cleanup,
+		RepoRoot:         "/tmp/repo",
 	}
 
 	if result.TmpDir != "/tmp/test" {

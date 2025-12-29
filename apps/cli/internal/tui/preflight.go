@@ -13,12 +13,6 @@ const (
 	cursorUpEscapePrefix = "\033["
 	cursorUpEscapeSuffix = "A"
 	clearToEndOfScreen   = "\033[J"
-
-	// Preflight check color codes - green is brand color, rest are neutral
-	colorPending = "245"
-	colorRunning = "252"
-	colorSuccess = "42"
-	colorError   = "252"
 )
 
 // PreflightCheck represents a single pre-flight check
@@ -27,13 +21,6 @@ type PreflightCheck struct {
 	Status string // "pending", "running", "success", "error"
 	Error  error
 }
-
-var (
-	checkPendingStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(colorPending))
-	checkRunningStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(colorRunning))
-	checkSuccessStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(colorSuccess))
-	checkErrorStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color(colorError))
-)
 
 // RenderPreflightCheck renders a single check line
 func RenderPreflightCheck(check PreflightCheck) string {
@@ -44,22 +31,22 @@ func RenderPreflightCheck(check PreflightCheck) string {
 	switch check.Status {
 	case "pending":
 		icon = "-"
-		style = checkPendingStyle
+		style = SecondaryStyle
 	case "running":
 		icon = ">"
-		style = checkRunningStyle
+		style = PrimaryStyle
 	case "success":
 		icon = "+"
-		style = checkSuccessStyle
+		style = SuccessStyle
 	case "error":
 		icon = "x"
-		style = checkErrorStyle
+		style = ErrorStyle
 		if check.Error != nil {
 			suffix = fmt.Sprintf(" (%s)", check.Error.Error())
 		}
 	default:
 		icon = "-"
-		style = checkPendingStyle
+		style = SecondaryStyle
 	}
 
 	return style.Render(fmt.Sprintf("%s %s%s", icon, check.Name, suffix))

@@ -139,11 +139,20 @@ func NewSQLiteWriter(repoRoot string) (*SQLiteWriter, error) {
 		return nil, fmt.Errorf("failed to open SQLite database: %w", err)
 	}
 
+	// Configure connection pool for CLI usage (single connection is optimal for SQLite)
+	db.SetMaxOpenConns(1)    // SQLite performs best with single writer
+	db.SetMaxIdleConns(1)    // Keep connection warm for subsequent queries
+	db.SetConnMaxLifetime(0) // Don't close idle connections (CLI is short-lived)
+
 	// Apply performance pragmas for 2-5x speedup
 	pragmas := []string{
-		"PRAGMA journal_mode=WAL",    // Write-Ahead Logging for better concurrency
-		"PRAGMA synchronous=NORMAL",  // Faster writes, still safe with WAL
-		"PRAGMA cache_size=-64000",   // 64MB cache for better performance
+		"PRAGMA journal_mode=WAL",          // Write-Ahead Logging for better concurrency
+		"PRAGMA synchronous=NORMAL",        // Faster writes, still safe with WAL
+		"PRAGMA cache_size=-64000",         // 64MB cache for better performance
+		"PRAGMA busy_timeout=5000",         // Wait 5s on lock instead of failing immediately
+		"PRAGMA mmap_size=268435456",       // 256MB memory-mapped I/O for faster reads
+		"PRAGMA temp_store=MEMORY",         // Store temp tables in memory
+		"PRAGMA page_size=4096",            // Optimal page size for most filesystems
 	}
 
 	for _, pragma := range pragmas {
@@ -169,10 +178,10 @@ func NewSQLiteWriter(repoRoot string) (*SQLiteWriter, error) {
 		return nil, fmt.Errorf("failed to initialize schema: %w", err)
 	}
 
-	// Set secure file permissions on database file (owner read/write only)
-	// This must be done after schema initialization which creates the file
-	// #nosec G302 - intentionally setting restrictive permissions
-	if err := os.Chmod(dbPath, 0o600); err != nil {
+	// Set secure file permissions on database and related files (owner read/write only)
+	// This must be done after schema initialization which creates the files
+	// SQLite WAL mode creates additional files: .db-wal and .db-shm
+	if err := secureDBFiles(dbPath); err != nil {
 		if closeErr := db.Close(); closeErr != nil {
 			return nil, fmt.Errorf("failed to set database permissions: %w (additionally, failed to close database: %v)", err, closeErr)
 		}
@@ -180,6 +189,27 @@ func NewSQLiteWriter(repoRoot string) (*SQLiteWriter, error) {
 	}
 
 	return writer, nil
+}
+
+// secureDBFiles sets restrictive permissions (0600) on the database file and
+// associated WAL/SHM files created by SQLite in WAL mode.
+func secureDBFiles(dbPath string) error {
+	// Main database file
+	// #nosec G302 - intentionally setting restrictive permissions
+	if err := os.Chmod(dbPath, 0o600); err != nil {
+		return fmt.Errorf("chmod %s: %w", dbPath, err)
+	}
+
+	// WAL and SHM files (may not exist yet, ignore ENOENT)
+	walFiles := []string{dbPath + "-wal", dbPath + "-shm"}
+	for _, f := range walFiles {
+		// #nosec G302 - intentionally setting restrictive permissions
+		if err := os.Chmod(f, 0o600); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("chmod %s: %w", f, err)
+		}
+	}
+
+	return nil
 }
 
 // initSchema creates the database tables and indices
@@ -678,6 +708,11 @@ func (w *SQLiteWriter) RecordFindings(findings []*FindingRecord) error {
 	w.batchMutex.Lock()
 	defer w.batchMutex.Unlock()
 
+	// Pre-allocate if batch is empty and findings will exceed capacity
+	if len(w.batch) == 0 && len(findings) > cap(w.batch) {
+		w.batch = make([]*FindingRecord, 0, len(findings))
+	}
+
 	// Add all findings to the batch
 	w.batch = append(w.batch, findings...)
 
@@ -697,6 +732,13 @@ func (w *SQLiteWriter) RecordError(finding *FindingRecord) error {
 	}
 
 	return nil
+}
+
+// Flush forces any pending batched errors to be written to the database
+func (w *SQLiteWriter) Flush() error {
+	w.batchMutex.Lock()
+	defer w.batchMutex.Unlock()
+	return w.flushBatch()
 }
 
 // flushBatch processes all batched errors in a single transaction
@@ -756,13 +798,17 @@ func (w *SQLiteWriter) flushBatch() (err error) {
 
 	now := time.Now().Unix()
 
-	// Compute content hashes once per finding (avoid recomputing in second loop)
+	// Compute content hashes once per finding (use pre-computed if available)
 	findingHashes := make(map[*FindingRecord]string, len(w.batch))
 	contentHashes := make([]string, 0, len(w.batch))
 	seenHashes := make(map[string]bool)
 
 	for _, finding := range w.batch {
-		contentHash := ComputeContentHash(finding.Message)
+		// Use pre-computed hash if available, otherwise compute
+		contentHash := finding.ContentHash
+		if contentHash == "" {
+			contentHash = ComputeContentHash(finding.Message)
+		}
 		findingHashes[finding] = contentHash
 		if !seenHashes[contentHash] {
 			contentHashes = append(contentHashes, contentHash)
@@ -879,21 +925,16 @@ func (w *SQLiteWriter) flushBatch() (err error) {
 	return nil
 }
 
-// FlushBatch flushes any remaining batched errors (public method for external callers)
+// FlushBatch flushes any remaining batched errors (public method for external callers).
+//
+// Deprecated: Use Flush() instead. This is kept for backwards compatibility.
 func (w *SQLiteWriter) FlushBatch() error {
-	w.batchMutex.Lock()
-	defer w.batchMutex.Unlock()
-	return w.flushBatch()
+	return w.Flush()
 }
 
-// FinalizeRun updates the run record with completion information
+// FinalizeRun updates the run record with completion information.
+// Note: Caller should call Flush() before this method to ensure accurate error counts.
 func (w *SQLiteWriter) FinalizeRun(runID string, totalErrors int) error {
-	// Flush any remaining batched errors
-	if err := w.FlushBatch(); err != nil {
-		return fmt.Errorf("failed to flush batch: %w", err)
-	}
-
-	// Update run record
 	updateQuery := `
 		UPDATE runs
 		SET completed_at = ?, total_errors = ?
@@ -1277,12 +1318,22 @@ func (w *SQLiteWriter) GetLocationsForError(errorID string) ([]*ErrorLocation, e
 	return locations, nil
 }
 
-// Close closes the database connection
+// Close closes the database connection and secures file permissions.
 func (w *SQLiteWriter) Close() error {
-	if w.db != nil {
-		return w.db.Close()
+	if w.db == nil {
+		return nil
 	}
-	return nil
+
+	// Close the database first
+	closeErr := w.db.Close()
+
+	// Secure WAL/SHM files that may have been created during usage
+	// Do this even if close failed (best effort)
+	if w.path != "" {
+		_ = secureDBFiles(w.path)
+	}
+
+	return closeErr
 }
 
 // Path returns the absolute path to the SQLite database file

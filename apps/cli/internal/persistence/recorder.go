@@ -117,6 +117,11 @@ func (r *Recorder) buildFindingRecord(err *errors.ExtractedError) *FindingRecord
 
 // Finalize completes the run and closes the database connection
 func (r *Recorder) Finalize(exitCode int) error {
+	// Flush any pending batched errors before counting
+	if err := r.sqlite.Flush(); err != nil {
+		return fmt.Errorf("failed to flush pending errors: %w", err)
+	}
+
 	totalErrors := r.sqlite.GetErrorCount()
 
 	if err := r.sqlite.FinalizeRun(r.runID, totalErrors); err != nil {

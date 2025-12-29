@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,8 +12,27 @@ import (
 	"github.com/detent/cli/internal/util"
 )
 
+// setupTestDetentHomeRecorder sets DETENT_HOME to a temp directory for test isolation.
+func setupTestDetentHomeRecorder(t *testing.T) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	original := os.Getenv(DetentHomeEnv)
+	if err := os.Setenv(DetentHomeEnv, tmpDir); err != nil {
+		t.Fatalf("Failed to set %s: %v", DetentHomeEnv, err)
+	}
+	t.Cleanup(func() {
+		if original == "" {
+			os.Unsetenv(DetentHomeEnv)
+		} else {
+			os.Setenv(DetentHomeEnv, original)
+		}
+		repoIDCache = sync.Map{}
+	})
+}
+
 // TestNewRecorder tests recorder creation
 func TestNewRecorder(t *testing.T) {
+	setupTestDetentHomeRecorder(t)
 	tmpDir := t.TempDir()
 
 	repoDir := filepath.Join(tmpDir, "repo")
@@ -78,6 +98,7 @@ func TestNewRecorder(t *testing.T) {
 
 // TestRecorder_RecordFinding tests finding recording
 func TestRecorder_RecordFinding(t *testing.T) {
+	setupTestDetentHomeRecorder(t)
 	tmpDir := t.TempDir()
 	recorder, err := NewRecorder(tmpDir, "test", "abc123", "github")
 	if err != nil {
@@ -96,6 +117,11 @@ func TestRecorder_RecordFinding(t *testing.T) {
 		t.Fatalf("RecordFinding() error = %v", err)
 	}
 
+	// Flush pending batch before checking count
+	if err := recorder.sqlite.Flush(); err != nil {
+		t.Fatalf("Flush() error = %v", err)
+	}
+
 	// Verify error was recorded in database
 	errorCount := recorder.sqlite.GetErrorCount()
 	if errorCount != 1 {
@@ -105,6 +131,7 @@ func TestRecorder_RecordFinding(t *testing.T) {
 
 // TestRecorder_RecordFinding_MultipleFindingsPersisted tests multiple findings are persisted
 func TestRecorder_RecordFinding_MultipleFindingsPersisted(t *testing.T) {
+	setupTestDetentHomeRecorder(t)
 	tmpDir := t.TempDir()
 	recorder, err := NewRecorder(tmpDir, "test", "abc123", "github")
 	if err != nil {
@@ -142,6 +169,11 @@ func TestRecorder_RecordFinding_MultipleFindingsPersisted(t *testing.T) {
 		}
 	}
 
+	// Flush pending batch before checking count
+	if err := recorder.sqlite.Flush(); err != nil {
+		t.Fatalf("Flush() error = %v", err)
+	}
+
 	// Verify total count in database (deduplication may reduce count)
 	errorCount := recorder.sqlite.GetErrorCount()
 	if errorCount < 2 {
@@ -151,6 +183,7 @@ func TestRecorder_RecordFinding_MultipleFindingsPersisted(t *testing.T) {
 
 // TestRecorder_Finalize tests recorder finalization
 func TestRecorder_Finalize(t *testing.T) {
+	setupTestDetentHomeRecorder(t)
 	tmpDir := t.TempDir()
 	recorder, err := NewRecorder(tmpDir, "test", "abc123", "github")
 	if err != nil {
@@ -198,6 +231,7 @@ func TestRecorder_Finalize(t *testing.T) {
 
 // TestRecorder_GetOutputPath tests output path retrieval
 func TestRecorder_GetOutputPath(t *testing.T) {
+	setupTestDetentHomeRecorder(t)
 	tmpDir := t.TempDir()
 
 	repoDir := filepath.Join(tmpDir, "repo")
@@ -270,6 +304,7 @@ func TestGenerateUUID(t *testing.T) {
 
 // TestRecorder_WorkflowContextPersistence tests that workflow context is persisted to database
 func TestRecorder_WorkflowContextPersistence(t *testing.T) {
+	setupTestDetentHomeRecorder(t)
 	tmpDir := t.TempDir()
 	recorder, err := NewRecorder(tmpDir, "test-workflow", "abc123def", "github")
 	if err != nil {
@@ -293,6 +328,11 @@ func TestRecorder_WorkflowContextPersistence(t *testing.T) {
 		t.Fatalf("RecordFinding() failed: %v", err)
 	}
 
+	// Flush pending batch before checking count
+	if err := recorder.sqlite.Flush(); err != nil {
+		t.Fatalf("Flush() error = %v", err)
+	}
+
 	// Verify it was recorded in database
 	errorCount := recorder.sqlite.GetErrorCount()
 	if errorCount != 1 {
@@ -302,6 +342,7 @@ func TestRecorder_WorkflowContextPersistence(t *testing.T) {
 
 // TestRecorder_StartTime tests that start time is set
 func TestRecorder_StartTime(t *testing.T) {
+	setupTestDetentHomeRecorder(t)
 	tmpDir := t.TempDir()
 	before := time.Now()
 
@@ -321,6 +362,7 @@ func TestRecorder_StartTime(t *testing.T) {
 
 // TestRecorder_ErrorCategoryTracking tests that different error categories are persisted
 func TestRecorder_ErrorCategoryTracking(t *testing.T) {
+	setupTestDetentHomeRecorder(t)
 	tmpDir := t.TempDir()
 	recorder, err := NewRecorder(tmpDir, "test", "abc123", "github")
 	if err != nil {
@@ -349,6 +391,11 @@ func TestRecorder_ErrorCategoryTracking(t *testing.T) {
 		}
 	}
 
+	// Flush pending batch before checking count
+	if err := recorder.sqlite.Flush(); err != nil {
+		t.Fatalf("Flush() error = %v", err)
+	}
+
 	// Verify all categories were recorded in database
 	errorCount := recorder.sqlite.GetErrorCount()
 	if errorCount != len(categories) {
@@ -358,6 +405,7 @@ func TestRecorder_ErrorCategoryTracking(t *testing.T) {
 
 // TestRecorder_RecordFinding_WithoutFile tests recording errors without file information
 func TestRecorder_RecordFinding_WithoutFile(t *testing.T) {
+	setupTestDetentHomeRecorder(t)
 	tmpDir := t.TempDir()
 	recorder, err := NewRecorder(tmpDir, "test", "abc123", "github")
 	if err != nil {
@@ -374,6 +422,11 @@ func TestRecorder_RecordFinding_WithoutFile(t *testing.T) {
 		t.Fatalf("RecordFinding() error = %v", err)
 	}
 
+	// Flush pending batch before checking count
+	if err := recorder.sqlite.Flush(); err != nil {
+		t.Fatalf("Flush() error = %v", err)
+	}
+
 	// Verify error was recorded in database
 	errorCount := recorder.sqlite.GetErrorCount()
 	if errorCount != 1 {
@@ -383,6 +436,7 @@ func TestRecorder_RecordFinding_WithoutFile(t *testing.T) {
 
 // TestRecorder_RecordFinding_PopulatesFileHash tests that file hashes are computed and cached
 func TestRecorder_RecordFinding_PopulatesFileHash(t *testing.T) {
+	setupTestDetentHomeRecorder(t)
 	tmpDir := t.TempDir()
 
 	// Create a real file to hash
@@ -438,6 +492,7 @@ func TestRecorder_RecordFinding_PopulatesFileHash(t *testing.T) {
 
 // TestRecorder_RecordFinding_MissingFileNoHash tests that missing files don't cause errors
 func TestRecorder_RecordFinding_MissingFileNoHash(t *testing.T) {
+	setupTestDetentHomeRecorder(t)
 	tmpDir := t.TempDir()
 
 	recorder, err := NewRecorder(tmpDir, "test", "abc123", "github")
@@ -467,6 +522,7 @@ func TestRecorder_RecordFinding_MissingFileNoHash(t *testing.T) {
 
 // TestRecorder_RecordFinding_PathTraversalBlocked tests that path traversal is blocked
 func TestRecorder_RecordFinding_PathTraversalBlocked(t *testing.T) {
+	setupTestDetentHomeRecorder(t)
 	tmpDir := t.TempDir()
 
 	// Create a file outside the repo root

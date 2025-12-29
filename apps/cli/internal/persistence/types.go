@@ -30,6 +30,9 @@ type FindingRecord struct {
 
 	// Raw output for compliance/debugging
 	Raw string `json:"raw,omitempty"`
+
+	// Pre-computed content hash (optional, computed lazily if empty)
+	ContentHash string `json:"content_hash,omitempty"`
 }
 
 // HealStatus represents the lifecycle state of a heal
