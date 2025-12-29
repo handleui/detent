@@ -6,21 +6,32 @@ package agent
 import (
 	"os"
 	"strings"
+	"sync"
 )
 
 // knownAgentEnvVars maps environment variable names to their expected values.
 // Empty string means any non-empty value indicates an agent.
-var knownAgentEnvVars = map[string]string{
-	"CLAUDECODE":       "1",  // Claude Code
-	"CLAUDE_CODE":      "",   // Claude Code (alternative)
-	"CURSOR_AGENT":     "",   // Cursor AI
-	"CODEX":            "",   // OpenAI Codex
-	"AIDER":            "",   // Aider
-	"CONTINUE_SESSION": "",   // Continue.dev
-	"CODY_AGENT":       "",   // Sourcegraph Cody
-	"AI_AGENT":         "",   // Generic convention
-	"AGENT_MODE":       "",   // Generic convention
+// Detection order: first match wins, so more specific vars should come first.
+var knownAgentEnvVars = []struct {
+	envVar        string
+	expectedValue string // empty = any non-empty value matches
+}{
+	{"CLAUDECODE", "1"},        // Claude Code (exact match)
+	{"CLAUDE_CODE", ""},        // Claude Code (alternative)
+	{"CURSOR_AGENT", ""},       // Cursor AI
+	{"CODEX", ""},              // OpenAI Codex
+	{"AIDER", ""},              // Aider
+	{"CONTINUE_SESSION", ""},   // Continue.dev
+	{"CODY_AGENT", ""},         // Sourcegraph Cody
+	{"AI_AGENT", ""},           // Generic convention
+	{"AGENT_MODE", ""},         // Generic convention
 }
+
+// cached stores the detection result (immutable after first detection)
+var (
+	cached     Info
+	cachedOnce sync.Once
+)
 
 // Info contains information about the detected AI agent environment.
 type Info struct {
@@ -35,24 +46,32 @@ type Info struct {
 }
 
 // Detect checks environment variables to determine if detent is being
-// run by an AI agent. This enables automatic optimization of output
-// for machine parsing (verbose text, JSON, no TUI).
+// run by an AI agent. Results are cached since env vars are immutable
+// during process lifetime. Safe for concurrent use.
 func Detect() Info {
-	for envVar, expectedValue := range knownAgentEnvVars {
-		value := os.Getenv(envVar)
+	cachedOnce.Do(func() {
+		cached = detect()
+	})
+	return cached
+}
+
+// detect performs the actual detection (called once via sync.Once).
+func detect() Info {
+	for _, entry := range knownAgentEnvVars {
+		value := os.Getenv(entry.envVar)
 		if value == "" {
 			continue
 		}
 
 		// If expected value is set, check for exact match
-		if expectedValue != "" && value != expectedValue {
+		if entry.expectedValue != "" && value != entry.expectedValue {
 			continue
 		}
 
 		return Info{
 			IsAgent: true,
-			Name:    getAgentName(envVar),
-			EnvVar:  envVar,
+			Name:    getAgentName(entry.envVar),
+			EnvVar:  entry.envVar,
 		}
 	}
 
@@ -77,10 +96,4 @@ func getAgentName(envVar string) string {
 	default:
 		return "AI Agent"
 	}
-}
-
-// IsRunningInAgent is a convenience function that returns true if
-// an AI agent environment is detected.
-func IsRunningInAgent() bool {
-	return Detect().IsAgent
 }

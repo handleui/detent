@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/detent/cli/internal/agent"
 	"github.com/detent/cli/internal/git"
 	"github.com/detent/cli/internal/persistence"
 	"github.com/detent/cli/internal/runner"
@@ -25,6 +26,10 @@ var (
 // cfg holds the loaded and merged configuration, available to all commands.
 // Initialized in PersistentPreRunE.
 var cfg *persistence.Config
+
+// agentInfo holds the detected AI agent environment info.
+// Initialized once in PersistentPreRunE, available to all commands.
+var agentInfo agent.Info
 
 var rootCmd = &cobra.Command{
 	Use:   "detent",
@@ -48,12 +53,20 @@ Requirements:
 			}
 		}
 
+		// Detect AI agent environment once (cached, safe to call multiple times)
+		agentInfo = agent.Detect()
+
 		// Branding header
 		fmt.Println()
 		repoRoot, _ := filepath.Abs(".")
 		repoIdentifier := git.GetRepoIdentifier(repoRoot)
 		fmt.Println(tui.Header(Version, repoIdentifier))
 		fmt.Println()
+
+		// Minimal agent mode indicator
+		if agentInfo.IsAgent {
+			fmt.Fprintf(os.Stderr, "  %s\n", tui.MutedStyle.Render("▸ "+agentInfo.Name+" detected, verbose mode"))
+		}
 
 		// Load config
 		loadedCfg, configErr := persistence.Load()
@@ -166,6 +179,18 @@ func ensureTrustedRepo() error {
 	// Check if already trusted
 	if cfg.IsTrustedRepo(firstCommitSHA) {
 		return nil
+	}
+
+	// AI agent mode? Fail with clear instructions
+	if agentInfo.IsAgent {
+		return fmt.Errorf("repository not trusted\n\n" +
+			"This repository has not been trusted by the user.\n" +
+			"The user must run 'detent check' manually in a terminal to trust this repository.\n\n" +
+			"Tell the user:\n" +
+			"  1. Open a terminal\n" +
+			"  2. Navigate to this repository\n" +
+			"  3. Run: detent check\n" +
+			"  4. Select 'Yes, trust this repository' when prompted")
 	}
 
 	// Not interactive? Fail with instructions

@@ -99,17 +99,31 @@ func New(config *RunConfig) *CheckRunner {
 // This must be called before Run. All resources are tracked for cleanup.
 // Returns error if preparation fails. On error, partial resources are cleaned up.
 func (r *CheckRunner) Prepare(ctx context.Context) error {
+	agentMode := r.config.IsAgentMode
+	if agentMode {
+		fmt.Fprintln(os.Stderr, "[detent] Running preflight checks...")
+	}
+
 	g, gctx := errgroup.WithContext(ctx)
 
 	g.Go(func() error {
+		if agentMode {
+			fmt.Fprintln(os.Stderr, "[detent]   Validating git repository...")
+		}
 		return git.ValidateGitRepository(gctx, r.config.RepoRoot)
 	})
 
 	g.Go(func() error {
+		if agentMode {
+			fmt.Fprintln(os.Stderr, "[detent]   Checking act installation...")
+		}
 		return actbin.EnsureInstalled(gctx, nil)
 	})
 
 	g.Go(func() error {
+		if agentMode {
+			fmt.Fprintln(os.Stderr, "[detent]   Checking Docker availability...")
+		}
 		return docker.IsAvailable(gctx)
 	})
 
@@ -121,6 +135,9 @@ func (r *CheckRunner) Prepare(ctx context.Context) error {
 	_, _ = git.CleanupOrphanedWorktrees(ctx, r.config.RepoRoot)
 
 	// Run validation checks in parallel (all are I/O operations)
+	if agentMode {
+		fmt.Fprintln(os.Stderr, "[detent]   Validating worktree state...")
+	}
 	g2, gctx2 := errgroup.WithContext(ctx)
 
 	g2.Go(func() error {
@@ -137,6 +154,10 @@ func (r *CheckRunner) Prepare(ctx context.Context) error {
 
 	if err := g2.Wait(); err != nil {
 		return err
+	}
+
+	if agentMode {
+		fmt.Fprintln(os.Stderr, "[detent]   Preparing workflows and worktree...")
 	}
 
 	type workflowResult struct {
@@ -206,6 +227,10 @@ func (r *CheckRunner) Prepare(ctx context.Context) error {
 	r.worktreeInfo = worktreeRes.worktreeInfo
 	r.cleanupWorktree = worktreeRes.cleanupWorktree
 	// Note: Non-TUI prepare doesn't set stashInfo (interactive prompt only in TUI mode)
+
+	if agentMode {
+		fmt.Fprintln(os.Stderr, "[detent] Preflight checks complete")
+	}
 
 	return nil
 }

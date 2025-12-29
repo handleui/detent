@@ -9,7 +9,6 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/detent/cli/internal/agent"
 	"github.com/detent/cli/internal/cache"
 	internalerrors "github.com/detent/cli/internal/errors"
 	"github.com/detent/cli/internal/git"
@@ -108,11 +107,9 @@ func buildRunConfig() (*runner.RunConfig, error) {
 		return nil, err
 	}
 
-	// Detect AI agent environment
-	agentInfo := agent.Detect()
-
 	// Determine if TUI should be used
 	// Disable TUI when running in AI agent environments for better machine-readable output
+	// agentInfo is set in PersistentPreRunE (root.go)
 	useTUI := isatty.IsTerminal(os.Stderr.Fd()) && !agentInfo.IsAgent
 
 	cfg := &runner.RunConfig{
@@ -195,12 +192,6 @@ func runCheck(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Print agent mode detection for AI agents
-	if cfg.IsAgentMode {
-		_, _ = fmt.Fprintf(os.Stderr, "[detent] AI agent detected (%s) - using verbose output mode\n", cfg.AgentName)
-		_, _ = fmt.Fprintf(os.Stderr, "[detent] TUI disabled, interactive prompts will auto-skip\n")
-	}
-
 	// Dry-run mode: show simulated TUI without actual execution
 	if cfg.DryRun {
 		return runCheckDryRun(cmd.Context(), cfg)
@@ -232,6 +223,13 @@ func runCheck(cmd *cobra.Command, args []string) error {
 	}
 	if err != nil {
 		sentry.CaptureError(err)
+		// Enhance dirty worktree error with instructions for AI agents
+		if cfg.IsAgentMode && errors.Is(err, git.ErrWorktreeDirty) {
+			return fmt.Errorf("%w\n\nTell the user to commit or stash their changes before running detent:\n"+
+				"  git add . && git commit -m \"WIP\"\n"+
+				"  # or\n"+
+				"  git stash", err)
+		}
 		return err
 	}
 
@@ -245,14 +243,27 @@ func runCheck(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("running act: %w", err)
 		}
 	} else {
-		_, _ = fmt.Fprintf(os.Stderr, "Running workflows... ")
+		if cfg.IsAgentMode {
+			_, _ = fmt.Fprintf(os.Stderr, "[detent] Executing workflows with event '%s'...\n", cfg.Event)
+		} else {
+			_, _ = fmt.Fprintf(os.Stderr, "Running workflows... ")
+		}
 		err = r.Run(ctx)
 		if err != nil {
 			sentry.CaptureError(err)
 			return fmt.Errorf("running act: %w", err)
 		}
 		result := r.GetResult()
-		_, _ = fmt.Fprintf(os.Stderr, "done (%s)\n", result.Duration)
+		if cfg.IsAgentMode {
+			_, _ = fmt.Fprintf(os.Stderr, "[detent] Workflow execution completed in %s (exit code: %d)\n", result.Duration, result.ExitCode)
+			if result.HasErrors() {
+				_, _ = fmt.Fprintf(os.Stderr, "[detent] Found %d issues to fix\n", result.Grouped.Total)
+			} else {
+				_, _ = fmt.Fprintf(os.Stderr, "[detent] No issues found\n")
+			}
+		} else {
+			_, _ = fmt.Fprintf(os.Stderr, "done (%s)\n", result.Duration)
+		}
 	}
 
 	// Handle cancellation
