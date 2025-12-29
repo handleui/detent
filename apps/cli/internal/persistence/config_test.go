@@ -136,13 +136,13 @@ func TestTrustRepo(t *testing.T) {
 		}
 
 		// Verify config file was created (DETENT_HOME is the .detent dir equivalent)
-		configPath := filepath.Join(tmpDir, "config.json")
+		configPath := filepath.Join(tmpDir, "detent.json")
 		if _, err := os.Stat(configPath); os.IsNotExist(err) {
 			t.Error("Config file was not created")
 		}
 
 		// Reload config and verify
-		loadedCfg, err := Load("")
+		loadedCfg, err := Load()
 		if err != nil {
 			t.Fatalf("Load() error = %v", err)
 		}
@@ -154,61 +154,42 @@ func TestTrustRepo(t *testing.T) {
 
 // TestMatchesCommand tests the MatchesCommand helper
 func TestMatchesCommand(t *testing.T) {
+	repoSHA := "test-repo-sha"
 	cfg := &Config{
-		ExtraCommands: []string{"bun run typecheck", "pnpm exec playwright *", "make deploy"},
+		global: &GlobalConfig{
+			AllowedCommands: map[string][]string{
+				repoSHA: {"bun run typecheck", "pnpm exec playwright *", "make deploy"},
+			},
+		},
 	}
 
-	if !cfg.MatchesCommand("bun run typecheck") {
+	if !cfg.MatchesCommand(repoSHA, "bun run typecheck") {
 		t.Error("Expected exact match for 'bun run typecheck'")
 	}
-	if !cfg.MatchesCommand("pnpm exec playwright test") {
+	if !cfg.MatchesCommand(repoSHA, "pnpm exec playwright test") {
 		t.Error("Expected wildcard match for 'pnpm exec playwright test'")
 	}
-	if !cfg.MatchesCommand("make deploy") {
+	if !cfg.MatchesCommand(repoSHA, "make deploy") {
 		t.Error("Expected match for 'make deploy'")
 	}
-	if cfg.MatchesCommand("npm run test") {
+	if cfg.MatchesCommand(repoSHA, "npm run test") {
 		t.Error("Expected no match for 'npm run test'")
+	}
+	if cfg.MatchesCommand("other-repo", "bun run typecheck") {
+		t.Error("Expected no match for different repo SHA")
 	}
 }
 
 // TestConfigMerge tests the config merge precedence
 func TestConfigMerge(t *testing.T) {
-	t.Run("local overrides global", func(t *testing.T) {
-		budget := 5.0
-		timeout := 30
-		global := &GlobalConfig{
-			Model:           "claude-sonnet-4-5",
-			BudgetPerRunUSD: float64Ptr(1.0),
-			TimeoutMins:     intPtr(10),
-		}
-		local := &LocalConfig{
-			Model:           "claude-opus-4-5",
-			BudgetPerRunUSD: &budget,
-			TimeoutMins:     &timeout,
-		}
-
-		cfg := merge(global, local, "")
-
-		if cfg.Model != "claude-opus-4-5" {
-			t.Errorf("Model = %v, want claude-opus-4-5", cfg.Model)
-		}
-		if cfg.BudgetPerRunUSD != 5.0 {
-			t.Errorf("BudgetPerRunUSD = %v, want 5.0", cfg.BudgetPerRunUSD)
-		}
-		if cfg.TimeoutMins != 30 {
-			t.Errorf("TimeoutMins = %v, want 30", cfg.TimeoutMins)
-		}
-	})
-
-	t.Run("global used when local nil", func(t *testing.T) {
+	t.Run("global config applied", func(t *testing.T) {
 		global := &GlobalConfig{
 			Model:           "claude-sonnet-4-5",
 			BudgetPerRunUSD: float64Ptr(2.0),
 			TimeoutMins:     intPtr(15),
 		}
 
-		cfg := merge(global, nil, "")
+		cfg := merge(global)
 
 		if cfg.Model != "claude-sonnet-4-5" {
 			t.Errorf("Model = %v, want claude-sonnet-4-5", cfg.Model)
@@ -221,8 +202,8 @@ func TestConfigMerge(t *testing.T) {
 		}
 	})
 
-	t.Run("defaults used when both nil", func(t *testing.T) {
-		cfg := merge(nil, nil, "")
+	t.Run("defaults used when global nil", func(t *testing.T) {
+		cfg := merge(nil)
 
 		if cfg.Model != DefaultModel {
 			t.Errorf("Model = %v, want %v", cfg.Model, DefaultModel)
@@ -302,12 +283,12 @@ func TestLoadGlobal_MalformedJSON(t *testing.T) {
 			t.Setenv(DetentHomeEnv, tmpDir)
 
 			// Create config file directly in tmpDir (DETENT_HOME points to .detent dir equivalent)
-			configPath := filepath.Join(tmpDir, "config.json")
+			configPath := filepath.Join(tmpDir, "detent.json")
 			if err := os.WriteFile(configPath, []byte(tt.content), 0o600); err != nil {
 				t.Fatalf("Failed to write config file: %v", err)
 			}
 
-			cfg, err := Load("")
+			cfg, err := Load()
 			if tt.wantErr {
 				if err == nil {
 					t.Error("Expected error but got nil")
@@ -391,7 +372,7 @@ func TestConfigClamping(t *testing.T) {
 				TimeoutMins:     tt.timeout,
 			}
 
-			cfg := merge(global, nil, "")
+			cfg := merge(global)
 
 			if cfg.BudgetPerRunUSD != tt.wantBudget {
 				t.Errorf("BudgetPerRunUSD = %v, want %v", cfg.BudgetPerRunUSD, tt.wantBudget)
@@ -448,7 +429,7 @@ func TestModelValidation(t *testing.T) {
 				Model: tt.model,
 			}
 
-			cfg := merge(global, nil, "")
+			cfg := merge(global)
 
 			if cfg.Model != tt.wantModel {
 				t.Errorf("Model = %v, want %v", cfg.Model, tt.wantModel)
@@ -466,50 +447,19 @@ func TestEnvOverride(t *testing.T) {
 		t.Setenv("ANTHROPIC_API_KEY", "env-key-12345")
 
 		// Create global config with api_key (DETENT_HOME points to .detent dir equivalent)
-		configPath := filepath.Join(tmpDir, "config.json")
+		configPath := filepath.Join(tmpDir, "detent.json")
 		content := `{"api_key": "global-key-67890"}`
 		if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
 			t.Fatalf("Failed to write config file: %v", err)
 		}
 
-		cfg, err := Load("")
+		cfg, err := Load()
 		if err != nil {
 			t.Fatalf("Load() error = %v", err)
 		}
 
 		if cfg.APIKey != "env-key-12345" {
 			t.Errorf("APIKey = %v, want env-key-12345", cfg.APIKey)
-		}
-	})
-
-	t.Run("env overrides when both global and local exist", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		repoDir := t.TempDir()
-		// Use DETENT_HOME to bypass the cached directory path
-		t.Setenv(DetentHomeEnv, tmpDir)
-		t.Setenv("ANTHROPIC_API_KEY", "env-key-override")
-
-		// Create global config with api_key (DETENT_HOME points to .detent dir equivalent)
-		configPath := filepath.Join(tmpDir, "config.json")
-		globalContent := `{"api_key": "global-key"}`
-		if err := os.WriteFile(configPath, []byte(globalContent), 0o600); err != nil {
-			t.Fatalf("Failed to write global config file: %v", err)
-		}
-
-		// Create local config
-		localPath := filepath.Join(repoDir, "detent.json")
-		localContent := `{"model": "claude-opus-4-5"}`
-		if err := os.WriteFile(localPath, []byte(localContent), 0o600); err != nil {
-			t.Fatalf("Failed to write local config file: %v", err)
-		}
-
-		cfg, err := Load(repoDir)
-		if err != nil {
-			t.Fatalf("Load() error = %v", err)
-		}
-
-		if cfg.APIKey != "env-key-override" {
-			t.Errorf("APIKey = %v, want env-key-override", cfg.APIKey)
 		}
 	})
 }
@@ -595,231 +545,280 @@ func TestGetDetentDir_Concurrent(t *testing.T) {
 	}
 }
 
-// TestRecordSpend tests the spend tracking functionality
-func TestRecordSpend(t *testing.T) {
-	t.Run("records spend for current month", func(t *testing.T) {
+// TestAllowedCommands tests the allowed commands management
+func TestAllowedCommands(t *testing.T) {
+	repoSHA := "test-repo-sha"
+
+	t.Run("add command", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		t.Setenv(DetentHomeEnv, tmpDir)
 
 		cfg := createTestConfig(nil)
-		if err := cfg.RecordSpend(1.50); err != nil {
-			t.Fatalf("RecordSpend() error = %v", err)
+		if err := cfg.AddAllowedCommand(repoSHA, "bun test"); err != nil {
+			t.Fatalf("AddAllowedCommand() error = %v", err)
 		}
 
-		if cfg.GetMonthlySpend() != 1.50 {
-			t.Errorf("GetMonthlySpend() = %v, want 1.50", cfg.GetMonthlySpend())
+		commands := cfg.GetAllowedCommands(repoSHA)
+		if len(commands) != 1 || commands[0] != "bun test" {
+			t.Errorf("GetAllowedCommands() = %v, want [bun test]", commands)
 		}
 	})
 
-	t.Run("ignores negative amounts", func(t *testing.T) {
+	t.Run("remove command", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		t.Setenv(DetentHomeEnv, tmpDir)
 
-		cfg := createTestConfig(nil)
-		if err := cfg.RecordSpend(5.00); err != nil {
-			t.Fatalf("RecordSpend() error = %v", err)
-		}
-		// Attempt to record negative amount (should be ignored)
-		if err := cfg.RecordSpend(-10.00); err != nil {
-			t.Fatalf("RecordSpend() error = %v", err)
+		cfg := &Config{
+			global: &GlobalConfig{
+				AllowedCommands: map[string][]string{
+					repoSHA: {"bun test", "npm run lint"},
+				},
+			},
 		}
 
-		// Spend should still be 5.00, not -5.00
-		if cfg.GetMonthlySpend() != 5.00 {
-			t.Errorf("GetMonthlySpend() = %v, want 5.00 (negative amount should be ignored)", cfg.GetMonthlySpend())
+		if err := cfg.RemoveAllowedCommand(repoSHA, "bun test"); err != nil {
+			t.Fatalf("RemoveAllowedCommand() error = %v", err)
+		}
+
+		commands := cfg.GetAllowedCommands(repoSHA)
+		if len(commands) != 1 || commands[0] != "npm run lint" {
+			t.Errorf("GetAllowedCommands() = %v, want [npm run lint]", commands)
 		}
 	})
 
-	t.Run("accumulates spend", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		t.Setenv(DetentHomeEnv, tmpDir)
-
+	t.Run("get empty for unknown repo", func(t *testing.T) {
 		cfg := createTestConfig(nil)
-		if err := cfg.RecordSpend(1.00); err != nil {
-			t.Fatalf("RecordSpend() error = %v", err)
-		}
-		if err := cfg.RecordSpend(0.50); err != nil {
-			t.Fatalf("RecordSpend() error = %v", err)
-		}
-
-		if cfg.GetMonthlySpend() != 1.50 {
-			t.Errorf("GetMonthlySpend() = %v, want 1.50", cfg.GetMonthlySpend())
+		commands := cfg.GetAllowedCommands("unknown-sha")
+		if len(commands) != 0 {
+			t.Errorf("GetAllowedCommands() = %v, want empty", commands)
 		}
 	})
 
-	t.Run("persists to disk", func(t *testing.T) {
+	t.Run("no duplicate commands", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		t.Setenv(DetentHomeEnv, tmpDir)
 
 		cfg := createTestConfig(nil)
-		if err := cfg.RecordSpend(2.00); err != nil {
-			t.Fatalf("RecordSpend() error = %v", err)
+		_ = cfg.AddAllowedCommand(repoSHA, "bun test")
+		_ = cfg.AddAllowedCommand(repoSHA, "bun test")
+
+		commands := cfg.GetAllowedCommands(repoSHA)
+		if len(commands) != 1 {
+			t.Errorf("GetAllowedCommands() = %v, want 1 entry (no duplicates)", commands)
+		}
+	})
+
+	t.Run("remove nonexistent command", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		t.Setenv(DetentHomeEnv, tmpDir)
+
+		cfg := &Config{
+			global: &GlobalConfig{
+				AllowedCommands: map[string][]string{
+					repoSHA: {"bun test"},
+				},
+			},
 		}
 
-		// Reload config
-		loadedCfg, err := Load("")
+		// Should not error when removing a command that doesn't exist
+		if err := cfg.RemoveAllowedCommand(repoSHA, "nonexistent"); err != nil {
+			t.Fatalf("RemoveAllowedCommand() error = %v", err)
+		}
+
+		commands := cfg.GetAllowedCommands(repoSHA)
+		if len(commands) != 1 || commands[0] != "bun test" {
+			t.Errorf("GetAllowedCommands() = %v, want [bun test]", commands)
+		}
+	})
+
+	t.Run("remove from nil config", func(t *testing.T) {
+		cfg := &Config{global: nil}
+
+		// Should not error or panic with nil global config
+		err := cfg.RemoveAllowedCommand(repoSHA, "any")
 		if err != nil {
-			t.Fatalf("Load() error = %v", err)
-		}
-		if loadedCfg.GetMonthlySpend() != 2.00 {
-			t.Errorf("GetMonthlySpend() after reload = %v, want 2.00", loadedCfg.GetMonthlySpend())
-		}
-	})
-}
-
-// TestSpendHistoryPruning tests that old months are pruned
-func TestSpendHistoryPruning(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv(DetentHomeEnv, tmpDir)
-
-	now := time.Now()
-
-	cfg := &Config{
-		Model:           DefaultModel,
-		BudgetPerRunUSD: DefaultBudgetPerRunUSD,
-		TimeoutMins:     DefaultTimeoutMins,
-		global: &GlobalConfig{
-			SpendHistory: map[string]float64{
-				now.Format("2006-01"):                                             5.00,  // Current month - keep
-				now.AddDate(0, -1, 0).Format("2006-01"):                           3.00,  // 1 month ago - keep
-				now.AddDate(0, -2, 0).Format("2006-01"):                           2.00,  // 2 months ago - keep
-				now.AddDate(0, -3, 0).Format("2006-01"):                           10.00, // 3 months ago - prune
-				now.AddDate(0, -6, 0).Format("2006-01"):                           1.00,  // 6 months ago - prune
-				time.Date(now.Year()-1, now.Month(), 1, 0, 0, 0, 0, time.UTC).Format("2006-01"): 0.50, // Last year - prune
-			},
-		},
-	}
-
-	// Record a small amount to trigger pruning
-	if err := cfg.RecordSpend(0.01); err != nil {
-		t.Fatalf("RecordSpend() error = %v", err)
-	}
-
-	// Check that old months were pruned
-	history := cfg.global.SpendHistory
-	if len(history) > 3 {
-		t.Errorf("SpendHistory should have at most 3 entries, got %d", len(history))
-	}
-
-	// Current month should exist with accumulated value
-	currentMonth := now.Format("2006-01")
-	if history[currentMonth] != 5.01 {
-		t.Errorf("Current month spend = %v, want 5.01", history[currentMonth])
-	}
-
-	// Old months should be pruned
-	oldMonth := now.AddDate(0, -6, 0).Format("2006-01")
-	if _, exists := history[oldMonth]; exists {
-		t.Error("Old month (6 months ago) should have been pruned")
-	}
-}
-
-// TestRemainingMonthlyBudget tests the remaining budget calculation
-func TestRemainingMonthlyBudget(t *testing.T) {
-	t.Run("returns -1 when unlimited", func(t *testing.T) {
-		cfg := &Config{
-			BudgetMonthlyUSD: 0, // 0 means unlimited
-			global:           &GlobalConfig{},
-		}
-
-		if cfg.RemainingMonthlyBudget() != -1 {
-			t.Errorf("RemainingMonthlyBudget() = %v, want -1 (unlimited)", cfg.RemainingMonthlyBudget())
+			t.Fatalf("RemoveAllowedCommand() error = %v", err)
 		}
 	})
 
-	t.Run("calculates remaining correctly", func(t *testing.T) {
+	t.Run("remove from nil AllowedCommands map", func(t *testing.T) {
+		cfg := &Config{global: &GlobalConfig{}}
+
+		// Should not error or panic with nil AllowedCommands
+		err := cfg.RemoveAllowedCommand(repoSHA, "any")
+		if err != nil {
+			t.Fatalf("RemoveAllowedCommand() error = %v", err)
+		}
+	})
+
+	t.Run("add multiple commands to same repo", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		t.Setenv(DetentHomeEnv, tmpDir)
 
-		currentMonth := time.Now().Format("2006-01")
-		cfg := &Config{
-			BudgetMonthlyUSD: 50.0,
-			global: &GlobalConfig{
-				SpendHistory: map[string]float64{
-					currentMonth: 20.0,
-				},
-			},
-		}
+		cfg := createTestConfig(nil)
+		_ = cfg.AddAllowedCommand(repoSHA, "bun test")
+		_ = cfg.AddAllowedCommand(repoSHA, "npm run lint")
+		_ = cfg.AddAllowedCommand(repoSHA, "go build ./...")
 
-		remaining := cfg.RemainingMonthlyBudget()
-		if remaining != 30.0 {
-			t.Errorf("RemainingMonthlyBudget() = %v, want 30.0", remaining)
+		commands := cfg.GetAllowedCommands(repoSHA)
+		if len(commands) != 3 {
+			t.Errorf("GetAllowedCommands() len = %d, want 3", len(commands))
 		}
 	})
 
-	t.Run("returns 0 when over budget", func(t *testing.T) {
-		currentMonth := time.Now().Format("2006-01")
-		cfg := &Config{
-			BudgetMonthlyUSD: 10.0,
-			global: &GlobalConfig{
-				SpendHistory: map[string]float64{
-					currentMonth: 15.0, // Over budget
-				},
-			},
-		}
+	t.Run("add commands to different repos", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		t.Setenv(DetentHomeEnv, tmpDir)
 
-		if cfg.RemainingMonthlyBudget() != 0 {
-			t.Errorf("RemainingMonthlyBudget() = %v, want 0 (over budget)", cfg.RemainingMonthlyBudget())
-		}
-	})
+		cfg := createTestConfig(nil)
+		_ = cfg.AddAllowedCommand("repo1", "cmd1")
+		_ = cfg.AddAllowedCommand("repo2", "cmd2")
 
-	t.Run("returns full budget when no spend", func(t *testing.T) {
-		cfg := &Config{
-			BudgetMonthlyUSD: 100.0,
-			global:           &GlobalConfig{},
-		}
+		commands1 := cfg.GetAllowedCommands("repo1")
+		commands2 := cfg.GetAllowedCommands("repo2")
 
-		if cfg.RemainingMonthlyBudget() != 100.0 {
-			t.Errorf("RemainingMonthlyBudget() = %v, want 100.0", cfg.RemainingMonthlyBudget())
+		if len(commands1) != 1 || commands1[0] != "cmd1" {
+			t.Errorf("GetAllowedCommands('repo1') = %v, want [cmd1]", commands1)
+		}
+		if len(commands2) != 1 || commands2[0] != "cmd2" {
+			t.Errorf("GetAllowedCommands('repo2') = %v, want [cmd2]", commands2)
 		}
 	})
 }
 
-// TestMonthlyBudgetClamping tests that monthly budget values are clamped correctly
-func TestMonthlyBudgetClamping(t *testing.T) {
+// TestMatchesCommand_EdgeCases tests edge cases for command matching
+func TestMatchesCommand_EdgeCases(t *testing.T) {
+	repoSHA := "test-repo"
+
 	tests := []struct {
-		name       string
-		budget     float64
-		wantBudget float64
+		name     string
+		patterns []string
+		cmd      string
+		want     bool
 	}{
 		{
-			name:       "negative clamps to 0",
-			budget:     -10.0,
-			wantBudget: 0,
+			name:     "exact match",
+			patterns: []string{"npm test"},
+			cmd:      "npm test",
+			want:     true,
 		},
 		{
-			name:       "within range stays same",
-			budget:     50.0,
-			wantBudget: 50.0,
+			name:     "no match",
+			patterns: []string{"npm test"},
+			cmd:      "npm run",
+			want:     false,
 		},
 		{
-			name:       "at max stays at max",
-			budget:     1000.0,
-			wantBudget: 1000.0,
+			name:     "wildcard match",
+			patterns: []string{"npm run *"},
+			cmd:      "npm run test",
+			want:     true,
 		},
 		{
-			name:       "over max clamps to max",
-			budget:     5000.0,
-			wantBudget: 1000.0,
+			name:     "wildcard rejects multiple args for security",
+			patterns: []string{"npm run *"},
+			cmd:      "npm run test --watch",
+			want:     false,
 		},
 		{
-			name:       "zero stays zero (unlimited)",
-			budget:     0,
-			wantBudget: 0,
+			name:     "wildcard no match before prefix",
+			patterns: []string{"npm run *"},
+			cmd:      "npm test",
+			want:     false,
+		},
+		{
+			name:     "empty command list",
+			patterns: []string{},
+			cmd:      "anything",
+			want:     false,
+		},
+		{
+			name:     "multiple patterns first matches",
+			patterns: []string{"npm test", "npm run *"},
+			cmd:      "npm test",
+			want:     true,
+		},
+		{
+			name:     "multiple patterns second matches",
+			patterns: []string{"npm test", "npm run *"},
+			cmd:      "npm run lint",
+			want:     true,
+		},
+		{
+			name:     "pattern without space before wildcard",
+			patterns: []string{"npm*"},
+			cmd:      "npm test",
+			want:     false,
+		},
+		{
+			name:     "command shorter than prefix",
+			patterns: []string{"npm run *"},
+			cmd:      "npm",
+			want:     false,
+		},
+		{
+			name:     "wildcard rejects semicolon injection",
+			patterns: []string{"npm run *"},
+			cmd:      "npm run test; rm -rf /",
+			want:     false,
+		},
+		{
+			name:     "wildcard rejects && injection",
+			patterns: []string{"npm run *"},
+			cmd:      "npm run test && malicious",
+			want:     false,
+		},
+		{
+			name:     "wildcard rejects pipe injection",
+			patterns: []string{"npm run *"},
+			cmd:      "npm run test | cat",
+			want:     false,
+		},
+		{
+			name:     "wildcard rejects subshell injection",
+			patterns: []string{"npm run *"},
+			cmd:      "npm run $(whoami)",
+			want:     false,
+		},
+		{
+			name:     "wildcard rejects backtick injection",
+			patterns: []string{"npm run *"},
+			cmd:      "npm run `whoami`",
+			want:     false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			global := &GlobalConfig{
-				BudgetMonthlyUSD: &tt.budget,
+			cfg := &Config{
+				global: &GlobalConfig{
+					AllowedCommands: map[string][]string{
+						repoSHA: tt.patterns,
+					},
+				},
 			}
 
-			cfg := merge(global, nil, "")
-
-			if cfg.BudgetMonthlyUSD != tt.wantBudget {
-				t.Errorf("BudgetMonthlyUSD = %v, want %v", cfg.BudgetMonthlyUSD, tt.wantBudget)
+			got := cfg.MatchesCommand(repoSHA, tt.cmd)
+			if got != tt.want {
+				t.Errorf("MatchesCommand(%q) = %v, want %v", tt.cmd, got, tt.want)
 			}
 		})
 	}
+}
+
+// TestMatchesCommand_NilSafety tests nil safety of MatchesCommand
+func TestMatchesCommand_NilSafety(t *testing.T) {
+	t.Run("nil global config", func(t *testing.T) {
+		cfg := &Config{global: nil}
+		if cfg.MatchesCommand("repo", "cmd") {
+			t.Error("Expected false for nil global config")
+		}
+	})
+
+	t.Run("nil AllowedCommands map", func(t *testing.T) {
+		cfg := &Config{global: &GlobalConfig{}}
+		if cfg.MatchesCommand("repo", "cmd") {
+			t.Error("Expected false for nil AllowedCommands map")
+		}
+	})
 }

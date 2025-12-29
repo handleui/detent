@@ -3,7 +3,6 @@ package config
 import (
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -43,9 +42,7 @@ type Model struct {
 	editField string // Which field is being edited
 
 	// State
-	inRepo         bool   // true if in a git repository
 	globalPath     string // Path to global config
-	localPath      string // Path to local config
 	version        string // App version for header
 	repoIdentifier string // owner/repo for header
 	quitting       bool
@@ -55,9 +52,7 @@ type Model struct {
 
 // Options for creating a new Model.
 type Options struct {
-	InRepo         bool
 	GlobalPath     string
-	LocalPath      string
 	Version        string
 	RepoIdentifier string
 }
@@ -74,9 +69,7 @@ func NewModel(cfg *persistence.ConfigWithSources, opts Options) *Model {
 		cursor:         0,
 		mode:           ModeView,
 		textInput:      ti,
-		inRepo:         opts.InRepo,
 		globalPath:     opts.GlobalPath,
-		localPath:      opts.LocalPath,
 		version:        opts.Version,
 		repoIdentifier: opts.RepoIdentifier,
 	}
@@ -102,7 +95,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if editorMsg, ok := msg.(editorClosedMsg); ok {
 		// Reload config and clear screen to avoid duplication
 		if editorMsg.err == nil {
-			if cfg, err := persistence.LoadWithSources(m.config.RepoRoot); err == nil {
+			if cfg, err := persistence.LoadWithSources(); err == nil {
 				m.config = cfg
 				m.values = GetFieldValues(m.config)
 			}
@@ -217,9 +210,9 @@ func (m *Model) handleEnter() {
 	field := EditableFields[m.cursor]
 	switch field.Key {
 	case "budget_per_run":
-		m.startTextEdit("budget_per_run", formatBudgetRaw(m.config.BudgetPerRunUSD.Value))
+		m.startTextEdit("budget_per_run", persistence.FormatBudgetRaw(m.config.BudgetPerRunUSD.Value))
 	case "budget_monthly":
-		m.startTextEdit("budget_monthly", formatBudgetRaw(m.config.BudgetMonthlyUSD.Value))
+		m.startTextEdit("budget_monthly", persistence.FormatBudgetRaw(m.config.BudgetMonthlyUSD.Value))
 	case "api_key":
 		m.startTextEdit("api_key", "")
 		m.textInput.EchoMode = textinput.EchoPassword
@@ -240,7 +233,7 @@ func (m *Model) cycleModel(direction int) {
 
 	newIndex := (currentIndex + direction + len(availableModels)) % len(availableModels)
 	m.config.Model.Value = availableModels[newIndex]
-	m.config.Model.Source = persistence.SourceLocal
+	m.config.Model.Source = persistence.SourceGlobal
 	m.values = GetFieldValues(m.config)
 	m.dirty = true
 }
@@ -251,7 +244,7 @@ func (m *Model) adjustTimeout(delta int) {
 	newValue = max(newValue, 1)
 	newValue = min(newValue, 60)
 	m.config.TimeoutMins.Value = newValue
-	m.config.TimeoutMins.Source = persistence.SourceLocal
+	m.config.TimeoutMins.Source = persistence.SourceGlobal
 	m.values = GetFieldValues(m.config)
 	m.dirty = true
 }
@@ -281,7 +274,7 @@ func (m *Model) saveTextInput() {
 				f = 100
 			}
 			m.config.BudgetPerRunUSD.Value = f
-			m.config.BudgetPerRunUSD.Source = persistence.SourceLocal
+			m.config.BudgetPerRunUSD.Source = persistence.SourceGlobal
 			m.dirty = true
 		}
 	case "budget_monthly":
@@ -295,13 +288,13 @@ func (m *Model) saveTextInput() {
 				f = 1000
 			}
 			m.config.BudgetMonthlyUSD.Value = f
-			m.config.BudgetMonthlyUSD.Source = persistence.SourceGlobal // Monthly budget is global only
+			m.config.BudgetMonthlyUSD.Source = persistence.SourceGlobal
 			m.dirty = true
 		}
 	case "api_key":
 		if value != "" {
 			m.config.APIKey.Value = value
-			m.config.APIKey.Source = persistence.SourceGlobal // API key always global
+			m.config.APIKey.Source = persistence.SourceGlobal
 			m.dirty = true
 		}
 	}
@@ -309,40 +302,31 @@ func (m *Model) saveTextInput() {
 	m.values = GetFieldValues(m.config)
 }
 
-// saveConfig persists changes to disk.
+// saveConfig persists changes to global config.
 func (m *Model) saveConfig() error {
 	if !m.dirty {
 		return nil
 	}
 
-	// Update the underlying config structs
-	if m.config.Local == nil {
-		m.config.Local = &persistence.LocalConfig{}
+	// Update the global config struct directly
+	if m.config.Global == nil {
+		m.config.Global = &persistence.GlobalConfig{}
 	}
 
-	// Apply changes to local config (except API key and monthly budget)
-	m.config.Local.Model = m.config.Model.Value
+	m.config.Global.Model = m.config.Model.Value
 	timeout := m.config.TimeoutMins.Value
-	m.config.Local.TimeoutMins = &timeout
+	m.config.Global.TimeoutMins = &timeout
 	budgetPerRun := m.config.BudgetPerRunUSD.Value
-	m.config.Local.BudgetPerRunUSD = &budgetPerRun
-
-	// Save local config
-	if m.config.RepoRoot != "" {
-		if err := persistence.SaveLocalWithSources(m.config); err != nil {
-			return err
-		}
+	m.config.Global.BudgetPerRunUSD = &budgetPerRun
+	budgetMonthly := m.config.BudgetMonthlyUSD.Value
+	m.config.Global.BudgetMonthlyUSD = &budgetMonthly
+	if m.config.APIKey.Value != "" {
+		m.config.Global.APIKey = m.config.APIKey.Value
 	}
 
-	// API key and monthly budget go to global - load config and save
-	cfg, err := persistence.Load("")
-	if err == nil {
-		if m.config.APIKey.Value != "" {
-			_ = cfg.SetAPIKey(m.config.APIKey.Value)
-		}
-		// Save monthly budget to global config
-		budgetMonthly := m.config.BudgetMonthlyUSD.Value
-		_ = cfg.SetBudgetMonthlyUSD(budgetMonthly)
+	// Save all global settings
+	if err := persistence.SaveGlobalFromSources(m.config); err != nil {
+		return err
 	}
 
 	m.dirty = false
@@ -355,25 +339,19 @@ func (m *Model) WasSaved() bool {
 	return m.saved
 }
 
-// openInEditor opens the config file in the user's editor.
+// openInEditor opens the global config file in the user's editor.
 func (m *Model) openInEditor() tea.Cmd {
 	// Save any pending changes first
 	if m.dirty {
 		_ = m.saveConfig()
 	}
 
-	// Open local config if in repo, otherwise global
-	path := m.localPath
-	if !m.inRepo || m.localPath == "" {
-		path = m.globalPath
-	}
-
 	editor := os.Getenv("EDITOR")
 	if editor == "" {
-		editor = "code"
+		editor = "nano"
 	}
 
-	c := exec.Command(editor, path) //nolint:gosec // User-controlled editor is intentional
+	c := exec.Command(editor, m.globalPath) //nolint:gosec // User-controlled editor is intentional
 	return tea.ExecProcess(c, func(err error) tea.Msg {
 		return editorClosedMsg{err}
 	})
@@ -383,17 +361,4 @@ func (m *Model) openInEditor() tea.Cmd {
 func GetGlobalPath() string {
 	path, _ := persistence.GetConfigPath()
 	return path
-}
-
-// GetLocalPath returns the local config file path for a given repo root.
-func GetLocalPath(repoRoot string) string {
-	return filepath.Join(repoRoot, "detent.json")
-}
-
-// formatBudgetRaw returns the raw budget value for editing.
-func formatBudgetRaw(usd float64) string {
-	if usd == 0 {
-		return "0"
-	}
-	return strconv.FormatFloat(usd, 'f', 2, 64)
 }

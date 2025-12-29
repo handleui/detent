@@ -12,7 +12,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/detent/cli/internal/commands"
+	"github.com/detent/cli/internal/actbin"
 	"github.com/detent/cli/internal/docker"
 	"github.com/detent/cli/internal/git"
 	"github.com/detent/cli/internal/tui"
@@ -279,8 +279,10 @@ func RunPreflightChecks(ctx context.Context, workflowPath, repoRoot, runID, work
 		return nil, err
 	}
 
-	// Check 3: Act installation
-	if err := checker.executeCheck("Checking act installation", commands.CheckAct); err != nil {
+	// Check 3: Act installation (downloads if not present)
+	if err := checker.executeCheck("Checking act installation", func() error {
+		return actbin.EnsureInstalled(ctx, nil)
+	}); err != nil {
 		return nil, err
 	}
 

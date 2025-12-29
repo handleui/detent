@@ -21,7 +21,7 @@ import (
 const (
 	batchSize = 500 // Batch size for error inserts
 
-	currentSchemaVersion = 13 // Current database schema version
+	currentSchemaVersion = 15 // Current database schema version
 
 	// healSelectColumns is the standard column list for heal queries (must match scanHealFromScanner order)
 	healSelectColumns = `heal_id, error_id, run_id, diff_content, diff_content_hash, file_path, file_hash,
@@ -470,6 +470,26 @@ func (w *SQLiteWriter) applyMigrations(fromVersion int) error {
 			CREATE INDEX IF NOT EXISTS idx_errors_source ON errors(source);
 			`,
 		},
+		{
+			version: 14,
+			name:    "add_spend_log",
+			sql: `
+			CREATE TABLE IF NOT EXISTS spend_log (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				cost_usd REAL NOT NULL,
+				created_at INTEGER NOT NULL
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_spend_log_created_at ON spend_log(created_at);
+			`,
+		},
+		{
+			version: 15,
+			name:    "add_heals_error_id_attempt_index",
+			sql: `
+			CREATE INDEX IF NOT EXISTS idx_heals_error_id_attempt ON heals(error_id, attempt_number);
+			`,
+		},
 	}
 
 	// Apply each migration in a transaction
@@ -855,6 +875,16 @@ func (w *SQLiteWriter) flushBatch() (err error) {
 				return fmt.Errorf("failed to scan existing error: %w", scanErr)
 			}
 			existingErrors[contentHash] = errorID
+		}
+		// Check for errors that occurred during iteration
+		if rowsErr := rows.Err(); rowsErr != nil {
+			if closeErr := rows.Close(); closeErr != nil {
+				return fmt.Errorf("error iterating existing errors: %w (additionally, failed to close rows: %v)", rowsErr, closeErr)
+			}
+			if rbErr := tx.Rollback(); rbErr != nil {
+				return fmt.Errorf("error iterating existing errors: %w (additionally, failed to rollback: %v)", rowsErr, rbErr)
+			}
+			return fmt.Errorf("error iterating existing errors: %w", rowsErr)
 		}
 		if closeErr := rows.Close(); closeErr != nil {
 			if rbErr := tx.Rollback(); rbErr != nil {

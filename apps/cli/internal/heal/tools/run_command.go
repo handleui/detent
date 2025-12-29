@@ -73,7 +73,11 @@ var BlockedPatterns = []string{
 	"ssh", "scp", "nc ", "netcat",
 	"> /", ">>", "|", "&&", "||", ";",
 	"$(", "`", "eval", "exec",
+	"${", // shell variable expansion
 }
+
+// blockedBytes are control characters and null bytes that could be used for injection.
+var blockedBytes = []byte{0x00, 0x0a, 0x0d} // null, newline, carriage return
 
 // BlockedCommands are base commands that are never allowed.
 var BlockedCommands = map[string]bool{
@@ -123,6 +127,13 @@ func (t *RunCommandTool) Execute(ctx context.Context, input json.RawMessage) (Re
 
 	if in.Command == "" {
 		return ErrorResult("command is required"), nil
+	}
+
+	// Check for blocked bytes (null bytes, newlines) before any processing
+	for _, b := range blockedBytes {
+		if strings.ContainsRune(in.Command, rune(b)) {
+			return ErrorResult("command contains invalid characters"), nil
+		}
 	}
 
 	// Normalize whitespace to prevent bypass via tabs/multiple spaces

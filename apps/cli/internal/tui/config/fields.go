@@ -9,17 +9,17 @@ import (
 // Field describes a single configuration setting.
 type Field struct {
 	Key         string // Display name
-	GlobalOnly  bool   // true = only editable in global config
 	Description string // Help text
 }
 
 // EditableFields defines all configurable settings in display order.
+// All settings are stored in global config (~/.detent/detent.json).
 var EditableFields = []Field{
-	{Key: "api_key", GlobalOnly: true, Description: "Anthropic API key"},
+	{Key: "api_key", Description: "Anthropic API key"},
 	{Key: "model", Description: "Claude model for AI healing"},
 	{Key: "timeout", Description: "Maximum time per run (minutes)"},
 	{Key: "budget_per_run", Description: "Maximum spend per run (0 = unlimited)"},
-	{Key: "budget_monthly", GlobalOnly: true, Description: "Maximum spend per month (0 = unlimited)"},
+	{Key: "budget_monthly", Description: "Maximum spend per month (0 = unlimited)"},
 }
 
 // FieldValue holds the current value and source for a field.
@@ -56,13 +56,13 @@ func GetFieldValues(cfg *persistence.ConfigWithSources) map[string]FieldValue {
 
 	// Budget per run
 	values["budget_per_run"] = FieldValue{
-		DisplayValue: formatBudget(cfg.BudgetPerRunUSD.Value),
+		DisplayValue: persistence.FormatBudget(cfg.BudgetPerRunUSD.Value),
 		Source:       cfg.BudgetPerRunUSD.Source,
 	}
 
 	// Budget monthly
 	values["budget_monthly"] = FieldValue{
-		DisplayValue: formatBudgetMonthly(cfg.BudgetMonthlyUSD.Value, cfg.MonthlySpend),
+		DisplayValue: persistence.FormatBudget(cfg.BudgetMonthlyUSD.Value),
 		Source:       cfg.BudgetMonthlyUSD.Source,
 	}
 
@@ -71,21 +71,4 @@ func GetFieldValues(cfg *persistence.ConfigWithSources) map[string]FieldValue {
 
 func formatTimeout(mins int) string {
 	return fmt.Sprintf("%d min", mins)
-}
-
-func formatBudget(usd float64) string {
-	if usd == 0 {
-		return "unlimited"
-	}
-	return fmt.Sprintf("$%.2f", usd)
-}
-
-func formatBudgetMonthly(budget, spent float64) string {
-	if budget == 0 {
-		return "unlimited"
-	}
-	if spent > 0 {
-		return fmt.Sprintf("$%.2f ($%.2f used)", budget, spent)
-	}
-	return fmt.Sprintf("$%.2f", budget)
 }

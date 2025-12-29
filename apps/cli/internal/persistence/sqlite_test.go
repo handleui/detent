@@ -954,3 +954,4 @@ func TestSQLiteWriter_RecordHeal_WithFileHash(t *testing.T) {
 		t.Errorf("Retrieved heal FileHash = %v, want %v", heals[0].FileHash, heal.FileHash)
 	}
 }
+

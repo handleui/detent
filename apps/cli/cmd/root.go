@@ -55,15 +55,15 @@ Requirements:
 		fmt.Println(tui.Header(Version, repoIdentifier))
 		fmt.Println()
 
-		// Load config (global + local merged)
-		loadedCfg, configErr := persistence.Load(repoRoot)
+		// Load config
+		loadedCfg, configErr := persistence.Load()
 		if configErr != nil {
 			fmt.Fprintf(os.Stderr, "%s Config error: %s\n",
 				tui.WarningStyle.Render("!"),
 				tui.MutedStyle.Render(configErr.Error()))
 			fmt.Fprintf(os.Stderr, "%s Run: detent config reset\n\n", tui.Bullet())
-			// Create empty config with defaults
-			loadedCfg, _ = persistence.Load("")
+			// Use default config instead of retrying Load()
+			loadedCfg = persistence.NewConfigWithDefaults()
 		}
 		cfg = loadedCfg
 
@@ -88,6 +88,7 @@ func init() {
 	rootCmd.AddCommand(healCmd)
 	rootCmd.AddCommand(frankensteinCmd)
 	rootCmd.AddCommand(configCmd)
+	rootCmd.AddCommand(allowCmd)
 
 	// Persistent flags available to all commands
 	rootCmd.PersistentFlags().StringVarP(&workflowsDir, "workflows", "w", runner.WorkflowsDir, "workflows directory path")

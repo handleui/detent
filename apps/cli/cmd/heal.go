@@ -71,18 +71,23 @@ func runHeal(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Check if we have cached errors from a previous check run
+	// Open database for error data (per-repo)
 	db, err := persistence.NewSQLiteWriter(repoCtx.Path)
 	if err != nil {
 		return fmt.Errorf("opening database: %w", err)
 	}
+	defer func() { _ = db.Close() }()
+
+	// Get global spend database for cross-repo budget tracking
+	spendDB, err := persistence.GetSpendDB()
+	if err != nil {
+		return fmt.Errorf("opening spend database: %w", err)
+	}
 
 	errRecords, err := db.GetErrorsByRunID(repoCtx.RunID)
 	if err != nil {
-		_ = db.Close()
 		return fmt.Errorf("loading errors: %w", err)
 	}
-	_ = db.Close()
 
 	// If no cached errors or force flag, run check first
 	if len(errRecords) == 0 || forceRun {
@@ -96,12 +101,7 @@ func runHeal(cmd *cobra.Command, args []string) error {
 		}
 
 		// Reload errors after check
-		db, err = persistence.NewSQLiteWriter(repoCtx.Path)
-		if err != nil {
-			return fmt.Errorf("reopening database: %w", err)
-		}
 		errRecords, err = db.GetErrorsByRunID(repoCtx.RunID)
-		_ = db.Close()
 		if err != nil {
 			return fmt.Errorf("reloading errors: %w", err)
 		}
@@ -126,10 +126,17 @@ func runHeal(cmd *cobra.Command, args []string) error {
 
 	worktreePath = worktreeInfo.Path
 
-	// Check monthly budget before proceeding
-	remainingMonthly := cfg.RemainingMonthlyBudget()
-	if remainingMonthly == 0 {
-		return fmt.Errorf("monthly budget exhausted ($%.2f/$%.2f)", cfg.GetMonthlySpend(), cfg.BudgetMonthlyUSD)
+	// Check monthly budget before proceeding (uses global spend DB)
+	monthlySpend, err := spendDB.GetMonthlySpend("")
+	if err != nil {
+		return fmt.Errorf("getting monthly spend: %w", err)
+	}
+	var remainingMonthly float64 = -1 // -1 means unlimited
+	if cfg.BudgetMonthlyUSD > 0 {
+		remainingMonthly = cfg.BudgetMonthlyUSD - monthlySpend
+		if remainingMonthly <= 0 {
+			return fmt.Errorf("monthly budget exhausted ($%.2f/$%.2f)", monthlySpend, cfg.BudgetMonthlyUSD)
+		}
 	}
 
 	// Display summary
@@ -143,17 +150,18 @@ func runHeal(cmd *cobra.Command, args []string) error {
 	}
 
 	// Set up tool context with command approval
+	repoSHA := repoCtx.FirstCommitSHA
 	toolCtx := &tools.Context{
 		WorktreePath:   worktreePath,
 		RepoRoot:       repoCtx.Path,
 		RunID:          repoCtx.RunID,
-		FirstCommitSHA: repoCtx.FirstCommitSHA,
+		FirstCommitSHA: repoSHA,
 		CommandChecker: func(cmd string) bool {
-			return cfg.MatchesCommand(cmd)
+			return cfg.MatchesCommand(repoSHA, cmd)
 		},
 		CommandApprover:  promptForCommand,
 		CommandPersister: func(cmd string) error {
-			return cfg.AddCommand(cmd)
+			return cfg.AddAllowedCommand(repoSHA, cmd)
 		},
 	}
 
@@ -174,18 +182,21 @@ func runHeal(cmd *cobra.Command, args []string) error {
 
 	fmt.Fprintf(os.Stderr, "%s Starting healing...\n", tui.Bullet())
 
+	// Compute repo ID for spend tracking
+	repoID, _ := persistence.ComputeRepoID(repoCtx.Path)
+
 	result, err := healLoop.Run(cmd.Context(), prompt.BuildSystemPrompt(), userPrompt)
 	if err != nil {
-		// Record spend even on error
+		// Record spend even on error (to global spend DB)
 		if result != nil && result.CostUSD > 0 {
-			_ = cfg.RecordSpend(result.CostUSD)
+			_ = spendDB.RecordSpend(result.CostUSD, repoID)
 		}
 		return fmt.Errorf("healing loop failed: %w", err)
 	}
 
-	// Record spend after healing
+	// Record spend after healing (to global spend DB)
 	if result.CostUSD > 0 {
-		if recordErr := cfg.RecordSpend(result.CostUSD); recordErr != nil {
+		if recordErr := spendDB.RecordSpend(result.CostUSD, repoID); recordErr != nil {
 			fmt.Fprintf(os.Stderr, "%s Failed to record spend: %v\n", tui.WarningStyle.Render("!"), recordErr)
 		}
 	}
@@ -215,7 +226,7 @@ func runHeal(cmd *cobra.Command, args []string) error {
 	if cfg.BudgetMonthlyUSD > 0 {
 		fmt.Fprintf(os.Stderr, "%s Monthly: $%.2f / $%.2f\n",
 			tui.Bullet(),
-			cfg.GetMonthlySpend(), cfg.BudgetMonthlyUSD)
+			monthlySpend+result.CostUSD, cfg.BudgetMonthlyUSD)
 	}
 
 	if result.FinalMessage != "" {

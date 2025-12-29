@@ -70,6 +70,16 @@ func BadgeLocal() string {
 	return SecondaryStyle.Render("[local]")
 }
 
+// SourceBadge returns a styled badge for a config value source.
+// Only shows badge for env vars - global is the default, no badge needed.
+// Requires importing persistence, but avoids import cycle via string comparison.
+func SourceBadge(sourceString string) string {
+	if sourceString == "env" {
+		return Badge("env")
+	}
+	return ""
+}
+
 // Header renders the standard detent branding header.
 // Format: "Detent v0.1.0 · owner/repo"
 func Header(version, repoIdentifier string) string {

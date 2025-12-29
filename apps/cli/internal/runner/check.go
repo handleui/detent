@@ -12,7 +12,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/detent/cli/internal/act"
-	"github.com/detent/cli/internal/commands"
+	"github.com/detent/cli/internal/actbin"
 	"github.com/detent/cli/internal/docker"
 	internalerrors "github.com/detent/cli/internal/errors"
 	"github.com/detent/cli/internal/git"
@@ -105,7 +105,9 @@ func (r *CheckRunner) Prepare(ctx context.Context) error {
 		return git.ValidateGitRepository(gctx, r.config.RepoRoot)
 	})
 
-	g.Go(commands.CheckAct)
+	g.Go(func() error {
+		return actbin.EnsureInstalled(gctx, nil)
+	})
 
 	g.Go(func() error {
 		return docker.IsAvailable(gctx)
@@ -118,18 +120,22 @@ func (r *CheckRunner) Prepare(ctx context.Context) error {
 	// Best-effort cleanup of orphaned worktrees from previous runs (SIGKILL recovery)
 	_, _ = git.CleanupOrphanedWorktrees(ctx, r.config.RepoRoot)
 
-	// Validate clean worktree
-	if err := git.ValidateCleanWorktree(ctx, r.config.RepoRoot); err != nil {
-		return err
-	}
+	// Run validation checks in parallel (all are I/O operations)
+	g2, gctx2 := errgroup.WithContext(ctx)
 
-	// Validate no submodules (not yet supported)
-	if err := git.ValidateNoSubmodules(r.config.RepoRoot); err != nil {
-		return err
-	}
+	g2.Go(func() error {
+		return git.ValidateCleanWorktree(gctx2, r.config.RepoRoot)
+	})
 
-	// Validate symlinks don't escape repository (security check)
-	if err := git.ValidateNoEscapingSymlinks(ctx, r.config.RepoRoot); err != nil {
+	g2.Go(func() error {
+		return git.ValidateNoSubmodules(r.config.RepoRoot)
+	})
+
+	g2.Go(func() error {
+		return git.ValidateNoEscapingSymlinks(gctx2, r.config.RepoRoot)
+	})
+
+	if err := g2.Wait(); err != nil {
 		return err
 	}
 

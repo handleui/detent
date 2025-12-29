@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/detent/cli/internal/git"
@@ -27,11 +26,9 @@ Settings:
   timeout         Maximum time per healing run
   budget_per_run  Maximum spend per run (0 = unlimited)
   budget_monthly  Maximum spend per month (0 = unlimited)
-  verbose         Show tool calls in real-time
 
 Interactive mode:
   Navigate with j/k or arrow keys.
-  Toggle between global and local config with 'g'.
   Open config in editor with 'e'.`,
 	RunE: runConfigInteractive,
 }
@@ -88,7 +85,7 @@ func runConfigShow(_ *cobra.Command, _ []string) error {
 	fmt.Println(tui.Header(Version, repoIdentifier))
 	fmt.Println()
 
-	showCfg, err := persistence.LoadWithSources(repoRoot)
+	showCfg, err := persistence.LoadWithSources()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s Failed to load configuration\n", tui.ErrorStyle.Render("✗"))
 		fmt.Fprintf(os.Stderr, "%s %s\n", tui.Bullet(), tui.MutedStyle.Render(err.Error()))
@@ -102,39 +99,31 @@ func runConfigShow(_ *cobra.Command, _ []string) error {
 	fmt.Printf("%s\n", tui.SecondaryStyle.Render("Authentication"))
 	if showCfg.APIKey.Value != "" {
 		masked := persistence.MaskAPIKey(showCfg.APIKey.Value)
-		fmt.Printf("  API Key      %-20s %s\n", tui.PrimaryStyle.Render(masked), sourceBadge(showCfg.APIKey.Source))
+		fmt.Printf("  API Key      %-20s %s\n", tui.PrimaryStyle.Render(masked), tui.SourceBadge(showCfg.APIKey.Source.String()))
 	} else {
 		fmt.Printf("  API Key      %s\n", tui.WarningStyle.Render("not configured"))
 	}
 
 	// Section: Healing
 	fmt.Printf("\n%s\n", tui.SecondaryStyle.Render("Healing"))
-	fmt.Printf("  Model        %-20s %s\n", tui.PrimaryStyle.Render(showCfg.Model.Value), sourceBadge(showCfg.Model.Source))
-	fmt.Printf("  Timeout      %-20s %s\n", tui.PrimaryStyle.Render(fmt.Sprintf("%d min", showCfg.TimeoutMins.Value)), sourceBadge(showCfg.TimeoutMins.Source))
+	fmt.Printf("  Model        %-20s %s\n", tui.PrimaryStyle.Render(showCfg.Model.Value), tui.SourceBadge(showCfg.Model.Source.String()))
+	fmt.Printf("  Timeout      %-20s %s\n", tui.PrimaryStyle.Render(fmt.Sprintf("%d min", showCfg.TimeoutMins.Value)), tui.SourceBadge(showCfg.TimeoutMins.Source.String()))
 
 	// Budget per run
+	perRunBudget := persistence.FormatBudget(showCfg.BudgetPerRunUSD.Value)
+	perRunStyle := tui.PrimaryStyle
 	if showCfg.BudgetPerRunUSD.Value == 0 {
-		fmt.Printf("  Per-run      %-20s %s\n", tui.MutedStyle.Render("unlimited"), sourceBadge(showCfg.BudgetPerRunUSD.Source))
-	} else {
-		fmt.Printf("  Per-run      %-20s %s\n", tui.PrimaryStyle.Render(fmt.Sprintf("$%.2f", showCfg.BudgetPerRunUSD.Value)), sourceBadge(showCfg.BudgetPerRunUSD.Source))
+		perRunStyle = tui.MutedStyle
 	}
+	fmt.Printf("  Per-run      %-20s %s\n", perRunStyle.Render(perRunBudget), tui.SourceBadge(showCfg.BudgetPerRunUSD.Source.String()))
 
 	// Budget monthly
+	monthlyBudget := persistence.FormatBudget(showCfg.BudgetMonthlyUSD.Value)
+	monthlyStyle := tui.PrimaryStyle
 	if showCfg.BudgetMonthlyUSD.Value == 0 {
-		fmt.Printf("  Monthly      %-20s %s\n", tui.MutedStyle.Render("unlimited"), sourceBadge(showCfg.BudgetMonthlyUSD.Source))
-	} else {
-		monthlyDisplay := fmt.Sprintf("$%.2f", showCfg.BudgetMonthlyUSD.Value)
-		if showCfg.MonthlySpend > 0 {
-			monthlyDisplay = fmt.Sprintf("$%.2f ($%.2f used)", showCfg.BudgetMonthlyUSD.Value, showCfg.MonthlySpend)
-		}
-		fmt.Printf("  Monthly      %-20s %s\n", tui.PrimaryStyle.Render(monthlyDisplay), sourceBadge(showCfg.BudgetMonthlyUSD.Source))
+		monthlyStyle = tui.MutedStyle
 	}
-
-	// Section: Local Config
-	if len(showCfg.ExtraCommands) > 0 {
-		fmt.Printf("\n%s\n", tui.SecondaryStyle.Render("Local Config (detent.json)"))
-		fmt.Printf("  Commands     %s\n", tui.MutedStyle.Render(strings.Join(showCfg.ExtraCommands, ", ")))
-	}
+	fmt.Printf("  Monthly      %-20s %s\n", monthlyStyle.Render(monthlyBudget), tui.SourceBadge(showCfg.BudgetMonthlyUSD.Source.String()))
 
 	// Section: File
 	fmt.Printf("\n%s\n", tui.SecondaryStyle.Render("File"))
@@ -142,14 +131,6 @@ func runConfigShow(_ *cobra.Command, _ []string) error {
 
 	fmt.Println()
 	return nil
-}
-
-// sourceBadge returns a styled badge for the given source.
-func sourceBadge(source persistence.ValueSource) string {
-	if source == persistence.SourceLocal {
-		return tui.BadgeLocal()
-	}
-	return tui.Badge(source.String())
 }
 
 func runConfigReset(_ *cobra.Command, _ []string) error {
@@ -168,17 +149,30 @@ func runConfigReset(_ *cobra.Command, _ []string) error {
 		fmt.Println()
 	}
 
-	// Load existing config to preserve API key
-	existingCfg, _ := persistence.Load("")
-	apiKey := ""
+	// Load existing config to preserve API key and trusted repos
+	existingCfg, _ := persistence.Load()
+	var apiKey string
+	var trustedRepos map[string]persistence.TrustedRepo
+	var allowedCommands map[string][]string
 	if existingCfg != nil {
 		apiKey = existingCfg.APIKey
+		// Get trusted repos and allowed commands from the underlying global config
+		if global := existingCfg.GetGlobal(); global != nil {
+			trustedRepos = global.TrustedRepos
+			allowedCommands = global.AllowedCommands
+		}
 	}
 
-	// Create new config with defaults and save
-	newCfg, _ := persistence.Load("")
+	// Create fresh config with only preserved fields
+	newCfg := persistence.NewConfigWithDefaults()
 	if apiKey != "" {
-		_ = newCfg.SetAPIKey(apiKey)
+		newCfg.SetAPIKeyValue(apiKey)
+	}
+	if trustedRepos != nil {
+		newCfg.SetTrustedRepos(trustedRepos)
+	}
+	if allowedCommands != nil {
+		newCfg.SetAllowedCommands(allowedCommands)
 	}
 	if err := newCfg.SaveGlobal(); err != nil {
 		return fmt.Errorf("saving config: %w", err)
@@ -187,9 +181,8 @@ func runConfigReset(_ *cobra.Command, _ []string) error {
 	fmt.Printf("%s Configuration reset\n\n", tui.SuccessStyle.Render("✓"))
 	fmt.Printf("  Model        %s\n", tui.PrimaryStyle.Render(persistence.DefaultModel))
 	fmt.Printf("  Timeout      %s\n", tui.PrimaryStyle.Render(fmt.Sprintf("%d min", persistence.DefaultTimeoutMins)))
-	fmt.Printf("  Per-run      %s\n", tui.PrimaryStyle.Render(fmt.Sprintf("$%.2f", persistence.DefaultBudgetPerRunUSD)))
-	fmt.Printf("  Monthly      %s\n", tui.MutedStyle.Render("unlimited"))
-	fmt.Printf("  Verbose      %s\n\n", tui.MutedStyle.Render("off"))
+	fmt.Printf("  Per-run      %s\n", tui.PrimaryStyle.Render(persistence.FormatBudget(persistence.DefaultBudgetPerRunUSD)))
+	fmt.Printf("  Monthly      %s\n\n", tui.MutedStyle.Render(persistence.FormatBudget(0)))
 
 	return nil
 }
@@ -215,18 +208,11 @@ func runConfigSchema(_ *cobra.Command, _ []string) error {
 }
 
 func runConfigInteractive(_ *cobra.Command, _ []string) error {
-	// Detect if in a git repo
 	repoRoot, _ := filepath.Abs(".")
-	_, branchErr := os.Stat(filepath.Join(repoRoot, ".git"))
-	inRepo := branchErr == nil
 	repoIdentifier := git.GetRepoIdentifier(repoRoot)
 
-	if !inRepo {
-		repoRoot = "" // Force global-only mode
-	}
-
 	// Load config with sources
-	cfg, err := persistence.LoadWithSources(repoRoot)
+	cfg, err := persistence.LoadWithSources()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "\n%s Failed to load configuration\n", tui.ErrorStyle.Render("✗"))
 		fmt.Fprintf(os.Stderr, "%s %s\n\n", tui.Bullet(), tui.MutedStyle.Render(err.Error()))
@@ -235,9 +221,7 @@ func runConfigInteractive(_ *cobra.Command, _ []string) error {
 
 	// Create TUI model
 	model := tuiconfig.NewModel(cfg, tuiconfig.Options{
-		InRepo:         inRepo,
 		GlobalPath:     tuiconfig.GetGlobalPath(),
-		LocalPath:      tuiconfig.GetLocalPath(repoRoot),
 		Version:        Version,
 		RepoIdentifier: repoIdentifier,
 	})

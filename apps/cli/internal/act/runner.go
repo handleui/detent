@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/detent/cli/internal/actbin"
 )
 
 const gracefulShutdownTimeout = 5 * time.Second
@@ -70,7 +72,18 @@ func Run(ctx context.Context, cfg *RunConfig) (*RunResult, error) {
 
 	actBinary := cfg.ActBinary
 	if actBinary == "" {
-		actBinary = "act"
+		// Use bundled act binary if available, fall back to system act
+		if bundledPath, pathErr := actbin.ActPath(); pathErr == nil {
+			// Check if file exists directly instead of calling IsInstalled()
+			// which would recompute the path
+			if info, statErr := os.Stat(bundledPath); statErr == nil && !info.IsDir() {
+				actBinary = bundledPath
+			} else {
+				actBinary = "act"
+			}
+		} else {
+			actBinary = "act"
+		}
 	}
 
 	cmd := exec.CommandContext(ctx, actBinary, args...) //nolint:gosec // ActBinary is trusted; defaults to "act"

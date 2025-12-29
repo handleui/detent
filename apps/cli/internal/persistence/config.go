@@ -16,8 +16,7 @@ import (
 
 const (
 	detentDirName    = ".detent"
-	globalConfigFile = "config.json"
-	localConfigFile  = "detent.json"
+	globalConfigFile = "detent.json"
 
 	// SchemaURL is the JSON Schema reference for config files.
 	// Uses relative path since schema is written alongside config.
@@ -31,6 +30,11 @@ const (
 var (
 	cachedDetentDir   string
 	cachedDetentDirMu sync.RWMutex
+
+	// schemaWritten tracks if schema.json has been written this session.
+	// The schema is static, so we only need to write once per session.
+	schemaWritten   bool
+	schemaWrittenMu sync.Mutex
 )
 
 // --- Structs ---
@@ -42,7 +46,7 @@ type TrustedRepo struct {
 	TrustedAt time.Time `json:"trusted_at"`
 }
 
-// GlobalConfig is the user's global settings (~/.detent/config.json).
+// GlobalConfig is the user's global settings (~/.detent/detent.json).
 // This is the raw structure that gets persisted to disk.
 type GlobalConfig struct {
 	Schema           string                 `json:"$schema,omitempty"`
@@ -52,36 +56,21 @@ type GlobalConfig struct {
 	BudgetMonthlyUSD *float64               `json:"budget_monthly_usd,omitempty"`
 	TimeoutMins      *int                   `json:"timeout_mins,omitempty"`
 	TrustedRepos     map[string]TrustedRepo `json:"trusted_repos,omitempty"`
-	SpendHistory     map[string]float64     `json:"spend_history,omitempty"` // key is YYYY-MM
-}
-
-// LocalConfig is per-repository settings (detent.json in repo root).
-// This overrides global config for the specific project.
-type LocalConfig struct {
-	Schema          string   `json:"$schema,omitempty"`
-	Model           string   `json:"model,omitempty"`
-	BudgetPerRunUSD *float64 `json:"budget_per_run_usd,omitempty"`
-	TimeoutMins     *int     `json:"timeout_mins,omitempty"`
-	Commands        []string `json:"commands,omitempty"` // Extra allowed commands
+	AllowedCommands  map[string][]string    `json:"allowed_commands,omitempty"` // key is first commit SHA
 }
 
 // Config is the merged, resolved config used by the application.
-// Values are resolved from: env var > local config > global config > defaults.
+// Values are resolved from: env var > global config > defaults.
 type Config struct {
-	// Resolved settings
+	// Resolved settings (from global config)
 	APIKey           string
 	Model            string
 	BudgetPerRunUSD  float64
 	BudgetMonthlyUSD float64
 	TimeoutMins      int
 
-	// Aggregated allowlists (from local config)
-	ExtraCommands []string
-
 	// Internal references for mutation
-	global   *GlobalConfig
-	local    *LocalConfig
-	repoRoot string // For saving
+	global *GlobalConfig
 }
 
 // --- Defaults ---
@@ -110,8 +99,7 @@ type ValueSource int
 // Value sources indicate where configuration values originated.
 const (
 	SourceDefault ValueSource = iota // SourceDefault indicates the value is a hardcoded default.
-	SourceGlobal                     // SourceGlobal indicates the value comes from ~/.detent/config.json.
-	SourceLocal                      // SourceLocal indicates the value comes from detent.json.
+	SourceGlobal                     // SourceGlobal indicates the value comes from ~/.detent/detent.json.
 	SourceEnv                        // SourceEnv indicates the value comes from an environment variable.
 )
 
@@ -122,8 +110,6 @@ func (s ValueSource) String() string {
 		return "default"
 	case SourceGlobal:
 		return "global"
-	case SourceLocal:
-		return "local"
 	case SourceEnv:
 		return "env"
 	}
@@ -144,15 +130,9 @@ type ConfigWithSources struct {
 	BudgetPerRunUSD  ConfigValue[float64]
 	BudgetMonthlyUSD ConfigValue[float64]
 	TimeoutMins      ConfigValue[int]
-	MonthlySpend     float64
 
-	// Read-only (local config only)
-	ExtraCommands []string
-
-	// Internal references
-	Global   *GlobalConfig
-	Local    *LocalConfig
-	RepoRoot string
+	// Internal reference for saving
+	Global *GlobalConfig
 }
 
 // --- Path helpers ---
@@ -204,46 +184,30 @@ func GetConfigPath() (string, error) {
 
 // --- Loading ---
 
-// Load loads global + local config, merges them, and returns the resolved Config.
-// repoRoot is the directory to look for detent.json (pass "" for global-only).
-func Load(repoRoot string) (*Config, error) {
+// Load loads the global config, returning the resolved Config.
+func Load() (*Config, error) {
 	global, err := loadGlobal()
 	if err != nil {
 		return nil, fmt.Errorf("global config: %w", err)
 	}
 
-	var local *LocalConfig
-	if repoRoot != "" {
-		local, err = loadLocal(repoRoot)
-		if err != nil {
-			return nil, fmt.Errorf("local config: %w", err)
-		}
-	}
-
-	return merge(global, local, repoRoot), nil
+	return merge(global), nil
 }
 
 // LoadWithSources loads config and tracks the source of each value.
 // Used by the TUI to display where values originated.
-func LoadWithSources(repoRoot string) (*ConfigWithSources, error) {
+func LoadWithSources() (*ConfigWithSources, error) {
 	global, err := loadGlobal()
 	if err != nil {
 		return nil, fmt.Errorf("global config: %w", err)
 	}
 
-	var local *LocalConfig
-	if repoRoot != "" {
-		local, err = loadLocal(repoRoot)
-		if err != nil {
-			return nil, fmt.Errorf("local config: %w", err)
-		}
-	}
-
-	return mergeWithSources(global, local, repoRoot), nil
+	return mergeWithSources(global), nil
 }
 
-// mergeWithSources combines global and local config, tracking value sources.
-func mergeWithSources(global *GlobalConfig, local *LocalConfig, repoRoot string) *ConfigWithSources {
+// mergeInternal combines global config with defaults, tracking value sources.
+// This is the single implementation used by both merge() and mergeWithSources().
+func mergeInternal(global *GlobalConfig) *ConfigWithSources {
 	c := &ConfigWithSources{
 		Model:            ConfigValue[string]{Value: DefaultModel, Source: SourceDefault},
 		BudgetPerRunUSD:  ConfigValue[float64]{Value: DefaultBudgetPerRunUSD, Source: SourceDefault},
@@ -251,8 +215,6 @@ func mergeWithSources(global *GlobalConfig, local *LocalConfig, repoRoot string)
 		TimeoutMins:      ConfigValue[int]{Value: DefaultTimeoutMins, Source: SourceDefault},
 		APIKey:           ConfigValue[string]{Value: "", Source: SourceDefault},
 		Global:           global,
-		Local:            local,
-		RepoRoot:         repoRoot,
 	}
 
 	// Apply global config
@@ -263,6 +225,8 @@ func mergeWithSources(global *GlobalConfig, local *LocalConfig, repoRoot string)
 		if global.Model != "" {
 			if strings.HasPrefix(global.Model, modelPrefix) {
 				c.Model = ConfigValue[string]{Value: global.Model, Source: SourceGlobal}
+			} else {
+				fmt.Fprintf(os.Stderr, "warning: ignoring invalid model %q (must start with %q)\n", global.Model, modelPrefix)
 			}
 		}
 		if global.BudgetPerRunUSD != nil {
@@ -283,30 +247,6 @@ func mergeWithSources(global *GlobalConfig, local *LocalConfig, repoRoot string)
 				Source: SourceGlobal,
 			}
 		}
-		// Calculate monthly spend from history
-		c.MonthlySpend = global.SpendHistory[currentMonth()]
-	}
-
-	// Apply local config (overrides global for per-run budget)
-	if local != nil {
-		if local.Model != "" {
-			if strings.HasPrefix(local.Model, modelPrefix) {
-				c.Model = ConfigValue[string]{Value: local.Model, Source: SourceLocal}
-			}
-		}
-		if local.BudgetPerRunUSD != nil {
-			c.BudgetPerRunUSD = ConfigValue[float64]{
-				Value:  clampBudget(*local.BudgetPerRunUSD),
-				Source: SourceLocal,
-			}
-		}
-		if local.TimeoutMins != nil {
-			c.TimeoutMins = ConfigValue[int]{
-				Value:  clampTimeout(*local.TimeoutMins),
-				Source: SourceLocal,
-			}
-		}
-		c.ExtraCommands = local.Commands
 	}
 
 	// Environment variable overrides everything for API key
@@ -315,6 +255,11 @@ func mergeWithSources(global *GlobalConfig, local *LocalConfig, repoRoot string)
 	}
 
 	return c
+}
+
+// mergeWithSources combines global config with defaults, tracking value sources.
+func mergeWithSources(global *GlobalConfig) *ConfigWithSources {
+	return mergeInternal(global)
 }
 
 // loadGlobal loads the global config from ~/.detent/config.json.
@@ -346,92 +291,18 @@ func loadGlobal() (*GlobalConfig, error) {
 	return &cfg, nil
 }
 
-// loadLocal loads the local config from detent.json in the given directory.
-func loadLocal(dir string) (*LocalConfig, error) {
-	// Clean path to prevent traversal attacks
-	path := filepath.Clean(filepath.Join(dir, localConfigFile))
-
-	// Read file directly - os.ReadFile handles non-existence check efficiently
-	// #nosec G304 - path is constructed from repoRoot parameter
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil // No local config is fine
-		}
-		return nil, fmt.Errorf("reading: %w", err)
-	}
-
-	if len(data) == 0 {
-		return nil, nil
-	}
-
-	var cfg LocalConfig
-	if unmarshalErr := json.Unmarshal(data, &cfg); unmarshalErr != nil {
-		return nil, fmt.Errorf("parsing: %w", unmarshalErr)
-	}
-
-	return &cfg, nil
-}
-
-// merge combines global and local config with proper precedence.
-func merge(global *GlobalConfig, local *LocalConfig, repoRoot string) *Config {
-	c := &Config{
-		Model:            DefaultModel,
-		BudgetPerRunUSD:  DefaultBudgetPerRunUSD,
-		BudgetMonthlyUSD: 0, // 0 means unlimited
-		TimeoutMins:      DefaultTimeoutMins,
+// merge combines global config with defaults.
+// Uses mergeInternal and extracts just the values.
+func merge(global *GlobalConfig) *Config {
+	src := mergeInternal(global)
+	return &Config{
+		APIKey:           src.APIKey.Value,
+		Model:            src.Model.Value,
+		BudgetPerRunUSD:  src.BudgetPerRunUSD.Value,
+		BudgetMonthlyUSD: src.BudgetMonthlyUSD.Value,
+		TimeoutMins:      src.TimeoutMins.Value,
 		global:           global,
-		local:            local,
-		repoRoot:         repoRoot,
 	}
-
-	// Apply global config
-	if global != nil {
-		if global.APIKey != "" {
-			c.APIKey = global.APIKey
-		}
-		if global.Model != "" {
-			if strings.HasPrefix(global.Model, modelPrefix) {
-				c.Model = global.Model
-			} else {
-				fmt.Fprintf(os.Stderr, "warning: ignoring invalid model %q (must start with %q)\n", global.Model, modelPrefix)
-			}
-		}
-		if global.BudgetPerRunUSD != nil {
-			c.BudgetPerRunUSD = clampBudget(*global.BudgetPerRunUSD)
-		}
-		if global.BudgetMonthlyUSD != nil {
-			c.BudgetMonthlyUSD = clampMonthlyBudget(*global.BudgetMonthlyUSD)
-		}
-		if global.TimeoutMins != nil {
-			c.TimeoutMins = clampTimeout(*global.TimeoutMins)
-		}
-	}
-
-	// Apply local config (overrides global for per-run budget)
-	if local != nil {
-		if local.Model != "" {
-			if strings.HasPrefix(local.Model, modelPrefix) {
-				c.Model = local.Model
-			} else {
-				fmt.Fprintf(os.Stderr, "warning: ignoring invalid model %q (must start with %q)\n", local.Model, modelPrefix)
-			}
-		}
-		if local.BudgetPerRunUSD != nil {
-			c.BudgetPerRunUSD = clampBudget(*local.BudgetPerRunUSD)
-		}
-		if local.TimeoutMins != nil {
-			c.TimeoutMins = clampTimeout(*local.TimeoutMins)
-		}
-		c.ExtraCommands = local.Commands
-	}
-
-	// Environment variable overrides everything for API key
-	if envKey := os.Getenv("ANTHROPIC_API_KEY"); envKey != "" {
-		c.APIKey = envKey
-	}
-
-	return c
 }
 
 // --- Clamping helpers ---
@@ -468,14 +339,39 @@ func clampTimeout(value int) int {
 
 // --- Saving ---
 
-// SaveGlobal persists the global config to disk.
-func (c *Config) SaveGlobal() error {
-	if c.global == nil {
-		c.global = &GlobalConfig{}
+// ensureSchemaWritten writes the schema.json file if not already written this session.
+// This avoids redundant I/O since the schema is static.
+func ensureSchemaWritten(dir string) error {
+	schemaWrittenMu.Lock()
+	defer schemaWrittenMu.Unlock()
+
+	if schemaWritten {
+		return nil
 	}
 
-	// Set schema
-	c.global.Schema = SchemaURL
+	schemaPath := filepath.Join(dir, "schema.json")
+
+	// Check if schema file already exists with correct content
+	// #nosec G304 - path is derived from user's home directory
+	existing, err := os.ReadFile(schemaPath)
+	if err == nil && string(existing) == schema.JSON {
+		schemaWritten = true
+		return nil
+	}
+
+	// Write only if missing or different
+	// #nosec G306 - 0644 is fine for schema file
+	if err := os.WriteFile(schemaPath, []byte(schema.JSON), 0o644); err != nil {
+		return fmt.Errorf("writing schema: %w", err)
+	}
+
+	schemaWritten = true
+	return nil
+}
+
+// saveGlobalConfig is the shared implementation for persisting GlobalConfig to disk.
+func saveGlobalConfig(global *GlobalConfig) error {
+	global.Schema = SchemaURL
 
 	dir, err := GetDetentDir()
 	if err != nil {
@@ -488,7 +384,7 @@ func (c *Config) SaveGlobal() error {
 		return fmt.Errorf("creating config directory: %w", mkdirErr)
 	}
 
-	data, marshalErr := json.MarshalIndent(c.global, "", "  ")
+	data, marshalErr := json.MarshalIndent(global, "", "  ")
 	if marshalErr != nil {
 		return fmt.Errorf("marshaling: %w", marshalErr)
 	}
@@ -501,14 +397,16 @@ func (c *Config) SaveGlobal() error {
 		return fmt.Errorf("writing: %w", writeErr)
 	}
 
-	// Write schema file alongside config for IDE support
-	schemaPath := filepath.Join(dir, "schema.json")
-	// #nosec G306 - 0644 is fine for schema file
-	if schemaErr := os.WriteFile(schemaPath, []byte(schema.JSON), 0o644); schemaErr != nil {
-		return fmt.Errorf("writing schema: %w", schemaErr)
-	}
+	// Write schema file alongside config for IDE support (only once per session)
+	return ensureSchemaWritten(dir)
+}
 
-	return nil
+// SaveGlobal persists the global config to disk.
+func (c *Config) SaveGlobal() error {
+	if c.global == nil {
+		c.global = &GlobalConfig{}
+	}
+	return saveGlobalConfig(c.global)
 }
 
 // SetAPIKey updates the API key in global config and saves.
@@ -531,60 +429,12 @@ func (c *Config) SetBudgetMonthlyUSD(budget float64) error {
 	return c.SaveGlobal()
 }
 
-// SaveLocal persists the local config to disk (detent.json).
-func (c *Config) SaveLocal() error {
-	if c.repoRoot == "" {
-		return fmt.Errorf("no repository root set")
+// SaveGlobalFromSources saves the global config from a ConfigWithSources struct.
+func SaveGlobalFromSources(cfg *ConfigWithSources) error {
+	if cfg.Global == nil {
+		cfg.Global = &GlobalConfig{}
 	}
-	if c.local == nil {
-		c.local = &LocalConfig{}
-	}
-
-	// Set schema
-	c.local.Schema = SchemaURL
-
-	data, marshalErr := json.MarshalIndent(c.local, "", "  ")
-	if marshalErr != nil {
-		return fmt.Errorf("marshaling: %w", marshalErr)
-	}
-	// Append newline for proper file ending
-	data = append(data, '\n')
-
-	path := filepath.Clean(filepath.Join(c.repoRoot, localConfigFile))
-	// #nosec G306 - 0644 is appropriate for project config files
-	if writeErr := os.WriteFile(path, data, 0o644); writeErr != nil {
-		return fmt.Errorf("writing: %w", writeErr)
-	}
-
-	return nil
-}
-
-// SaveLocalWithSources saves local config from a ConfigWithSources struct.
-func SaveLocalWithSources(cfg *ConfigWithSources) error {
-	if cfg.RepoRoot == "" {
-		return fmt.Errorf("no repository root set")
-	}
-	if cfg.Local == nil {
-		cfg.Local = &LocalConfig{}
-	}
-
-	// Set schema
-	cfg.Local.Schema = SchemaURL
-
-	data, marshalErr := json.MarshalIndent(cfg.Local, "", "  ")
-	if marshalErr != nil {
-		return fmt.Errorf("marshaling: %w", marshalErr)
-	}
-	// Append newline for proper file ending
-	data = append(data, '\n')
-
-	path := filepath.Clean(filepath.Join(cfg.RepoRoot, localConfigFile))
-	// #nosec G306 - 0644 is appropriate for project config files
-	if writeErr := os.WriteFile(path, data, 0o644); writeErr != nil {
-		return fmt.Errorf("writing: %w", writeErr)
-	}
-
-	return nil
+	return saveGlobalConfig(cfg.Global)
 }
 
 // --- Trust helpers ---
@@ -614,88 +464,46 @@ func (c *Config) TrustRepo(firstCommitSHA, remoteURL string) error {
 	return c.SaveGlobal()
 }
 
-// --- Spend tracking helpers ---
-
-// currentMonth returns the current month in YYYY-MM format.
-func currentMonth() string {
-	return time.Now().Format("2006-01")
-}
-
-// GetMonthlySpend returns the total spend for the current month.
-func (c *Config) GetMonthlySpend() float64 {
-	if c.global == nil || c.global.SpendHistory == nil {
-		return 0
-	}
-	return c.global.SpendHistory[currentMonth()]
-}
-
-// RecordSpend adds the given amount to the current month's spend and saves to disk.
-// NOTE: This operation is not atomic across processes. If multiple CLI instances
-// run concurrently, there's a race condition where spend data could be lost.
-// This is acceptable for budget tracking (best-effort) but should not be relied
-// upon for strict financial controls.
-func (c *Config) RecordSpend(amount float64) error {
-	if amount < 0 {
-		return nil // Ignore negative amounts
-	}
-	if c.global == nil {
-		c.global = &GlobalConfig{}
-	}
-	if c.global.SpendHistory == nil {
-		c.global.SpendHistory = make(map[string]float64)
-	}
-
-	month := currentMonth()
-	c.global.SpendHistory[month] += amount
-	c.pruneSpendHistory()
-	return c.SaveGlobal()
-}
-
-// RemainingMonthlyBudget returns the remaining monthly budget.
-// Returns -1 if the monthly budget is unlimited (0).
-func (c *Config) RemainingMonthlyBudget() float64 {
-	if c.BudgetMonthlyUSD == 0 {
-		return -1 // Unlimited
-	}
-	remaining := c.BudgetMonthlyUSD - c.GetMonthlySpend()
-	if remaining < 0 {
-		return 0
-	}
-	return remaining
-}
-
-// pruneSpendHistory removes entries older than 3 months to keep the config file small.
-func (c *Config) pruneSpendHistory() {
-	if c.global == nil || c.global.SpendHistory == nil {
-		return
-	}
-
-	// Calculate the cutoff month (3 months ago).
-	// Use local time consistently with currentMonth() to avoid timezone mismatches.
-	// Go's time.Date normalizes month values, so Month()-2 works correctly
-	// even for January/February (becomes November/December of previous year).
-	now := time.Now()
-	cutoff := time.Date(now.Year(), now.Month()-2, 1, 0, 0, 0, 0, now.Location()).Format("2006-01")
-
-	for month := range c.global.SpendHistory {
-		if month < cutoff {
-			delete(c.global.SpendHistory, month)
-		}
-	}
-}
-
 // --- Command helpers ---
 
-// MatchesCommand checks if a command is allowed by local config.
+// GetAllowedCommands returns the allowed commands for a repo by its first commit SHA.
+func (c *Config) GetAllowedCommands(repoSHA string) []string {
+	if c.global == nil || c.global.AllowedCommands == nil {
+		return nil
+	}
+	return c.global.AllowedCommands[repoSHA]
+}
+
+// dangerousPatterns are shell metacharacters and patterns that could enable command injection.
+// These are blocked even in wildcard-matched commands.
+var dangerousPatterns = []string{
+	";", "&&", "||", "|", ">", "<", ">>", "<<",
+	"$(", "`", "${", "\\", "\n", "\r", "\x00",
+}
+
+// MatchesCommand checks if a command is in the repo's allowlist.
 // Supports exact matches and wildcard patterns (e.g., "bun run *").
-func (c *Config) MatchesCommand(cmd string) bool {
-	for _, pattern := range c.ExtraCommands {
+// Wildcard patterns only match the immediate argument after the prefix,
+// and reject commands containing shell metacharacters.
+func (c *Config) MatchesCommand(repoSHA, cmd string) bool {
+	commands := c.GetAllowedCommands(repoSHA)
+	for _, pattern := range commands {
 		if cmd == pattern {
 			return true
 		}
 		if strings.HasSuffix(pattern, " *") {
 			prefix := strings.TrimSuffix(pattern, "*")
 			if strings.HasPrefix(cmd, prefix) {
+				// Extract the part matched by the wildcard
+				suffix := strings.TrimPrefix(cmd, prefix)
+				// Reject if suffix contains dangerous patterns
+				if containsDangerousPattern(suffix) {
+					continue
+				}
+				// Reject if suffix contains spaces (wildcard should match single argument)
+				if strings.Contains(strings.TrimSpace(suffix), " ") {
+					continue
+				}
 				return true
 			}
 		}
@@ -703,20 +511,95 @@ func (c *Config) MatchesCommand(cmd string) bool {
 	return false
 }
 
-// AddCommand adds a command to local config and saves.
-func (c *Config) AddCommand(cmd string) error {
-	if c.local == nil {
-		c.local = &LocalConfig{}
+// containsDangerousPattern checks if a string contains shell metacharacters.
+func containsDangerousPattern(s string) bool {
+	for _, pattern := range dangerousPatterns {
+		if strings.Contains(s, pattern) {
+			return true
+		}
 	}
+	return false
+}
+
+// ValidateAllowedCommand checks if a command pattern is safe to add to the allowlist.
+// Returns an error describing why the command is unsafe.
+func ValidateAllowedCommand(cmd string) error {
+	if cmd == "" {
+		return fmt.Errorf("command cannot be empty")
+	}
+
+	// Normalize whitespace
+	normalized := strings.Join(strings.Fields(cmd), " ")
+	if normalized != cmd {
+		return fmt.Errorf("command contains irregular whitespace")
+	}
+
+	// Check for dangerous patterns that should never be allowed
+	for _, pattern := range dangerousPatterns {
+		if strings.Contains(cmd, pattern) {
+			return fmt.Errorf("command contains dangerous pattern: %q", pattern)
+		}
+	}
+
+	// Check for null bytes and control characters
+	for i, r := range cmd {
+		if r < 32 && r != ' ' && r != '\t' {
+			return fmt.Errorf("command contains control character at position %d", i)
+		}
+	}
+
+	// Wildcard must only appear at the end and preceded by space
+	if strings.Contains(cmd, "*") {
+		if !strings.HasSuffix(cmd, " *") {
+			return fmt.Errorf("wildcard (*) must appear only at the end as ' *'")
+		}
+		if strings.Count(cmd, "*") > 1 {
+			return fmt.Errorf("only one wildcard (*) is allowed")
+		}
+	}
+
+	return nil
+}
+
+// AddAllowedCommand adds a command to a repo's allowlist and saves.
+// Returns an error if the command pattern is unsafe.
+func (c *Config) AddAllowedCommand(repoSHA, cmd string) error {
+	// Validate command before adding
+	if err := ValidateAllowedCommand(cmd); err != nil {
+		return fmt.Errorf("invalid command pattern: %w", err)
+	}
+
+	if c.global == nil {
+		c.global = &GlobalConfig{}
+	}
+	if c.global.AllowedCommands == nil {
+		c.global.AllowedCommands = make(map[string][]string)
+	}
+
 	// Check if already exists
-	for _, existing := range c.local.Commands {
+	for _, existing := range c.global.AllowedCommands[repoSHA] {
 		if existing == cmd {
 			return nil
 		}
 	}
-	c.local.Commands = append(c.local.Commands, cmd)
-	c.ExtraCommands = c.local.Commands
-	return c.SaveLocal()
+	c.global.AllowedCommands[repoSHA] = append(c.global.AllowedCommands[repoSHA], cmd)
+	return c.SaveGlobal()
+}
+
+// RemoveAllowedCommand removes a command from a repo's allowlist and saves.
+func (c *Config) RemoveAllowedCommand(repoSHA, cmd string) error {
+	if c.global == nil || c.global.AllowedCommands == nil {
+		return nil
+	}
+
+	commands := c.global.AllowedCommands[repoSHA]
+	for i, existing := range commands {
+		if existing == cmd {
+			c.global.AllowedCommands[repoSHA] = append(commands[:i], commands[i+1:]...)
+			return c.SaveGlobal()
+		}
+	}
+	return nil
 }
 
 // MaskAPIKey returns a masked version of an API key for safe display.
@@ -729,4 +612,68 @@ func MaskAPIKey(key string) string {
 		return "****"
 	}
 	return "****" + key[len(key)-4:]
+}
+
+// FormatBudget formats a budget value for display.
+// Returns "unlimited" for 0, otherwise returns "$X.XX".
+func FormatBudget(usd float64) string {
+	if usd == 0 {
+		return "unlimited"
+	}
+	return fmt.Sprintf("$%.2f", usd)
+}
+
+// FormatBudgetRaw formats a budget value for editing.
+// Returns "0" for 0, otherwise returns the numeric value as a string.
+func FormatBudgetRaw(usd float64) string {
+	if usd == 0 {
+		return "0"
+	}
+	return fmt.Sprintf("%.2f", usd)
+}
+
+// NewConfigWithDefaults creates a new Config with default values and empty GlobalConfig.
+// Use this when you need a fresh config that doesn't inherit existing settings.
+func NewConfigWithDefaults() *Config {
+	return &Config{
+		Model:            DefaultModel,
+		BudgetPerRunUSD:  DefaultBudgetPerRunUSD,
+		BudgetMonthlyUSD: 0,
+		TimeoutMins:      DefaultTimeoutMins,
+		global:           &GlobalConfig{},
+	}
+}
+
+// GetGlobal returns the underlying GlobalConfig for direct access.
+// Returns nil if no global config is loaded.
+func (c *Config) GetGlobal() *GlobalConfig {
+	return c.global
+}
+
+// SetAPIKeyValue sets the API key without saving.
+// Use SaveGlobal() after to persist changes.
+func (c *Config) SetAPIKeyValue(key string) {
+	if c.global == nil {
+		c.global = &GlobalConfig{}
+	}
+	c.global.APIKey = key
+	c.APIKey = key
+}
+
+// SetTrustedRepos sets the trusted repos map without saving.
+// Use SaveGlobal() after to persist changes.
+func (c *Config) SetTrustedRepos(repos map[string]TrustedRepo) {
+	if c.global == nil {
+		c.global = &GlobalConfig{}
+	}
+	c.global.TrustedRepos = repos
+}
+
+// SetAllowedCommands sets the allowed commands map without saving.
+// Use SaveGlobal() after to persist changes.
+func (c *Config) SetAllowedCommands(commands map[string][]string) {
+	if c.global == nil {
+		c.global = &GlobalConfig{}
+	}
+	c.global.AllowedCommands = commands
 }

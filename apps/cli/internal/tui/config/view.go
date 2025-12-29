@@ -4,7 +4,6 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/detent/cli/internal/persistence"
 	"github.com/detent/cli/internal/tui"
 )
 
@@ -32,18 +31,6 @@ func (m *Model) View() string {
 	// Field list
 	for i, field := range EditableFields {
 		b.WriteString(m.renderField(i, field))
-		b.WriteString("\n")
-	}
-
-	// Extra local config info (always show if present)
-	if len(m.config.ExtraCommands) > 0 {
-		b.WriteString("\n")
-		b.WriteString(tui.SecondaryStyle.Render("Local Allowlists"))
-		b.WriteString("\n")
-		b.WriteString("  ")
-		b.WriteString(fieldStyle.Render("commands"))
-		b.WriteString("    ")
-		b.WriteString(mutedValue.Render(strings.Join(m.config.ExtraCommands, ", ")))
 		b.WriteString("\n")
 	}
 
@@ -110,17 +97,9 @@ func (m *Model) renderField(index int, field Field) string {
 	}
 
 	// Source badge
-	badge := sourceBadge(value.Source)
+	badge := tui.SourceBadge(value.Source.String())
 
 	return cursor + name + displayValue + "  " + badge
-}
-
-// sourceBadge returns a styled badge for the given source.
-func sourceBadge(source persistence.ValueSource) string {
-	if source == persistence.SourceLocal {
-		return tui.BadgeLocal()
-	}
-	return tui.Badge(source.String())
 }
 
 // renderHelp renders the keyboard shortcuts.
