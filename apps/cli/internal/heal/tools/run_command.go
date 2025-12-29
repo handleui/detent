@@ -14,299 +14,76 @@ import (
 
 const (
 	commandTimeout = 5 * time.Minute
+	maxOutput      = 50 * 1024 // 50KB max output
 )
 
-// CommandSpec defines allowed subcommands for a base command.
-type CommandSpec struct {
-	// AllowedSubcommands lists allowed subcommands. If nil, any args are allowed.
-	AllowedSubcommands []string
-}
+// SafeCommands are always allowed without prompting.
+// These are read-only or have minimal side effects.
+var SafeCommands = map[string][]string{
+	// Go - safe build/test/lint commands
+	"go":            {"build", "test", "fmt", "vet", "mod", "generate", "install", "run"},
+	"golangci-lint": {"run"},
+	"gofumpt":       nil, // any args
+	"goimports":     nil,
+	"staticcheck":   nil,
+	"govulncheck":   nil,
 
-// CommandWhitelist maps base commands to their specifications.
-var CommandWhitelist = map[string]CommandSpec{
-	// Node.js package managers
-	"npm":  {AllowedSubcommands: []string{"run", "test", "install", "ci", "build"}},
-	"yarn": {AllowedSubcommands: []string{"run", "test", "install", "build"}},
-	"pnpm": {AllowedSubcommands: []string{"run", "test", "install", "build"}},
-	"bun":  {AllowedSubcommands: []string{"run", "test", "install", "build", "x"}},
-	"npx": {AllowedSubcommands: []string{
-		// Linters and formatters
-		"eslint", "prettier", "biome", "oxlint",
-		// TypeScript
-		"tsc", "tsc-watch",
-		// Test runners
-		"vitest", "jest",
-		// Monorepo tools
-		"turbo", "nx",
-		// Common utilities
-		"rimraf", "nodemon",
-	}},
-
-	// Go
-	"go":             {AllowedSubcommands: []string{"build", "test", "run", "fmt", "vet", "mod", "generate", "install"}},
-	"golangci-lint":  {AllowedSubcommands: []string{"run"}},
-	"gofumpt":        {AllowedSubcommands: nil},
-	"goimports":      {AllowedSubcommands: nil},
-	"staticcheck":    {AllowedSubcommands: nil},
-	"govulncheck":    {AllowedSubcommands: nil},
+	// Node.js - safe commands
+	"npm":  {"install", "ci", "test", "run"},
+	"yarn": {"install", "test", "run"},
+	"pnpm": {"install", "test", "run"},
+	"bun":  {"install", "test", "run", "x"},
+	"npx":  nil, // handled specially - linters are safe
+	"bunx": nil,
 
 	// Rust
-	"cargo":  {AllowedSubcommands: []string{"build", "test", "check", "fmt", "clippy", "run"}},
-	"rustfmt": {AllowedSubcommands: nil},
+	"cargo":   {"build", "test", "check", "fmt", "clippy", "run"},
+	"rustfmt": nil,
 
 	// Python
-	"python":  {AllowedSubcommands: []string{"-m"}},
-	"python3": {AllowedSubcommands: []string{"-m"}},
-	"pip":     {AllowedSubcommands: []string{"install"}},
-	"pip3":    {AllowedSubcommands: []string{"install"}},
-	"pytest":  {AllowedSubcommands: nil},
-	"mypy":    {AllowedSubcommands: nil},
-	"ruff":    {AllowedSubcommands: []string{"check", "format"}},
-	"black":   {AllowedSubcommands: nil},
+	"python":  {"-m"},
+	"python3": {"-m"},
+	"pip":     {"install"},
+	"pip3":    {"install"},
+	"pytest":  nil,
+	"mypy":    nil,
+	"ruff":    {"check", "format"},
+	"black":   nil,
 
-	// Build tools
-	//
-	// SECURITY NOTE: Make, Gradle, Maven execute project-defined targets/tasks.
-	// Unlike fixed-verb tools (go, cargo), these cannot have restricted subcommands
-	// because target names are project-specific (e.g., "make lint", "make deploy-prod").
-	//
-	// ACCEPTED RISK: A malicious Makefile/build.gradle could contain dangerous targets.
-	// MITIGATIONS:
-	//   1. Worktree sandbox isolates file operations
-	//   2. Environment filtering (safeCommandEnv) prevents credential exfiltration
-	//   3. Users run detent on trusted codebases (same trust model as "npm install")
-	//
-	"make":   {AllowedSubcommands: nil},
-	"cmake":  {AllowedSubcommands: nil},
-	"gradle": {AllowedSubcommands: nil},
-	"mvn":    {AllowedSubcommands: nil},
-
-	// Linters/formatters
-	"eslint":   {AllowedSubcommands: nil},
-	"prettier": {AllowedSubcommands: nil},
-	"tsc":      {AllowedSubcommands: nil},
-	"biome":    {AllowedSubcommands: []string{"check", "format", "lint"}},
+	// Linters/formatters (always safe)
+	"eslint":   nil,
+	"prettier": nil,
+	"tsc":      nil,
+	"biome":    {"check", "format", "lint"},
 }
 
-// BlockedPatterns are always rejected regardless of whitelist.
+// SafeNpxCommands are npx/bunx commands that are always safe.
+var SafeNpxCommands = map[string]bool{
+	"eslint": true, "prettier": true, "biome": true, "oxlint": true,
+	"tsc": true, "tsc-watch": true,
+	"vitest": true, "jest": true,
+	"turbo": true, "nx": true,
+}
+
+// BlockedPatterns are always rejected regardless of approval.
+// Note: These are checked after normalizing whitespace.
 var BlockedPatterns = []string{
-	"rm -rf",
-	"rm -r",
-	"sudo",
-	"chmod",
-	"chown",
-	"curl",
-	"wget",
-	"git push",
-	"git remote",
-	"git config",
-	"ssh",
-	"scp",
-	"nc ",
-	"netcat",
-	"> /",
-	">>",
-	"|",
-	"&&",
-	"||",
-	";",
-	"$(",
-	"`",
-	"eval",
-	"exec",
+	"rm -rf", "rm -r", "sudo", "chmod", "chown",
+	"curl", "wget", "git push", "git remote", "git config",
+	"ssh", "scp", "nc ", "netcat",
+	"> /", ">>", "|", "&&", "||", ";",
+	"$(", "`", "eval", "exec",
 }
 
-// allowedMakeTargets are auto-allowed for any trusted repository.
-// Unknown targets require user approval (prompted via TargetApprover).
-var allowedMakeTargets = map[string]bool{
-	// Build & compile
-	"all": true, "build": true, "compile": true, "install": true,
-	// Testing
-	"test": true, "check": true, "verify": true, "validate": true,
-	// Code quality
-	"lint": true, "fmt": true, "format": true, "vet": true, "staticcheck": true,
-	// Cleaning
-	"clean": true, "distclean": true,
-	// Dependencies
-	"deps": true, "vendor": true, "mod": true, "tidy": true,
-	// Generation
-	"generate": true, "gen": true, "proto": true,
-	// Run
-	"run": true, "dev": true, "serve": true,
+// BlockedCommands are base commands that are never allowed.
+var BlockedCommands = map[string]bool{
+	"rm": true, "sudo": true, "chmod": true, "chown": true,
+	"curl": true, "wget": true, "ssh": true, "scp": true,
+	"nc": true, "netcat": true, "eval": true, "exec": true,
+	"sh": true, "bash": true, "zsh": true, "fish": true, "dash": true,
 }
 
-// isAllowedMakeTarget checks if a make target is in the allowlist.
-// Case-insensitive: "BUILD" and "build" are treated the same.
-func isAllowedMakeTarget(target string) bool {
-	return allowedMakeTargets[strings.ToLower(target)]
-}
-
-// allowedEnvVars is an allowlist of environment variable names that are safe to pass
-// to executed commands. Uses exact matches for specific variables.
-var allowedEnvVars = []string{
-	// Essential system variables
-	"PATH",
-	"HOME",
-	"USER",
-	"TMPDIR",
-	"TEMP",
-	"TMP",
-	"LANG",
-	"SHELL",
-	"TERM",
-	"COLORTERM",
-	"FORCE_COLOR",
-	"NO_COLOR",
-	"CLICOLOR",
-	"CLICOLOR_FORCE",
-
-	// Go
-	"GOPATH",
-	"GOROOT",
-	"GOBIN",
-	"GOCACHE",
-	"GOMODCACHE",
-	"GOPROXY",
-	"GOPRIVATE",
-	"GOFLAGS",
-	"CGO_ENABLED",
-	"CGO_CFLAGS",
-	"CGO_LDFLAGS",
-
-	// Node.js / JavaScript
-	"NODE_ENV",
-	"NODE_PATH",
-	"NODE_OPTIONS",
-	"NPM_CONFIG_REGISTRY",
-	"NPM_CONFIG_CACHE",
-	"YARN_CACHE_FOLDER",
-	"PNPM_HOME",
-	"BUN_INSTALL",
-
-	// Python
-	"PYTHONPATH",
-	"PYTHONHOME",
-	"VIRTUAL_ENV",
-	"CONDA_PREFIX",
-	"CONDA_DEFAULT_ENV",
-	"PIPENV_VENV_IN_PROJECT",
-
-	// Rust
-	"CARGO_HOME",
-	"RUSTUP_HOME",
-	"RUSTFLAGS",
-	"CARGO_TARGET_DIR",
-
-	// Java / JVM
-	"JAVA_HOME",
-	"JDK_HOME",
-	"MAVEN_HOME",
-	"M2_HOME",
-	"GRADLE_HOME",
-	"GRADLE_USER_HOME",
-
-	// Ruby
-	"GEM_HOME",
-	"GEM_PATH",
-	"BUNDLE_PATH",
-	"RBENV_ROOT",
-	"RUBY_VERSION",
-
-	// Build tools
-	"CC",
-	"CXX",
-	"CFLAGS",
-	"CXXFLAGS",
-	"LDFLAGS",
-	"PKG_CONFIG_PATH",
-	"CMAKE_PREFIX_PATH",
-
-	// Editor integration (for some tools)
-	"EDITOR",
-	"VISUAL",
-}
-
-// allowedEnvPrefixes is an allowlist of environment variable prefixes that are safe.
-// Variables starting with these prefixes will be included (unless they match a blocked suffix).
-var allowedEnvPrefixes = []string{
-	"LC_", // Locale settings (LC_ALL, LC_CTYPE, LC_MESSAGES, etc.)
-	"XDG_", // XDG base directory specification
-}
-
-// blockedEnvSuffixes are suffixes that indicate secrets, even if the prefix is allowed.
-// Any variable ending with these will be excluded.
-var blockedEnvSuffixes = []string{
-	"_KEY",
-	"_TOKEN",
-	"_SECRET",
-	"_PASSWORD",
-	"_CREDS",
-	"_CREDENTIAL",
-	"_CREDENTIALS",
-	"_PRIVATE_KEY",
-	"_SIGNING_KEY",
-	"_AUTH",
-	"_API_KEY",
-}
-
-// safeCommandEnv returns a filtered environment for executing commands.
-// Uses an allowlist approach to prevent secrets from being exposed to executed commands.
-//
-// This function:
-// 1. Includes only explicitly allowed environment variables
-// 2. Includes variables with allowed prefixes (like LC_*)
-// 3. Excludes any variable with a blocked suffix (like _TOKEN, _SECRET)
-//
-// This prevents malicious code from exfiltrating API keys, tokens, and other secrets
-// that may be present in the parent environment.
-func safeCommandEnv() []string {
-	// Build a set of allowed exact variable names for O(1) lookup
-	allowedSet := make(map[string]struct{}, len(allowedEnvVars))
-	for _, v := range allowedEnvVars {
-		allowedSet[v] = struct{}{}
-	}
-
-	var env []string
-
-	for _, kv := range os.Environ() {
-		idx := strings.Index(kv, "=")
-		if idx <= 0 {
-			continue
-		}
-		key := kv[:idx]
-		upperKey := strings.ToUpper(key)
-
-		// Check if the variable has a blocked suffix (secrets)
-		blocked := false
-		for _, suffix := range blockedEnvSuffixes {
-			if strings.HasSuffix(upperKey, suffix) {
-				blocked = true
-				break
-			}
-		}
-		if blocked {
-			continue
-		}
-
-		// Check if exact match in allowlist
-		if _, ok := allowedSet[key]; ok {
-			env = append(env, kv)
-			continue
-		}
-
-		// Check if matches an allowed prefix
-		for _, prefix := range allowedEnvPrefixes {
-			if strings.HasPrefix(key, prefix) {
-				env = append(env, kv)
-				break
-			}
-		}
-	}
-
-	return env
-}
-
-// RunCommandTool executes whitelisted commands.
+// RunCommandTool executes commands with user approval for unknown ones.
 type RunCommandTool struct {
 	ctx *Context
 }
@@ -323,17 +100,13 @@ func (t *RunCommandTool) Name() string {
 
 // Description implements Tool.
 func (t *RunCommandTool) Description() string {
-	cmds := make([]string, 0, len(CommandWhitelist))
-	for cmd := range CommandWhitelist {
-		cmds = append(cmds, cmd)
-	}
-	return fmt.Sprintf("Run a whitelisted command. Allowed commands: %s. Shell operators (|, &&, ||, ;) are not allowed.", strings.Join(cmds, ", "))
+	return "Run a shell command. Common build/test/lint commands are pre-approved. Other commands require user approval."
 }
 
 // InputSchema implements Tool.
 func (t *RunCommandTool) InputSchema() map[string]any {
 	return NewSchema().
-		AddString("command", "The command to run (e.g., 'go test ./...', 'npm run lint')").
+		AddString("command", "The command to run (e.g., 'go test ./...', 'npm run lint', 'make build')").
 		Build()
 }
 
@@ -352,127 +125,142 @@ func (t *RunCommandTool) Execute(ctx context.Context, input json.RawMessage) (Re
 		return ErrorResult("command is required"), nil
 	}
 
-	// Check blocked patterns first (security critical)
+	// Normalize whitespace to prevent bypass via tabs/multiple spaces
+	normalizedCmd := normalizeCommand(in.Command)
+
+	// Check blocked patterns first (on normalized command)
 	for _, pattern := range BlockedPatterns {
-		if strings.Contains(in.Command, pattern) {
-			return ErrorResult(fmt.Sprintf("command contains blocked pattern: %q", pattern)), nil
+		if strings.Contains(normalizedCmd, pattern) {
+			return ErrorResult(fmt.Sprintf("blocked pattern: %q", pattern)), nil
 		}
 	}
 
-	// Parse command using simple space-splitting.
-	// NOTE: This doesn't handle quoted arguments (e.g., `npm run "build --prod"`).
-	// For security, we intentionally avoid shell-like parsing to prevent escaping attacks.
-	// Commands requiring complex quoting should use multiple simple commands instead.
-	parts := strings.Fields(in.Command)
+	// Parse command
+	parts := strings.Fields(normalizedCmd)
 	if len(parts) == 0 {
 		return ErrorResult("empty command"), nil
 	}
 
+	// Check if base command is explicitly blocked
+	baseCmd := extractBaseCommand(parts[0])
+	if BlockedCommands[baseCmd] {
+		return ErrorResult(fmt.Sprintf("blocked command: %q", baseCmd)), nil
+	}
+
+	// Check if command is allowed
+	if !t.isAllowed(normalizedCmd, parts) {
+		return ErrorResult(fmt.Sprintf("command not approved: %s", normalizedCmd)), nil
+	}
+
+	// Execute the command with original parts (normalized)
+	return t.execute(ctx, normalizedCmd, parts)
+}
+
+// normalizeCommand normalizes whitespace in a command string.
+func normalizeCommand(cmd string) string {
+	return strings.Join(strings.Fields(cmd), " ")
+}
+
+// extractBaseCommand extracts the base command name from a path.
+// e.g., "/usr/bin/rm" -> "rm", "rm" -> "rm"
+func extractBaseCommand(cmd string) string {
+	// Handle path-based commands like /bin/rm or ./script.sh
+	if idx := strings.LastIndex(cmd, "/"); idx >= 0 {
+		cmd = cmd[idx+1:]
+	}
+	return cmd
+}
+
+// isAllowed checks if a command is allowed to run.
+func (t *RunCommandTool) isAllowed(fullCmd string, parts []string) bool {
 	baseCmd := parts[0]
-	spec, allowed := CommandWhitelist[baseCmd]
-	if !allowed {
-		// Check local config allowlist
-		if t.ctx.LocalCommandChecker != nil && t.ctx.LocalCommandChecker(in.Command) {
-			allowed = true
-		}
-	}
-	if !allowed {
-		return ErrorResult(fmt.Sprintf("command %q not in whitelist", baseCmd)), nil
+	subCmd := ""
+	if len(parts) > 1 {
+		subCmd = parts[1]
 	}
 
-	// Validate subcommand if required
-	if len(spec.AllowedSubcommands) > 0 {
-		if len(parts) < 2 {
-			return ErrorResult(fmt.Sprintf("command %q requires a subcommand (allowed: %s)",
-				baseCmd, strings.Join(spec.AllowedSubcommands, ", "))), nil
-		}
-		subCmd := parts[1]
-		valid := false
-		for _, allowedSub := range spec.AllowedSubcommands {
-			if subCmd == allowedSub {
-				valid = true
-				break
-			}
-		}
-		if !valid {
-			return ErrorResult(fmt.Sprintf("subcommand %q not allowed for %s (allowed: %s)",
-				subCmd, baseCmd, strings.Join(spec.AllowedSubcommands, ", "))), nil
-		}
+	// 1. Check built-in safe commands
+	if t.isSafeCommand(baseCmd, subCmd) {
+		return true
 	}
 
-	// For make commands, validate ALL targets against allowlist.
-	// make can run multiple targets: `make build test deploy`
-	// We must validate each one, not just the first.
-	//
-	// EXTENSION POINT: gradle/mvn task approval
-	// gradle and mvn also have project-defined tasks (like make targets) that need validation.
-	// When implementing, extract this to a TargetValidator interface with per-tool implementations.
-	if baseCmd == "make" && len(parts) > 1 {
-		for _, arg := range parts[1:] {
-			// Skip flags (start with -)
-			if strings.HasPrefix(arg, "-") {
-				continue
-			}
-			// Skip variable assignments (contain =) - these modify behavior, not run targets
-			// e.g., `make CC=gcc build` - CC=gcc is not a target
-			if strings.Contains(arg, "=") {
-				continue
-			}
+	// 2. Check local config commands
+	if t.ctx.CommandChecker != nil && t.ctx.CommandChecker(fullCmd) {
+		return true
+	}
 
-			target := arg
+	// 3. Check session-approved commands
+	if t.ctx.IsCommandApproved(fullCmd) {
+		return true
+	}
 
-			// Check in order: hardcoded allowlist → local config → per-repo config → session approved → session denied
-			if isAllowedMakeTarget(target) {
-				continue
-			}
-			if t.ctx.LocalTargetChecker != nil && t.ctx.LocalTargetChecker(target) {
-				continue
-			}
-			if t.ctx.RepoTargetChecker != nil && t.ctx.RepoTargetChecker(target) {
-				continue
-			}
-			if t.ctx.IsTargetApproved(target) {
-				continue
-			}
-			// Check if already denied this session - don't prompt again
-			if t.ctx.IsTargetDenied(target) {
-				return ErrorResult(fmt.Sprintf("make target %q was denied earlier in this session", target)), nil
-			}
+	// 4. Check if already denied this session
+	if t.ctx.IsCommandDenied(fullCmd) {
+		return false
+	}
 
-			// Not approved anywhere - ask user
-			if t.ctx.TargetApprover != nil {
-				result, approveErr := t.ctx.TargetApprover(target)
-				if approveErr != nil {
-					return ErrorResult(fmt.Sprintf("target approval failed: %v", approveErr)), nil
-				}
-				if !result.Allowed {
-					t.ctx.DenyTarget(target) // Remember denial to prevent retry
-					return ErrorResult(fmt.Sprintf("make target %q denied by user", target)), nil
-				}
+	// 5. Prompt user for approval
+	if t.ctx.CommandApprover != nil {
+		result, err := t.ctx.CommandApprover(fullCmd)
+		if err != nil {
+			return false
+		}
 
-				// Persist if user chose "always for this repo"
-				if result.Always && t.ctx.TargetPersister != nil {
-					if persistErr := t.ctx.TargetPersister(target); persistErr != nil {
-						// Log but don't fail - session approval still works
-						fmt.Fprintf(os.Stderr, "warning: failed to persist target approval: %v\n", persistErr)
-					}
-				}
+		if !result.Allowed {
+			t.ctx.DenyCommand(fullCmd)
+			return false
+		}
 
-				t.ctx.ApproveTarget(target) // Remember for this session
-			} else {
-				return ErrorResult(fmt.Sprintf("make target %q not in allowlist (allowed: all, build, test, lint, fmt, check, clean, etc.)", target)), nil
+		// Persist if user chose "always"
+		if result.Always && t.ctx.CommandPersister != nil {
+			if persistErr := t.ctx.CommandPersister(fullCmd); persistErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: failed to save command: %v\n", persistErr)
 			}
+		}
+
+		t.ctx.ApproveCommand(fullCmd)
+		return true
+	}
+
+	return false
+}
+
+// isSafeCommand checks if a command matches the built-in safe list.
+func (t *RunCommandTool) isSafeCommand(baseCmd, subCmd string) bool {
+	// Extract base command name in case of path
+	baseCmd = extractBaseCommand(baseCmd)
+
+	allowedSubs, exists := SafeCommands[baseCmd]
+	if !exists {
+		return false
+	}
+
+	// nil means any subcommand is allowed
+	if allowedSubs == nil {
+		// Special handling for npx/bunx - check against safe list
+		if baseCmd == "npx" || baseCmd == "bunx" {
+			return SafeNpxCommands[subCmd]
+		}
+		return true
+	}
+
+	// Check if subcommand is in allowed list
+	for _, allowed := range allowedSubs {
+		if subCmd == allowed {
+			return true
 		}
 	}
 
-	// Create command with timeout
+	return false
+}
+
+// execute runs the command and returns the result.
+func (t *RunCommandTool) execute(ctx context.Context, fullCmd string, parts []string) (Result, error) {
 	execCtx, cancel := context.WithTimeout(ctx, commandTimeout)
 	defer cancel()
 
-	// #nosec G204 - command is validated against whitelist and blocked patterns
+	// #nosec G204 - command is validated
 	cmd := exec.CommandContext(execCtx, parts[0], parts[1:]...)
-	// SECURITY NOTE: Symlinks inside the worktree are not validated. Commands could
-	// follow symlinks outside the worktree. Accepted limitation (same as any build tool).
 	cmd.Dir = t.ctx.WorktreePath
 	cmd.Env = safeCommandEnv()
 
@@ -480,27 +268,23 @@ func (t *RunCommandTool) Execute(ctx context.Context, input json.RawMessage) (Re
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	// Run the command
 	startTime := time.Now()
 	err := cmd.Run()
 	duration := time.Since(startTime)
 
 	// Build result
 	var result strings.Builder
-	result.WriteString(fmt.Sprintf("$ %s\n", in.Command))
+	result.WriteString(fmt.Sprintf("$ %s\n", fullCmd))
 	result.WriteString(fmt.Sprintf("(completed in %s)\n\n", duration.Round(time.Millisecond)))
 
-	// Combine output
 	output := stdout.String() + stderr.String()
-
-	// Truncate if too large
 	if len(output) > maxOutput {
-		output = output[:maxOutput] + "\n... (output truncated)"
+		output = output[:maxOutput] + "\n... (truncated)"
 	}
 
 	if err != nil {
 		if errors.Is(execCtx.Err(), context.DeadlineExceeded) {
-			result.WriteString("TIMEOUT: Command did not complete within 5 minutes\n")
+			result.WriteString("TIMEOUT: exceeded 5 minutes\n")
 			return Result{Content: result.String(), IsError: true}, nil
 		}
 
@@ -517,4 +301,53 @@ func (t *RunCommandTool) Execute(ctx context.Context, input json.RawMessage) (Re
 
 	result.WriteString(output)
 	return SuccessResult(result.String()), nil
+}
+
+// safeCommandEnv returns a filtered environment for executing commands.
+func safeCommandEnv() []string {
+	allowedVars := []string{
+		"PATH", "HOME", "USER", "TMPDIR", "TEMP", "TMP",
+		"LANG", "LC_ALL", "LC_CTYPE", "SHELL", "TERM",
+		"GOPATH", "GOROOT", "GOCACHE", "GOMODCACHE", "CGO_ENABLED",
+		"NODE_ENV", "NODE_PATH", "NPM_CONFIG_CACHE",
+		"CARGO_HOME", "RUSTUP_HOME",
+		"JAVA_HOME", "MAVEN_HOME", "GRADLE_HOME",
+	}
+
+	blockedSuffixes := []string{
+		"_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDS", "_AUTH",
+	}
+
+	allowedSet := make(map[string]struct{}, len(allowedVars))
+	for _, v := range allowedVars {
+		allowedSet[v] = struct{}{}
+	}
+
+	var env []string
+	for _, kv := range os.Environ() {
+		idx := strings.Index(kv, "=")
+		if idx <= 0 {
+			continue
+		}
+		key := kv[:idx]
+		upperKey := strings.ToUpper(key)
+
+		// Block secrets
+		blocked := false
+		for _, suffix := range blockedSuffixes {
+			if strings.HasSuffix(upperKey, suffix) {
+				blocked = true
+				break
+			}
+		}
+		if blocked {
+			continue
+		}
+
+		if _, ok := allowedSet[key]; ok {
+			env = append(env, kv)
+		}
+	}
+
+	return env
 }

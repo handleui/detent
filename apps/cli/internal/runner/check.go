@@ -158,17 +158,17 @@ func (r *CheckRunner) Prepare(ctx context.Context) error {
 		}
 	}()
 
-	// Prepare worktree in parallel (persistent, not cleaned up)
+	// Prepare worktree in parallel (ephemeral, cleaned up after use)
 	go func() {
-		worktreePath, pathErr := git.GetWorktreePath(r.config.RunID)
+		worktreePath, pathErr := git.CreateEphemeralWorktreePath(r.config.RunID)
 		if pathErr != nil {
 			worktreeChan <- worktreeResult{err: pathErr}
 			return
 		}
-		worktreeInfo, _, err := git.PrepareWorktree(ctx, r.config.RepoRoot, worktreePath)
+		worktreeInfo, cleanup, err := git.PrepareWorktree(ctx, r.config.RepoRoot, worktreePath)
 		worktreeChan <- worktreeResult{
 			worktreeInfo:    worktreeInfo,
-			cleanupWorktree: nil, // Persistent worktree, no cleanup
+			cleanupWorktree: cleanup,
 			err:             err,
 		}
 	}()

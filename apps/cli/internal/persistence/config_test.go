@@ -425,39 +425,24 @@ func TestApproveTargetForRepo(t *testing.T) {
 	})
 }
 
-// TestLocalConfigHelpers tests IsLocalTarget and MatchesLocalCommand
-func TestLocalConfigHelpers(t *testing.T) {
-	t.Run("IsLocalTarget", func(t *testing.T) {
-		cfg := &Config{
-			ExtraTargets: []string{"deploy", "e2e-test"},
-		}
+// TestMatchesCommand tests the MatchesCommand helper
+func TestMatchesCommand(t *testing.T) {
+	cfg := &Config{
+		ExtraCommands: []string{"bun run typecheck", "pnpm exec playwright *", "make deploy"},
+	}
 
-		if !cfg.IsLocalTarget("deploy") {
-			t.Error("Expected 'deploy' to be a local target")
-		}
-		if !cfg.IsLocalTarget("DEPLOY") {
-			t.Error("Expected case-insensitive match for 'DEPLOY'")
-		}
-		if cfg.IsLocalTarget("build") {
-			t.Error("Expected 'build' to NOT be a local target")
-		}
-	})
-
-	t.Run("MatchesLocalCommand", func(t *testing.T) {
-		cfg := &Config{
-			ExtraCommands: []string{"bun run typecheck", "pnpm exec playwright *"},
-		}
-
-		if !cfg.MatchesLocalCommand("bun run typecheck") {
-			t.Error("Expected exact match for 'bun run typecheck'")
-		}
-		if !cfg.MatchesLocalCommand("pnpm exec playwright test") {
-			t.Error("Expected wildcard match for 'pnpm exec playwright test'")
-		}
-		if cfg.MatchesLocalCommand("npm run test") {
-			t.Error("Expected no match for 'npm run test'")
-		}
-	})
+	if !cfg.MatchesCommand("bun run typecheck") {
+		t.Error("Expected exact match for 'bun run typecheck'")
+	}
+	if !cfg.MatchesCommand("pnpm exec playwright test") {
+		t.Error("Expected wildcard match for 'pnpm exec playwright test'")
+	}
+	if !cfg.MatchesCommand("make deploy") {
+		t.Error("Expected match for 'make deploy'")
+	}
+	if cfg.MatchesCommand("npm run test") {
+		t.Error("Expected no match for 'npm run test'")
+	}
 }
 
 // TestConfigMerge tests the config merge precedence

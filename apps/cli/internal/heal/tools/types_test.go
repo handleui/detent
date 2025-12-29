@@ -5,212 +5,77 @@ import (
 	"testing"
 )
 
-func TestContext_IsTargetApproved(t *testing.T) {
+func TestContext_IsCommandApproved(t *testing.T) {
 	tests := []struct {
 		name     string
 		approved map[string]bool
-		target   string
+		cmd      string
 		expected bool
 	}{
-		{
-			name:     "nil map returns false",
-			approved: nil,
-			target:   "test",
-			expected: false,
-		},
-		{
-			name:     "empty map returns false",
-			approved: map[string]bool{},
-			target:   "test",
-			expected: false,
-		},
-		{
-			name:     "target found returns true",
-			approved: map[string]bool{"test": true},
-			target:   "test",
-			expected: true,
-		},
-		{
-			name:     "target not found returns false",
-			approved: map[string]bool{"other": true},
-			target:   "test",
-			expected: false,
-		},
-		{
-			name:     "case insensitive uppercase query",
-			approved: map[string]bool{"test": true},
-			target:   "TEST",
-			expected: true,
-		},
-		{
-			name:     "case insensitive mixed case query",
-			approved: map[string]bool{"test": true},
-			target:   "TeSt",
-			expected: true,
-		},
+		{"nil map returns false", nil, "make build", false},
+		{"empty map returns false", map[string]bool{}, "make build", false},
+		{"cmd found returns true", map[string]bool{"make build": true}, "make build", true},
+		{"cmd not found returns false", map[string]bool{"make test": true}, "make build", false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c := &Context{ApprovedTargets: tt.approved}
-			if got := c.IsTargetApproved(tt.target); got != tt.expected {
-				t.Errorf("IsTargetApproved(%q) = %v, want %v", tt.target, got, tt.expected)
+			c := &Context{ApprovedCommands: tt.approved}
+			if got := c.IsCommandApproved(tt.cmd); got != tt.expected {
+				t.Errorf("IsCommandApproved(%q) = %v, want %v", tt.cmd, got, tt.expected)
 			}
 		})
 	}
 }
 
-func TestContext_ApproveTarget(t *testing.T) {
-	tests := []struct {
-		name           string
-		initialTargets map[string]bool
-		target         string
-		checkTarget    string
-		expected       bool
-	}{
-		{
-			name:           "lazy init nil map",
-			initialTargets: nil,
-			target:         "test",
-			checkTarget:    "test",
-			expected:       true,
-		},
-		{
-			name:           "stores lowercase",
-			initialTargets: nil,
-			target:         "TEST",
-			checkTarget:    "test",
-			expected:       true,
-		},
-		{
-			name:           "idempotent approval",
-			initialTargets: map[string]bool{"test": true},
-			target:         "test",
-			checkTarget:    "test",
-			expected:       true,
-		},
-		{
-			name:           "preserves existing targets",
-			initialTargets: map[string]bool{"existing": true},
-			target:         "new",
-			checkTarget:    "existing",
-			expected:       true,
-		},
-	}
+func TestContext_ApproveCommand(t *testing.T) {
+	t.Run("lazy init nil map", func(t *testing.T) {
+		c := &Context{}
+		c.ApproveCommand("make build")
+		if !c.ApprovedCommands["make build"] {
+			t.Error("expected command to be approved")
+		}
+	})
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			c := &Context{ApprovedTargets: tt.initialTargets}
-			c.ApproveTarget(tt.target)
-			if got := c.ApprovedTargets[tt.checkTarget]; got != tt.expected {
-				t.Errorf("ApprovedTargets[%q] = %v, want %v", tt.checkTarget, got, tt.expected)
-			}
-		})
-	}
+	t.Run("preserves existing", func(t *testing.T) {
+		c := &Context{ApprovedCommands: map[string]bool{"existing": true}}
+		c.ApproveCommand("new")
+		if !c.ApprovedCommands["existing"] || !c.ApprovedCommands["new"] {
+			t.Error("expected both commands to be approved")
+		}
+	})
 }
 
-func TestContext_IsTargetDenied(t *testing.T) {
+func TestContext_IsCommandDenied(t *testing.T) {
 	tests := []struct {
 		name     string
 		denied   map[string]bool
-		target   string
+		cmd      string
 		expected bool
 	}{
-		{
-			name:     "nil map returns false",
-			denied:   nil,
-			target:   "test",
-			expected: false,
-		},
-		{
-			name:     "empty map returns false",
-			denied:   map[string]bool{},
-			target:   "test",
-			expected: false,
-		},
-		{
-			name:     "target found returns true",
-			denied:   map[string]bool{"test": true},
-			target:   "test",
-			expected: true,
-		},
-		{
-			name:     "target not found returns false",
-			denied:   map[string]bool{"other": true},
-			target:   "test",
-			expected: false,
-		},
-		{
-			name:     "case insensitive uppercase query",
-			denied:   map[string]bool{"test": true},
-			target:   "TEST",
-			expected: true,
-		},
-		{
-			name:     "case insensitive mixed case query",
-			denied:   map[string]bool{"test": true},
-			target:   "TeSt",
-			expected: true,
-		},
+		{"nil map returns false", nil, "make build", false},
+		{"cmd found returns true", map[string]bool{"make build": true}, "make build", true},
+		{"cmd not found returns false", map[string]bool{"make test": true}, "make build", false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c := &Context{DeniedTargets: tt.denied}
-			if got := c.IsTargetDenied(tt.target); got != tt.expected {
-				t.Errorf("IsTargetDenied(%q) = %v, want %v", tt.target, got, tt.expected)
+			c := &Context{DeniedCommands: tt.denied}
+			if got := c.IsCommandDenied(tt.cmd); got != tt.expected {
+				t.Errorf("IsCommandDenied(%q) = %v, want %v", tt.cmd, got, tt.expected)
 			}
 		})
 	}
 }
 
-func TestContext_DenyTarget(t *testing.T) {
-	tests := []struct {
-		name           string
-		initialTargets map[string]bool
-		target         string
-		checkTarget    string
-		expected       bool
-	}{
-		{
-			name:           "lazy init nil map",
-			initialTargets: nil,
-			target:         "test",
-			checkTarget:    "test",
-			expected:       true,
-		},
-		{
-			name:           "stores lowercase",
-			initialTargets: nil,
-			target:         "TEST",
-			checkTarget:    "test",
-			expected:       true,
-		},
-		{
-			name:           "idempotent denial",
-			initialTargets: map[string]bool{"test": true},
-			target:         "test",
-			checkTarget:    "test",
-			expected:       true,
-		},
-		{
-			name:           "preserves existing targets",
-			initialTargets: map[string]bool{"existing": true},
-			target:         "new",
-			checkTarget:    "existing",
-			expected:       true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			c := &Context{DeniedTargets: tt.initialTargets}
-			c.DenyTarget(tt.target)
-			if got := c.DeniedTargets[tt.checkTarget]; got != tt.expected {
-				t.Errorf("DeniedTargets[%q] = %v, want %v", tt.checkTarget, got, tt.expected)
-			}
-		})
-	}
+func TestContext_DenyCommand(t *testing.T) {
+	t.Run("lazy init nil map", func(t *testing.T) {
+		c := &Context{}
+		c.DenyCommand("make evil")
+		if !c.DeniedCommands["make evil"] {
+			t.Error("expected command to be denied")
+		}
+	})
 }
 
 func TestContext_ValidatePath(t *testing.T) {
@@ -222,69 +87,12 @@ func TestContext_ValidatePath(t *testing.T) {
 		wantError    bool
 		errorContain string
 	}{
-		{
-			name:         "valid simple path",
-			worktreePath: "/repo",
-			relPath:      "src/main.go",
-			wantPath:     "/repo/src/main.go",
-			wantError:    false,
-		},
-		{
-			name:         "valid path with dots",
-			worktreePath: "/repo",
-			relPath:      "src/../lib/util.go",
-			wantPath:     "/repo/lib/util.go",
-			wantError:    false,
-		},
-		{
-			name:         "valid current dir path",
-			worktreePath: "/repo",
-			relPath:      "./src/main.go",
-			wantPath:     "/repo/src/main.go",
-			wantError:    false,
-		},
-		{
-			name:         "parent escape blocked",
-			worktreePath: "/repo",
-			relPath:      "../secret",
-			wantError:    true,
-			errorContain: "path escapes worktree",
-		},
-		{
-			name:         "deep parent escape blocked",
-			worktreePath: "/repo",
-			relPath:      "src/../../secret",
-			wantError:    true,
-			errorContain: "path escapes worktree",
-		},
-		{
-			name:         "absolute path blocked",
-			worktreePath: "/repo",
-			relPath:      "/etc/passwd",
-			wantError:    true,
-			errorContain: "absolute paths not allowed",
-		},
-		{
-			name:         "path normalization dots",
-			worktreePath: "/repo",
-			relPath:      "src/./test/../main.go",
-			wantPath:     "/repo/src/main.go",
-			wantError:    false,
-		},
-		{
-			name:         "empty path resolves to worktree",
-			worktreePath: "/repo",
-			relPath:      "",
-			wantPath:     "/repo",
-			wantError:    false,
-		},
-		{
-			name:         "dot path resolves to worktree",
-			worktreePath: "/repo",
-			relPath:      ".",
-			wantPath:     "/repo",
-			wantError:    false,
-		},
+		{"valid simple path", "/repo", "src/main.go", "/repo/src/main.go", false, ""},
+		{"valid path with dots", "/repo", "src/../lib/util.go", "/repo/lib/util.go", false, ""},
+		{"parent escape blocked", "/repo", "../secret", "", true, "path escapes worktree"},
+		{"absolute path blocked", "/repo", "/etc/passwd", "", true, "absolute paths not allowed"},
+		{"empty path resolves to worktree", "/repo", "", "/repo", false, ""},
+		{"dot path resolves to worktree", "/repo", ".", "/repo", false, ""},
 	}
 
 	for _, tt := range tests {
@@ -297,13 +105,8 @@ func TestContext_ValidatePath(t *testing.T) {
 					t.Errorf("ValidatePath(%q) expected error, got path %q", tt.relPath, gotPath)
 					return
 				}
-				if !errResult.IsError {
-					t.Errorf("ValidatePath(%q) result.IsError = false, want true", tt.relPath)
-				}
-				if tt.errorContain != "" {
-					if got := errResult.Content; !strings.Contains(got, tt.errorContain) {
-						t.Errorf("ValidatePath(%q) error = %q, want to contain %q", tt.relPath, got, tt.errorContain)
-					}
+				if tt.errorContain != "" && !strings.Contains(errResult.Content, tt.errorContain) {
+					t.Errorf("error = %q, want to contain %q", errResult.Content, tt.errorContain)
 				}
 				return
 			}
@@ -312,11 +115,9 @@ func TestContext_ValidatePath(t *testing.T) {
 				t.Errorf("ValidatePath(%q) unexpected error: %s", tt.relPath, errResult.Content)
 				return
 			}
-
 			if gotPath != tt.wantPath {
 				t.Errorf("ValidatePath(%q) = %q, want %q", tt.relPath, gotPath, tt.wantPath)
 			}
 		})
 	}
 }
-

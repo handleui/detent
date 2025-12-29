@@ -631,26 +631,15 @@ func (c *Config) ApproveTargetForRepo(firstCommitSHA, target string) error {
 	return c.SaveGlobal()
 }
 
-// --- Local config helpers ---
+// --- Command helpers ---
 
-// IsLocalTarget checks if a target is in the local config's targets list.
-func (c *Config) IsLocalTarget(target string) bool {
-	for _, t := range c.ExtraTargets {
-		if strings.EqualFold(t, target) {
-			return true
-		}
-	}
-	return false
-}
-
-// MatchesLocalCommand checks if a command matches the local config's command allowlist.
+// MatchesCommand checks if a command is allowed by local config.
 // Supports exact matches and wildcard patterns (e.g., "bun run *").
-func (c *Config) MatchesLocalCommand(cmd string) bool {
+func (c *Config) MatchesCommand(cmd string) bool {
 	for _, pattern := range c.ExtraCommands {
 		if cmd == pattern {
 			return true
 		}
-		// Wildcard: "bun run *" matches "bun run lint"
 		if strings.HasSuffix(pattern, " *") {
 			prefix := strings.TrimSuffix(pattern, "*")
 			if strings.HasPrefix(cmd, prefix) {
@@ -659,6 +648,22 @@ func (c *Config) MatchesLocalCommand(cmd string) bool {
 		}
 	}
 	return false
+}
+
+// AddCommand adds a command to local config and saves.
+func (c *Config) AddCommand(cmd string) error {
+	if c.local == nil {
+		c.local = &LocalConfig{}
+	}
+	// Check if already exists
+	for _, existing := range c.local.Commands {
+		if existing == cmd {
+			return nil
+		}
+	}
+	c.local.Commands = append(c.local.Commands, cmd)
+	c.ExtraCommands = c.local.Commands
+	return c.SaveLocal()
 }
 
 // MaskAPIKey returns a masked version of an API key for safe display.

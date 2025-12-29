@@ -71,11 +71,22 @@ func runHeal(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Check if worktree exists (means check already ran for this state)
-	worktreeExists := git.WorktreeExists(repoCtx.RunID)
+	// Check if we have cached errors from a previous check run
+	db, err := persistence.NewSQLiteWriter(repoCtx.Path)
+	if err != nil {
+		return fmt.Errorf("opening database: %w", err)
+	}
 
-	if !worktreeExists || forceRun {
-		fmt.Fprintf(os.Stderr, "Running check to create worktree...\n")
+	errRecords, err := db.GetErrorsByRunID(repoCtx.RunID)
+	if err != nil {
+		_ = db.Close()
+		return fmt.Errorf("loading errors: %w", err)
+	}
+	_ = db.Close()
+
+	// If no cached errors or force flag, run check first
+	if len(errRecords) == 0 || forceRun {
+		fmt.Fprintf(os.Stderr, "Running check to identify errors...\n")
 		if checkErr := runCheck(cmd, args); checkErr != nil {
 			// Check returns ErrFoundErrors when errors are found - that's expected for heal.
 			// We continue in that case but fail on other errors.
@@ -83,34 +94,37 @@ func runHeal(cmd *cobra.Command, args []string) error {
 				return checkErr
 			}
 		}
-	}
 
-	// Verify worktree now exists
-	worktreePath, err := git.GetWorktreePath(repoCtx.RunID)
-	if err != nil {
-		return fmt.Errorf("getting worktree path: %w", err)
-	}
-
-	if _, statErr := os.Stat(worktreePath); os.IsNotExist(statErr) {
-		return fmt.Errorf("worktree not found at %s - check may have failed", worktreePath)
-	}
-
-	// Load errors from database
-	db, err := persistence.NewSQLiteWriter(repoCtx.Path)
-	if err != nil {
-		return fmt.Errorf("opening database: %w", err)
-	}
-	defer func() { _ = db.Close() }()
-
-	errRecords, err := db.GetErrorsByRunID(repoCtx.RunID)
-	if err != nil {
-		return fmt.Errorf("loading errors: %w", err)
+		// Reload errors after check
+		db, err = persistence.NewSQLiteWriter(repoCtx.Path)
+		if err != nil {
+			return fmt.Errorf("reopening database: %w", err)
+		}
+		errRecords, err = db.GetErrorsByRunID(repoCtx.RunID)
+		_ = db.Close()
+		if err != nil {
+			return fmt.Errorf("reloading errors: %w", err)
+		}
 	}
 
 	if len(errRecords) == 0 {
 		fmt.Println("No errors to heal")
 		return nil
 	}
+
+	// Create ephemeral worktree for healing
+	worktreePath, err := git.CreateEphemeralWorktreePath(repoCtx.RunID)
+	if err != nil {
+		return fmt.Errorf("creating worktree path: %w", err)
+	}
+
+	worktreeInfo, cleanupWorktree, err := git.PrepareWorktree(cmd.Context(), repoCtx.Path, worktreePath)
+	if err != nil {
+		return fmt.Errorf("creating worktree: %w", err)
+	}
+	defer cleanupWorktree()
+
+	worktreePath = worktreeInfo.Path
 
 	// Display summary
 	fmt.Fprintf(os.Stderr, "%s Found %d errors\n", tui.Bullet(), len(errRecords))
@@ -122,25 +136,18 @@ func runHeal(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Set up tool context with target approver for unknown make targets
+	// Set up tool context with command approval
 	toolCtx := &tools.Context{
-		WorktreePath:    worktreePath,
-		RepoRoot:        repoCtx.Path,
-		RunID:           repoCtx.RunID,
-		FirstCommitSHA:  repoCtx.FirstCommitSHA,
-		ApprovedTargets: make(map[string]bool),
-		TargetApprover:  promptForMakeTarget,
-		TargetPersister: func(target string) error {
-			return cfg.ApproveTargetForRepo(repoCtx.FirstCommitSHA, target)
+		WorktreePath:   worktreePath,
+		RepoRoot:       repoCtx.Path,
+		RunID:          repoCtx.RunID,
+		FirstCommitSHA: repoCtx.FirstCommitSHA,
+		CommandChecker: func(cmd string) bool {
+			return cfg.MatchesCommand(cmd)
 		},
-		RepoTargetChecker: func(target string) bool {
-			return cfg.IsTargetApprovedForRepo(repoCtx.FirstCommitSHA, target)
-		},
-		LocalTargetChecker: func(target string) bool {
-			return cfg.IsLocalTarget(target)
-		},
-		LocalCommandChecker: func(cmd string) bool {
-			return cfg.MatchesLocalCommand(cmd)
+		CommandApprover:  promptForCommand,
+		CommandPersister: func(cmd string) error {
+			return cfg.AddCommand(cmd)
 		},
 	}
 
@@ -150,7 +157,6 @@ func runHeal(cmd *cobra.Command, args []string) error {
 	registry.Register(tools.NewEditFileTool(toolCtx))
 	registry.Register(tools.NewGlobTool(toolCtx))
 	registry.Register(tools.NewGrepTool(toolCtx))
-	registry.Register(tools.NewVerifyTool(toolCtx))
 	registry.Register(tools.NewRunCommandTool(toolCtx))
 
 	// Build user prompt from errors
@@ -262,30 +268,29 @@ func runHealTest(ctx context.Context, apiKey string) error {
 	return nil
 }
 
-// promptForMakeTarget shows a TUI prompt for unknown make targets.
-// Returns approval result with allowed status and persistence preference.
-func promptForMakeTarget(target string) (tools.TargetApprovalResult, error) {
-	model := tui.NewMakeTargetPromptModel(target)
+// promptForCommand shows a TUI prompt for unknown commands.
+func promptForCommand(cmd string) (tools.CommandApproval, error) {
+	model := tui.NewCommandPromptModel(cmd)
 	program := tea.NewProgram(model)
 
 	if _, err := program.Run(); err != nil {
-		return tools.TargetApprovalResult{}, err
+		return tools.CommandApproval{}, err
 	}
 
 	result := model.GetResult()
 	if result == nil || result.Cancelled {
-		return tools.TargetApprovalResult{Allowed: false}, nil
+		return tools.CommandApproval{Allowed: false}, nil
 	}
 
 	if result.Allowed {
 		if result.Always {
-			fmt.Fprintf(os.Stderr, "%s Target allowed permanently for this repo\n\n", tui.Arrow())
+			fmt.Fprintf(os.Stderr, "%s Command saved to config\n\n", tui.Arrow())
 		} else {
-			fmt.Fprintf(os.Stderr, "%s Target allowed for this session\n\n", tui.Arrow())
+			fmt.Fprintf(os.Stderr, "%s Command allowed for this session\n\n", tui.Arrow())
 		}
 	}
 
-	return tools.TargetApprovalResult{
+	return tools.CommandApproval{
 		Allowed: result.Allowed,
 		Always:  result.Always,
 	}, nil

@@ -342,3 +342,49 @@ func TestPrepareWorktree_ErrorWrapping(t *testing.T) {
 		t.Errorf("Error should contain context message, got: %s", errorMsg)
 	}
 }
+
+// TestCreateEphemeralWorktreePath tests ephemeral path generation
+func TestCreateEphemeralWorktreePath(t *testing.T) {
+	tests := []struct {
+		name    string
+		runID   string
+		wantErr bool
+	}{
+		{"valid hex runID", "abc123def456", false},
+		{"valid short runID", "a1b2", false},
+		{"empty runID", "", true},
+		{"path traversal attempt", "../../../etc", true},
+		{"contains slash", "abc/def", true},
+		{"contains dot", "abc.def", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path, err := CreateEphemeralWorktreePath(tt.runID)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("CreateEphemeralWorktreePath(%q) expected error, got path %q", tt.runID, path)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Errorf("CreateEphemeralWorktreePath(%q) unexpected error: %v", tt.runID, err)
+				return
+			}
+
+			// Verify path is in temp directory
+			tempDir := os.TempDir()
+			if !strings.HasPrefix(path, tempDir) {
+				t.Errorf("path %q should be in temp directory %q", path, tempDir)
+			}
+
+			// Verify path contains runID
+			expectedSuffix := "detent-" + tt.runID
+			if !strings.HasSuffix(path, expectedSuffix) {
+				t.Errorf("path %q should end with %q", path, expectedSuffix)
+			}
+		})
+	}
+}

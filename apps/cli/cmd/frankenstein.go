@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,7 +22,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var monsterMode bool
+var (
+	monsterMode  bool
+	verboseMode  bool
+)
 
 var frankensteinCmd = &cobra.Command{
 	Use:   "frankenstein",
@@ -29,12 +33,17 @@ var frankensteinCmd = &cobra.Command{
 	Long: `Frankenstein tests that Claude can use its tools correctly.
 
 By default, tests read-only tools (glob, grep, read_file).
-Use --monster to test all tools including edit_file, run_check, and run_command.`,
+Use --monster to test all tools including edit_file, run_check, and run_command.
+
+In monster mode, an isolated git worktree is created to safely test write operations.`,
 	Example: `  # Test read-only tools (fast)
   detent frankenstein
 
   # Test all tools including write operations
-  detent frankenstein --monster`,
+  detent frankenstein --monster
+
+  # Verbose output showing tool calls
+  detent frankenstein --monster --verbose`,
 	Args:          cobra.NoArgs,
 	RunE:          runFrankenstein,
 	SilenceUsage:  true,
@@ -43,6 +52,7 @@ Use --monster to test all tools including edit_file, run_check, and run_command.
 
 func init() {
 	frankensteinCmd.Flags().BoolVar(&monsterMode, "monster", false, "test all tools including edit_file, run_check, run_command")
+	frankensteinCmd.Flags().BoolVarP(&verboseMode, "verbose", "v", false, "show detailed tool call output")
 }
 
 // toolTracker tracks which tools were called and their results.
@@ -224,8 +234,42 @@ func runFrankenstein(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
+	// For monster mode, create an isolated worktree to safely test write operations
+	worktreePath := repoPath
+	var cleanup func()
+
+	if monsterMode {
+		if verboseMode {
+			fmt.Fprintf(os.Stderr, "%s Creating isolated worktree for testing...\n", tui.Bullet())
+		}
+
+		worktreeInfo, worktreeCleanup, worktreeErr := git.PrepareWorktree(cmd.Context(), repoPath, "")
+		if worktreeErr != nil {
+			return fmt.Errorf("creating test worktree: %w", worktreeErr)
+		}
+		worktreePath = worktreeInfo.Path
+		cleanup = worktreeCleanup
+
+		if verboseMode {
+			fmt.Fprintf(os.Stderr, "%s Worktree: %s\n", tui.Arrow(), tui.MutedStyle.Render(worktreePath))
+		}
+
+		// Create a test file for edit_file to edit (it cannot create new files)
+		testFilePath := filepath.Join(worktreePath, ".detent-test.txt")
+		// #nosec G306 - test file with standard permissions
+		if writeErr := os.WriteFile(testFilePath, []byte("PLACEHOLDER\n"), 0o644); writeErr != nil {
+			cleanup()
+			return fmt.Errorf("creating test file: %w", writeErr)
+		}
+	}
+
+	// Ensure cleanup runs
+	if cleanup != nil {
+		defer cleanup()
+	}
+
 	toolCtx := &tools.Context{
-		WorktreePath: repoPath,
+		WorktreePath: worktreePath,
 		RepoRoot:     repoPath,
 		RunID:        "frankenstein-test",
 	}
@@ -240,9 +284,8 @@ func runFrankenstein(cmd *cobra.Command, _ []string) error {
 
 	if monsterMode {
 		registry.Register(tools.NewEditFileTool(toolCtx))
-		registry.Register(tools.NewVerifyTool(toolCtx))
 		registry.Register(tools.NewRunCommandTool(toolCtx))
-		expectedTools = append(expectedTools, "edit_file", "run_check", "run_command")
+		expectedTools = append(expectedTools, "edit_file", "run_command")
 	}
 
 	tracker := newToolTracker(expectedTools)
@@ -253,18 +296,22 @@ func runFrankenstein(cmd *cobra.Command, _ []string) error {
 	if monsterMode {
 		timeout = 120 * time.Second
 	}
+	// Override verbose from config if set
+	if cfg != nil && cfg.Verbose {
+		verboseMode = true
+	}
 	ctx, cancel := context.WithTimeout(cmd.Context(), timeout)
 	defer cancel()
 
 	// Check if we have a TTY for the shimmer animation
 	isTTY := isatty.IsTerminal(os.Stderr.Fd())
 
-	if isTTY {
+	if isTTY && !verboseMode {
 		// Interactive mode with shimmer animation
 		return runFrankensteinInteractive(ctx, c.API(), registry, tracker, expectedTools, systemPrompt, userPrompt)
 	}
 
-	// Non-interactive mode (no TTY)
+	// Non-interactive mode (no TTY) or verbose mode
 	return runFrankensteinSimple(ctx, c.API(), registry, tracker, expectedTools, systemPrompt, userPrompt)
 }
 
@@ -280,7 +327,7 @@ func runFrankensteinInteractive(
 	p := tea.NewProgram(model, tea.WithOutput(os.Stderr))
 
 	go func() {
-		loopErr := runFrankensteinLoop(ctx, api, registry, tracker, systemPrompt, userPrompt)
+		loopErr := runFrankensteinLoop(ctx, api, registry, tracker, systemPrompt, userPrompt, false)
 		p.Send(frankensteinDoneMsg{err: loopErr})
 	}()
 
@@ -322,7 +369,7 @@ func runFrankensteinSimple(
 			tui.PrimaryStyle.Render("Testing AI tools..."))
 	}
 
-	err := runFrankensteinLoop(ctx, api, registry, tracker, systemPrompt, userPrompt)
+	err := runFrankensteinLoop(ctx, api, registry, tracker, systemPrompt, userPrompt, verboseMode)
 
 	// Display results
 	displayFrankensteinResultsSimple(tracker, expectedTools)
@@ -383,6 +430,7 @@ func runFrankensteinLoop(
 	registry *tools.Registry,
 	tracker *toolTracker,
 	systemPrompt, userPrompt string,
+	verbose bool,
 ) error {
 	messages := []anthropic.MessageParam{
 		anthropic.NewUserMessage(anthropic.NewTextBlock(userPrompt)),
@@ -391,6 +439,10 @@ func runFrankensteinLoop(
 	maxIterations := 10
 
 	for iteration := range maxIterations {
+		if verbose {
+			fmt.Fprintf(os.Stderr, "%s Iteration %d...\n", tui.Bullet(), iteration+1)
+		}
+
 		response, err := api.Messages.New(ctx, anthropic.MessageNewParams{
 			Model:     anthropic.ModelClaude3_5HaikuLatest,
 			MaxTokens: 1024,
@@ -406,6 +458,9 @@ func runFrankensteinLoop(
 
 		// Check if we're done
 		if response.StopReason == anthropic.StopReasonEndTurn {
+			if verbose {
+				fmt.Fprintf(os.Stderr, "%s Model finished\n", tui.Arrow())
+			}
 			return nil
 		}
 
@@ -418,8 +473,21 @@ func runFrankensteinLoop(
 			if toolUse, ok := block.AsAny().(anthropic.ToolUseBlock); ok {
 				hasToolUse = true
 
+				if verbose {
+					fmt.Fprintf(os.Stderr, "%s Tool: %s\n", tui.Arrow(), tui.PrimaryStyle.Render(toolUse.Name))
+					fmt.Fprintf(os.Stderr, "    Input: %s\n", tui.MutedStyle.Render(truncateVerbose(toolUse.JSON.Input.Raw(), 100)))
+				}
+
 				result := registry.Dispatch(ctx, toolUse.Name, json.RawMessage(toolUse.JSON.Input.Raw()))
 				tracker.recordCall(toolUse.Name, result.IsError, result.Content)
+
+				if verbose {
+					status := tui.SuccessStyle.Render("OK")
+					if result.IsError {
+						status = tui.ErrorStyle.Render("ERROR")
+					}
+					fmt.Fprintf(os.Stderr, "    Result: %s - %s\n", status, tui.MutedStyle.Render(truncateVerbose(result.Content, 80)))
+				}
 
 				toolResults = append(toolResults,
 					anthropic.NewToolResultBlock(toolUse.ID, result.Content, result.IsError))
@@ -437,11 +505,23 @@ func runFrankensteinLoop(
 
 		// Check if all expected tools have been called
 		if tracker.allCalled() && iteration > 0 {
+			if verbose {
+				fmt.Fprintf(os.Stderr, "%s All tools tested\n", tui.Arrow())
+			}
 			return nil
 		}
 	}
 
 	return fmt.Errorf("max iterations exceeded")
+}
+
+// truncateVerbose truncates a string for verbose output display.
+func truncateVerbose(s string, maxLen int) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	if len(s) > maxLen {
+		return s[:maxLen-3] + "..."
+	}
+	return s
 }
 
 func truncateError(msg string) string {
@@ -457,9 +537,8 @@ func buildFrankensteinSystemPrompt(monster bool) string {
 1. Use glob to find a .go file
 2. Use read_file to read 5 lines from it
 3. Use grep to search for "func"
-4. Use edit_file to create .detent/test.txt with "test"
-5. Use run_check with category "go-build"
-6. Use run_command with "go version"
+4. Use edit_file to edit .detent-test.txt - replace "PLACEHOLDER" with "test passed"
+5. Use run_command with "bun install"
 Reply "OK" when done or describe errors.`
 	}
 	return `Test your tools work. Be minimal and efficient.
@@ -471,7 +550,7 @@ Reply "OK" when done or describe errors.`
 
 func buildFrankensteinUserPrompt(monster bool) string {
 	if monster {
-		return "Test all 6 tools now. Start with glob."
+		return "Test all 5 tools now. Start with glob."
 	}
 	return "Test all 3 tools now. Start with glob."
 }
