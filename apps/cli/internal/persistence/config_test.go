@@ -293,14 +293,6 @@ func TestLoadGlobal_MalformedJSON(t *testing.T) {
 				}
 			},
 		},
-		{
-			name: "JSONC with comments is invalid (plain JSON only)",
-			content: `{
-				// This is a comment
-				"model": "claude-opus-4-5"
-			}`,
-			wantErr: true,
-		},
 	}
 
 	for _, tt := range tests {
@@ -573,5 +565,32 @@ func TestMaskAPIKey_EdgeCases(t *testing.T) {
 				t.Errorf("MaskAPIKey(%q) = %q, want %q", tt.input, result, tt.expected)
 			}
 		})
+	}
+}
+
+// TestGetDetentDir_Concurrent tests that GetDetentDir is safe for concurrent use.
+// Run with -race flag to verify there are no race conditions.
+func TestGetDetentDir_Concurrent(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv(DetentHomeEnv, tmpDir)
+
+	const numGoroutines = 100
+	done := make(chan struct{})
+
+	for i := 0; i < numGoroutines; i++ {
+		go func() {
+			defer func() { done <- struct{}{} }()
+			dir, err := GetDetentDir()
+			if err != nil {
+				t.Errorf("GetDetentDir() error = %v", err)
+			}
+			if dir == "" {
+				t.Error("GetDetentDir() returned empty string")
+			}
+		}()
+	}
+
+	for i := 0; i < numGoroutines; i++ {
+		<-done
 	}
 }

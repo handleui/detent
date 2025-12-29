@@ -925,21 +925,16 @@ func (w *SQLiteWriter) flushBatch() (err error) {
 	return nil
 }
 
-// FlushBatch flushes any remaining batched errors (public method for external callers)
+// FlushBatch flushes any remaining batched errors (public method for external callers).
+//
+// Deprecated: Use Flush() instead. This is kept for backwards compatibility.
 func (w *SQLiteWriter) FlushBatch() error {
-	w.batchMutex.Lock()
-	defer w.batchMutex.Unlock()
-	return w.flushBatch()
+	return w.Flush()
 }
 
-// FinalizeRun updates the run record with completion information
+// FinalizeRun updates the run record with completion information.
+// Note: Caller should call Flush() before this method to ensure accurate error counts.
 func (w *SQLiteWriter) FinalizeRun(runID string, totalErrors int) error {
-	// Flush any remaining batched errors
-	if err := w.FlushBatch(); err != nil {
-		return fmt.Errorf("failed to flush batch: %w", err)
-	}
-
-	// Update run record
 	updateQuery := `
 		UPDATE runs
 		SET completed_at = ?, total_errors = ?

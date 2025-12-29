@@ -6,31 +6,19 @@ import (
 	"github.com/detent/cli/internal/persistence"
 )
 
-// FieldType indicates the type of a configuration field.
-type FieldType int
-
-// Field types for configuration values.
-const (
-	FieldString FieldType = iota
-	FieldInt
-	FieldFloat
-	FieldBool
-)
-
 // Field describes a single configuration setting.
 type Field struct {
-	Key         string    // Display name
-	FieldType   FieldType // Value type
-	GlobalOnly  bool      // true = only editable in global config
-	Description string    // Help text
+	Key         string // Display name
+	GlobalOnly  bool   // true = only editable in global config
+	Description string // Help text
 }
 
 // EditableFields defines all configurable settings in display order.
 var EditableFields = []Field{
-	{Key: "api_key", FieldType: FieldString, GlobalOnly: true, Description: "Anthropic API key"},
-	{Key: "model", FieldType: FieldString, Description: "Claude model for AI healing"},
-	{Key: "timeout", FieldType: FieldInt, Description: "Maximum time per run (minutes)"},
-	{Key: "budget", FieldType: FieldFloat, Description: "Maximum spend per run (0 = unlimited)"},
+	{Key: "api_key", GlobalOnly: true, Description: "Anthropic API key"},
+	{Key: "model", Description: "Claude model for AI healing"},
+	{Key: "timeout", Description: "Maximum time per run (minutes)"},
+	{Key: "budget", Description: "Maximum spend per run (0 = unlimited)"},
 }
 
 // FieldValue holds the current value and source for a field.

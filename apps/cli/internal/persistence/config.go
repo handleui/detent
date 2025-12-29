@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -21,7 +22,10 @@ const (
 )
 
 // cachedDetentDir stores the computed detent directory to avoid repeated os.UserHomeDir calls.
-var cachedDetentDir string
+var (
+	cachedDetentDir   string
+	cachedDetentDirMu sync.RWMutex
+)
 
 // --- Structs ---
 
@@ -96,8 +100,8 @@ type ValueSource int
 // Value sources indicate where configuration values originated.
 const (
 	SourceDefault ValueSource = iota // SourceDefault indicates the value is a hardcoded default.
-	SourceGlobal                     // SourceGlobal indicates the value comes from ~/.detent/config.jsonc.
-	SourceLocal                      // SourceLocal indicates the value comes from detent.jsonc.
+	SourceGlobal                     // SourceGlobal indicates the value comes from ~/.detent/config.json.
+	SourceLocal                      // SourceLocal indicates the value comes from detent.json.
 	SourceEnv                        // SourceEnv indicates the value comes from an environment variable.
 )
 
@@ -144,13 +148,26 @@ type ConfigWithSources struct {
 // GetDetentDir returns the global detent directory path (~/.detent).
 // If DETENT_HOME is set, uses that instead (for testing).
 // Results are cached to avoid repeated os.UserHomeDir calls.
+// This function is safe for concurrent use.
 func GetDetentDir() (string, error) {
 	// DETENT_HOME override always checked (allows dynamic test changes)
 	if override := os.Getenv(DetentHomeEnv); override != "" {
-		return override, nil
+		return filepath.Clean(override), nil
 	}
 
-	// Return cached value if available
+	// Check cache with read lock first
+	cachedDetentDirMu.RLock()
+	cached := cachedDetentDir
+	cachedDetentDirMu.RUnlock()
+	if cached != "" {
+		return cached, nil
+	}
+
+	// Compute and cache with write lock
+	cachedDetentDirMu.Lock()
+	defer cachedDetentDirMu.Unlock()
+
+	// Double-check after acquiring write lock (another goroutine may have set it)
 	if cachedDetentDir != "" {
 		return cachedDetentDir, nil
 	}
@@ -176,7 +193,7 @@ func GetConfigPath() (string, error) {
 // --- Loading ---
 
 // Load loads global + local config, merges them, and returns the resolved Config.
-// repoRoot is the directory to look for detent.jsonc (pass "" for global-only).
+// repoRoot is the directory to look for detent.json (pass "" for global-only).
 func Load(repoRoot string) (*Config, error) {
 	global, err := loadGlobal()
 	if err != nil {
@@ -310,7 +327,8 @@ func loadGlobal() (*GlobalConfig, error) {
 
 // loadLocal loads the local config from detent.json in the given directory.
 func loadLocal(dir string) (*LocalConfig, error) {
-	path := filepath.Join(dir, localConfigFile)
+	// Clean path to prevent traversal attacks
+	path := filepath.Clean(filepath.Join(dir, localConfigFile))
 
 	// Read file directly - os.ReadFile handles non-existence check efficiently
 	// #nosec G304 - path is constructed from repoRoot parameter
@@ -439,6 +457,8 @@ func (c *Config) SaveGlobal() error {
 	if marshalErr != nil {
 		return fmt.Errorf("marshaling: %w", marshalErr)
 	}
+	// Append newline for proper file ending
+	data = append(data, '\n')
 
 	path := filepath.Join(dir, globalConfigFile)
 	// #nosec G306 - 0600 is intentionally restrictive
@@ -459,7 +479,7 @@ func (c *Config) SetAPIKey(key string) error {
 	return c.SaveGlobal()
 }
 
-// SaveLocal persists the local config to disk (detent.jsonc).
+// SaveLocal persists the local config to disk (detent.json).
 func (c *Config) SaveLocal() error {
 	if c.repoRoot == "" {
 		return fmt.Errorf("no repository root set")
@@ -475,8 +495,10 @@ func (c *Config) SaveLocal() error {
 	if marshalErr != nil {
 		return fmt.Errorf("marshaling: %w", marshalErr)
 	}
+	// Append newline for proper file ending
+	data = append(data, '\n')
 
-	path := filepath.Join(c.repoRoot, localConfigFile)
+	path := filepath.Clean(filepath.Join(c.repoRoot, localConfigFile))
 	// #nosec G306 - 0644 is appropriate for project config files
 	if writeErr := os.WriteFile(path, data, 0o644); writeErr != nil {
 		return fmt.Errorf("writing: %w", writeErr)
@@ -501,8 +523,10 @@ func SaveLocalWithSources(cfg *ConfigWithSources) error {
 	if marshalErr != nil {
 		return fmt.Errorf("marshaling: %w", marshalErr)
 	}
+	// Append newline for proper file ending
+	data = append(data, '\n')
 
-	path := filepath.Join(cfg.RepoRoot, localConfigFile)
+	path := filepath.Clean(filepath.Join(cfg.RepoRoot, localConfigFile))
 	// #nosec G306 - 0644 is appropriate for project config files
 	if writeErr := os.WriteFile(path, data, 0o644); writeErr != nil {
 		return fmt.Errorf("writing: %w", writeErr)

@@ -99,10 +99,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	// Handle editor closed message
-	if _, ok := msg.(editorClosedMsg); ok {
+	if editorMsg, ok := msg.(editorClosedMsg); ok {
 		// Reload config and clear screen to avoid duplication
-		m.config, _ = persistence.LoadWithSources(m.config.RepoRoot)
-		m.values = GetFieldValues(m.config)
+		if editorMsg.err == nil {
+			if cfg, err := persistence.LoadWithSources(m.config.RepoRoot); err == nil {
+				m.config = cfg
+				m.values = GetFieldValues(m.config)
+			}
+		}
 		m.dirty = false
 		return m, tea.ClearScreen
 	}
@@ -242,12 +246,8 @@ func (m *Model) cycleModel(direction int) {
 // adjustTimeout increments or decrements timeout.
 func (m *Model) adjustTimeout(delta int) {
 	newValue := m.config.TimeoutMins.Value + delta
-	if newValue < 1 {
-		newValue = 1
-	}
-	if newValue > 60 {
-		newValue = 60
-	}
+	newValue = max(newValue, 1)
+	newValue = min(newValue, 60)
 	m.config.TimeoutMins.Value = newValue
 	m.config.TimeoutMins.Source = persistence.SourceLocal
 	m.values = GetFieldValues(m.config)
@@ -368,7 +368,7 @@ func GetGlobalPath() string {
 
 // GetLocalPath returns the local config file path for a given repo root.
 func GetLocalPath(repoRoot string) string {
-	return filepath.Join(repoRoot, "detent.jsonc")
+	return filepath.Join(repoRoot, "detent.json")
 }
 
 // formatBudgetRaw returns the raw budget value for editing.
