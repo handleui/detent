@@ -22,10 +22,11 @@ var configCmd = &cobra.Command{
 	Long: `View and manage the global detent configuration.
 
 Settings:
-  model        Claude model for AI healing
-  timeout      Maximum time per healing run
-  budget       Maximum spend per run (0 = unlimited)
-  verbose      Show tool calls in real-time
+  model           Claude model for AI healing
+  timeout         Maximum time per healing run
+  budget_per_run  Maximum spend per run (0 = unlimited)
+  budget_monthly  Maximum spend per month (0 = unlimited)
+  verbose         Show tool calls in real-time
 
 Interactive mode:
   Navigate with j/k or arrow keys.
@@ -95,10 +96,22 @@ func runConfigShow(_ *cobra.Command, _ []string) error {
 	fmt.Printf("  Model        %-20s %s\n", tui.PrimaryStyle.Render(showCfg.Model.Value), sourceBadge(showCfg.Model.Source))
 	fmt.Printf("  Timeout      %-20s %s\n", tui.PrimaryStyle.Render(fmt.Sprintf("%d min", showCfg.TimeoutMins.Value)), sourceBadge(showCfg.TimeoutMins.Source))
 
-	if showCfg.BudgetUSD.Value == 0 {
-		fmt.Printf("  Budget       %-20s %s\n", tui.MutedStyle.Render("unlimited"), sourceBadge(showCfg.BudgetUSD.Source))
+	// Budget per run
+	if showCfg.BudgetPerRunUSD.Value == 0 {
+		fmt.Printf("  Per-run      %-20s %s\n", tui.MutedStyle.Render("unlimited"), sourceBadge(showCfg.BudgetPerRunUSD.Source))
 	} else {
-		fmt.Printf("  Budget       %-20s %s\n", tui.PrimaryStyle.Render(fmt.Sprintf("$%.2f", showCfg.BudgetUSD.Value)), sourceBadge(showCfg.BudgetUSD.Source))
+		fmt.Printf("  Per-run      %-20s %s\n", tui.PrimaryStyle.Render(fmt.Sprintf("$%.2f", showCfg.BudgetPerRunUSD.Value)), sourceBadge(showCfg.BudgetPerRunUSD.Source))
+	}
+
+	// Budget monthly
+	if showCfg.BudgetMonthlyUSD.Value == 0 {
+		fmt.Printf("  Monthly      %-20s %s\n", tui.MutedStyle.Render("unlimited"), sourceBadge(showCfg.BudgetMonthlyUSD.Source))
+	} else {
+		monthlyDisplay := fmt.Sprintf("$%.2f", showCfg.BudgetMonthlyUSD.Value)
+		if showCfg.MonthlySpend > 0 {
+			monthlyDisplay = fmt.Sprintf("$%.2f ($%.2f used)", showCfg.BudgetMonthlyUSD.Value, showCfg.MonthlySpend)
+		}
+		fmt.Printf("  Monthly      %-20s %s\n", tui.PrimaryStyle.Render(monthlyDisplay), sourceBadge(showCfg.BudgetMonthlyUSD.Source))
 	}
 
 	// Section: Local Config
@@ -158,7 +171,8 @@ func runConfigReset(_ *cobra.Command, _ []string) error {
 	fmt.Printf("%s Configuration reset\n\n", tui.SuccessStyle.Render("✓"))
 	fmt.Printf("  Model        %s\n", tui.PrimaryStyle.Render(persistence.DefaultModel))
 	fmt.Printf("  Timeout      %s\n", tui.PrimaryStyle.Render(fmt.Sprintf("%d min", persistence.DefaultTimeoutMins)))
-	fmt.Printf("  Budget       %s\n", tui.PrimaryStyle.Render(fmt.Sprintf("$%.2f", persistence.DefaultBudgetUSD)))
+	fmt.Printf("  Per-run      %s\n", tui.PrimaryStyle.Render(fmt.Sprintf("$%.2f", persistence.DefaultBudgetPerRunUSD)))
+	fmt.Printf("  Monthly      %s\n", tui.MutedStyle.Render("unlimited"))
 	fmt.Printf("  Verbose      %s\n\n", tui.MutedStyle.Render("off"))
 
 	return nil

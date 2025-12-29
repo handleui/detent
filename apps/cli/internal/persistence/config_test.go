@@ -10,9 +10,9 @@ import (
 // createTestConfig creates a Config with the given trusted repos for testing
 func createTestConfig(trustedRepos map[string]TrustedRepo) *Config {
 	return &Config{
-		Model:       DefaultModel,
-		BudgetUSD:   DefaultBudgetUSD,
-		TimeoutMins: DefaultTimeoutMins,
+		Model:           DefaultModel,
+		BudgetPerRunUSD: DefaultBudgetPerRunUSD,
+		TimeoutMins:     DefaultTimeoutMins,
 		global: &GlobalConfig{
 			TrustedRepos: trustedRepos,
 		},
@@ -178,14 +178,14 @@ func TestConfigMerge(t *testing.T) {
 		budget := 5.0
 		timeout := 30
 		global := &GlobalConfig{
-			Model:       "claude-sonnet-4-5",
-			BudgetUSD:   float64Ptr(1.0),
-			TimeoutMins: intPtr(10),
+			Model:           "claude-sonnet-4-5",
+			BudgetPerRunUSD: float64Ptr(1.0),
+			TimeoutMins:     intPtr(10),
 		}
 		local := &LocalConfig{
-			Model:       "claude-opus-4-5",
-			BudgetUSD:   &budget,
-			TimeoutMins: &timeout,
+			Model:           "claude-opus-4-5",
+			BudgetPerRunUSD: &budget,
+			TimeoutMins:     &timeout,
 		}
 
 		cfg := merge(global, local, "")
@@ -193,8 +193,8 @@ func TestConfigMerge(t *testing.T) {
 		if cfg.Model != "claude-opus-4-5" {
 			t.Errorf("Model = %v, want claude-opus-4-5", cfg.Model)
 		}
-		if cfg.BudgetUSD != 5.0 {
-			t.Errorf("BudgetUSD = %v, want 5.0", cfg.BudgetUSD)
+		if cfg.BudgetPerRunUSD != 5.0 {
+			t.Errorf("BudgetPerRunUSD = %v, want 5.0", cfg.BudgetPerRunUSD)
 		}
 		if cfg.TimeoutMins != 30 {
 			t.Errorf("TimeoutMins = %v, want 30", cfg.TimeoutMins)
@@ -203,9 +203,9 @@ func TestConfigMerge(t *testing.T) {
 
 	t.Run("global used when local nil", func(t *testing.T) {
 		global := &GlobalConfig{
-			Model:       "claude-sonnet-4-5",
-			BudgetUSD:   float64Ptr(2.0),
-			TimeoutMins: intPtr(15),
+			Model:           "claude-sonnet-4-5",
+			BudgetPerRunUSD: float64Ptr(2.0),
+			TimeoutMins:     intPtr(15),
 		}
 
 		cfg := merge(global, nil, "")
@@ -213,8 +213,8 @@ func TestConfigMerge(t *testing.T) {
 		if cfg.Model != "claude-sonnet-4-5" {
 			t.Errorf("Model = %v, want claude-sonnet-4-5", cfg.Model)
 		}
-		if cfg.BudgetUSD != 2.0 {
-			t.Errorf("BudgetUSD = %v, want 2.0", cfg.BudgetUSD)
+		if cfg.BudgetPerRunUSD != 2.0 {
+			t.Errorf("BudgetPerRunUSD = %v, want 2.0", cfg.BudgetPerRunUSD)
 		}
 		if cfg.TimeoutMins != 15 {
 			t.Errorf("TimeoutMins = %v, want 15", cfg.TimeoutMins)
@@ -227,8 +227,8 @@ func TestConfigMerge(t *testing.T) {
 		if cfg.Model != DefaultModel {
 			t.Errorf("Model = %v, want %v", cfg.Model, DefaultModel)
 		}
-		if cfg.BudgetUSD != DefaultBudgetUSD {
-			t.Errorf("BudgetUSD = %v, want %v", cfg.BudgetUSD, DefaultBudgetUSD)
+		if cfg.BudgetPerRunUSD != DefaultBudgetPerRunUSD {
+			t.Errorf("BudgetPerRunUSD = %v, want %v", cfg.BudgetPerRunUSD, DefaultBudgetPerRunUSD)
 		}
 		if cfg.TimeoutMins != DefaultTimeoutMins {
 			t.Errorf("TimeoutMins = %v, want %v", cfg.TimeoutMins, DefaultTimeoutMins)
@@ -259,7 +259,7 @@ func TestLoadGlobal_MalformedJSON(t *testing.T) {
 		},
 		{
 			name:    "wrong type for budget - string instead of number",
-			content: `{"budget_usd": "five"}`,
+			content: `{"budget_per_run_usd": "five"}`,
 			wantErr: true,
 		},
 		{
@@ -269,14 +269,14 @@ func TestLoadGlobal_MalformedJSON(t *testing.T) {
 		},
 		{
 			name:    "null values are valid",
-			content: `{"model": null, "budget_usd": null, "timeout_mins": null}`,
+			content: `{"model": null, "budget_per_run_usd": null, "timeout_mins": null}`,
 			wantErr: false,
 			checkResult: func(t *testing.T, cfg *Config) {
 				if cfg.Model != DefaultModel {
 					t.Errorf("Model = %v, want %v", cfg.Model, DefaultModel)
 				}
-				if cfg.BudgetUSD != DefaultBudgetUSD {
-					t.Errorf("BudgetUSD = %v, want %v", cfg.BudgetUSD, DefaultBudgetUSD)
+				if cfg.BudgetPerRunUSD != DefaultBudgetPerRunUSD {
+					t.Errorf("BudgetPerRunUSD = %v, want %v", cfg.BudgetPerRunUSD, DefaultBudgetPerRunUSD)
 				}
 				if cfg.TimeoutMins != DefaultTimeoutMins {
 					t.Errorf("TimeoutMins = %v, want %v", cfg.TimeoutMins, DefaultTimeoutMins)
@@ -387,14 +387,14 @@ func TestConfigClamping(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			global := &GlobalConfig{
-				BudgetUSD:   tt.budget,
-				TimeoutMins: tt.timeout,
+				BudgetPerRunUSD: tt.budget,
+				TimeoutMins:     tt.timeout,
 			}
 
 			cfg := merge(global, nil, "")
 
-			if cfg.BudgetUSD != tt.wantBudget {
-				t.Errorf("BudgetUSD = %v, want %v", cfg.BudgetUSD, tt.wantBudget)
+			if cfg.BudgetPerRunUSD != tt.wantBudget {
+				t.Errorf("BudgetPerRunUSD = %v, want %v", cfg.BudgetPerRunUSD, tt.wantBudget)
 			}
 			if cfg.TimeoutMins != tt.wantTimeout {
 				t.Errorf("TimeoutMins = %v, want %v", cfg.TimeoutMins, tt.wantTimeout)
@@ -592,5 +592,234 @@ func TestGetDetentDir_Concurrent(t *testing.T) {
 
 	for i := 0; i < numGoroutines; i++ {
 		<-done
+	}
+}
+
+// TestRecordSpend tests the spend tracking functionality
+func TestRecordSpend(t *testing.T) {
+	t.Run("records spend for current month", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		t.Setenv(DetentHomeEnv, tmpDir)
+
+		cfg := createTestConfig(nil)
+		if err := cfg.RecordSpend(1.50); err != nil {
+			t.Fatalf("RecordSpend() error = %v", err)
+		}
+
+		if cfg.GetMonthlySpend() != 1.50 {
+			t.Errorf("GetMonthlySpend() = %v, want 1.50", cfg.GetMonthlySpend())
+		}
+	})
+
+	t.Run("ignores negative amounts", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		t.Setenv(DetentHomeEnv, tmpDir)
+
+		cfg := createTestConfig(nil)
+		if err := cfg.RecordSpend(5.00); err != nil {
+			t.Fatalf("RecordSpend() error = %v", err)
+		}
+		// Attempt to record negative amount (should be ignored)
+		if err := cfg.RecordSpend(-10.00); err != nil {
+			t.Fatalf("RecordSpend() error = %v", err)
+		}
+
+		// Spend should still be 5.00, not -5.00
+		if cfg.GetMonthlySpend() != 5.00 {
+			t.Errorf("GetMonthlySpend() = %v, want 5.00 (negative amount should be ignored)", cfg.GetMonthlySpend())
+		}
+	})
+
+	t.Run("accumulates spend", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		t.Setenv(DetentHomeEnv, tmpDir)
+
+		cfg := createTestConfig(nil)
+		if err := cfg.RecordSpend(1.00); err != nil {
+			t.Fatalf("RecordSpend() error = %v", err)
+		}
+		if err := cfg.RecordSpend(0.50); err != nil {
+			t.Fatalf("RecordSpend() error = %v", err)
+		}
+
+		if cfg.GetMonthlySpend() != 1.50 {
+			t.Errorf("GetMonthlySpend() = %v, want 1.50", cfg.GetMonthlySpend())
+		}
+	})
+
+	t.Run("persists to disk", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		t.Setenv(DetentHomeEnv, tmpDir)
+
+		cfg := createTestConfig(nil)
+		if err := cfg.RecordSpend(2.00); err != nil {
+			t.Fatalf("RecordSpend() error = %v", err)
+		}
+
+		// Reload config
+		loadedCfg, err := Load("")
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if loadedCfg.GetMonthlySpend() != 2.00 {
+			t.Errorf("GetMonthlySpend() after reload = %v, want 2.00", loadedCfg.GetMonthlySpend())
+		}
+	})
+}
+
+// TestSpendHistoryPruning tests that old months are pruned
+func TestSpendHistoryPruning(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv(DetentHomeEnv, tmpDir)
+
+	now := time.Now()
+
+	cfg := &Config{
+		Model:           DefaultModel,
+		BudgetPerRunUSD: DefaultBudgetPerRunUSD,
+		TimeoutMins:     DefaultTimeoutMins,
+		global: &GlobalConfig{
+			SpendHistory: map[string]float64{
+				now.Format("2006-01"):                                             5.00,  // Current month - keep
+				now.AddDate(0, -1, 0).Format("2006-01"):                           3.00,  // 1 month ago - keep
+				now.AddDate(0, -2, 0).Format("2006-01"):                           2.00,  // 2 months ago - keep
+				now.AddDate(0, -3, 0).Format("2006-01"):                           10.00, // 3 months ago - prune
+				now.AddDate(0, -6, 0).Format("2006-01"):                           1.00,  // 6 months ago - prune
+				time.Date(now.Year()-1, now.Month(), 1, 0, 0, 0, 0, time.UTC).Format("2006-01"): 0.50, // Last year - prune
+			},
+		},
+	}
+
+	// Record a small amount to trigger pruning
+	if err := cfg.RecordSpend(0.01); err != nil {
+		t.Fatalf("RecordSpend() error = %v", err)
+	}
+
+	// Check that old months were pruned
+	history := cfg.global.SpendHistory
+	if len(history) > 3 {
+		t.Errorf("SpendHistory should have at most 3 entries, got %d", len(history))
+	}
+
+	// Current month should exist with accumulated value
+	currentMonth := now.Format("2006-01")
+	if history[currentMonth] != 5.01 {
+		t.Errorf("Current month spend = %v, want 5.01", history[currentMonth])
+	}
+
+	// Old months should be pruned
+	oldMonth := now.AddDate(0, -6, 0).Format("2006-01")
+	if _, exists := history[oldMonth]; exists {
+		t.Error("Old month (6 months ago) should have been pruned")
+	}
+}
+
+// TestRemainingMonthlyBudget tests the remaining budget calculation
+func TestRemainingMonthlyBudget(t *testing.T) {
+	t.Run("returns -1 when unlimited", func(t *testing.T) {
+		cfg := &Config{
+			BudgetMonthlyUSD: 0, // 0 means unlimited
+			global:           &GlobalConfig{},
+		}
+
+		if cfg.RemainingMonthlyBudget() != -1 {
+			t.Errorf("RemainingMonthlyBudget() = %v, want -1 (unlimited)", cfg.RemainingMonthlyBudget())
+		}
+	})
+
+	t.Run("calculates remaining correctly", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		t.Setenv(DetentHomeEnv, tmpDir)
+
+		currentMonth := time.Now().Format("2006-01")
+		cfg := &Config{
+			BudgetMonthlyUSD: 50.0,
+			global: &GlobalConfig{
+				SpendHistory: map[string]float64{
+					currentMonth: 20.0,
+				},
+			},
+		}
+
+		remaining := cfg.RemainingMonthlyBudget()
+		if remaining != 30.0 {
+			t.Errorf("RemainingMonthlyBudget() = %v, want 30.0", remaining)
+		}
+	})
+
+	t.Run("returns 0 when over budget", func(t *testing.T) {
+		currentMonth := time.Now().Format("2006-01")
+		cfg := &Config{
+			BudgetMonthlyUSD: 10.0,
+			global: &GlobalConfig{
+				SpendHistory: map[string]float64{
+					currentMonth: 15.0, // Over budget
+				},
+			},
+		}
+
+		if cfg.RemainingMonthlyBudget() != 0 {
+			t.Errorf("RemainingMonthlyBudget() = %v, want 0 (over budget)", cfg.RemainingMonthlyBudget())
+		}
+	})
+
+	t.Run("returns full budget when no spend", func(t *testing.T) {
+		cfg := &Config{
+			BudgetMonthlyUSD: 100.0,
+			global:           &GlobalConfig{},
+		}
+
+		if cfg.RemainingMonthlyBudget() != 100.0 {
+			t.Errorf("RemainingMonthlyBudget() = %v, want 100.0", cfg.RemainingMonthlyBudget())
+		}
+	})
+}
+
+// TestMonthlyBudgetClamping tests that monthly budget values are clamped correctly
+func TestMonthlyBudgetClamping(t *testing.T) {
+	tests := []struct {
+		name       string
+		budget     float64
+		wantBudget float64
+	}{
+		{
+			name:       "negative clamps to 0",
+			budget:     -10.0,
+			wantBudget: 0,
+		},
+		{
+			name:       "within range stays same",
+			budget:     50.0,
+			wantBudget: 50.0,
+		},
+		{
+			name:       "at max stays at max",
+			budget:     1000.0,
+			wantBudget: 1000.0,
+		},
+		{
+			name:       "over max clamps to max",
+			budget:     5000.0,
+			wantBudget: 1000.0,
+		},
+		{
+			name:       "zero stays zero (unlimited)",
+			budget:     0,
+			wantBudget: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			global := &GlobalConfig{
+				BudgetMonthlyUSD: &tt.budget,
+			}
+
+			cfg := merge(global, nil, "")
+
+			if cfg.BudgetMonthlyUSD != tt.wantBudget {
+				t.Errorf("BudgetMonthlyUSD = %v, want %v", cfg.BudgetMonthlyUSD, tt.wantBudget)
+			}
+		})
 	}
 }

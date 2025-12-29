@@ -25,32 +25,36 @@ const (
 	// DefaultModel is the model to use for healing.
 	DefaultModel = anthropic.ModelClaudeSonnet4_5
 
-	// DefaultBudgetUSD is the default spending limit per run.
-	DefaultBudgetUSD = 1.00
+	// DefaultBudgetPerRunUSD is the default spending limit per run.
+	DefaultBudgetPerRunUSD = 1.00
 )
 
 // Config configures the healing loop.
 type Config struct {
-	Timeout   time.Duration
-	Model     anthropic.Model
-	BudgetUSD float64 // 0 = unlimited
-	Verbose   bool
+	Timeout             time.Duration
+	Model               anthropic.Model
+	BudgetPerRunUSD     float64 // 0 = unlimited
+	RemainingMonthlyUSD float64 // -1 = unlimited, 0 = exhausted
+	Verbose             bool
 }
 
 // DefaultConfig returns a config with default values.
 func DefaultConfig() Config {
 	return Config{
-		Timeout:   DefaultTimeout,
-		Model:     DefaultModel,
-		BudgetUSD: DefaultBudgetUSD,
-		Verbose:   false,
+		Timeout:             DefaultTimeout,
+		Model:               DefaultModel,
+		BudgetPerRunUSD:     DefaultBudgetPerRunUSD,
+		RemainingMonthlyUSD: -1, // unlimited by default
+		Verbose:             false,
 	}
 }
 
 // ConfigFromSettings creates a loop Config from model, timeout, and budget settings.
 // This is the canonical way to configure the healing loop from application settings.
+// budgetPerRunUSD is the per-run limit (0 = unlimited).
+// remainingMonthlyUSD is the remaining monthly budget (-1 = unlimited, 0 = exhausted).
 // Verbose mode should be set separately via the Verbose field if needed.
-func ConfigFromSettings(model string, timeoutMins int, budgetUSD float64) Config {
+func ConfigFromSettings(model string, timeoutMins int, budgetPerRunUSD, remainingMonthlyUSD float64) Config {
 	cfg := DefaultConfig()
 	if model != "" {
 		cfg.Model = anthropic.Model(model)
@@ -58,9 +62,10 @@ func ConfigFromSettings(model string, timeoutMins int, budgetUSD float64) Config
 	if timeoutMins > 0 {
 		cfg.Timeout = time.Duration(timeoutMins) * time.Minute
 	}
-	if budgetUSD >= 0 {
-		cfg.BudgetUSD = budgetUSD
+	if budgetPerRunUSD >= 0 {
+		cfg.BudgetPerRunUSD = budgetPerRunUSD
 	}
+	cfg.RemainingMonthlyUSD = remainingMonthlyUSD
 	return cfg
 }
 
@@ -87,11 +92,20 @@ type Result struct {
 	// OutputTokens is the total output tokens used across all API calls.
 	OutputTokens int64
 
+	// CacheCreationInputTokens is the total tokens used to create cache entries.
+	CacheCreationInputTokens int64
+
+	// CacheReadInputTokens is the total tokens read from cache.
+	CacheReadInputTokens int64
+
 	// CostUSD is the calculated cost in USD based on token usage.
 	CostUSD float64
 
 	// BudgetExceeded indicates if the loop stopped due to budget limit.
 	BudgetExceeded bool
+
+	// BudgetExceededReason indicates which budget was exceeded ("per-run" or "monthly").
+	BudgetExceededReason string
 }
 
 // HealLoop orchestrates the agentic healing process.
@@ -147,18 +161,39 @@ func (l *HealLoop) Run(ctx context.Context, systemPrompt, userPrompt string) (*R
 		})
 		if err != nil {
 			result.Duration = time.Since(startTime)
-			result.CostUSD = CalculateCost(modelName, result.InputTokens, result.OutputTokens)
+			result.CostUSD = CalculateCostWithCache(modelName, TokenUsage{
+				InputTokens:              result.InputTokens,
+				OutputTokens:             result.OutputTokens,
+				CacheCreationInputTokens: result.CacheCreationInputTokens,
+				CacheReadInputTokens:     result.CacheReadInputTokens,
+			})
 			return result, fmt.Errorf("API call failed: %w", err)
 		}
 
-		// Track token usage
+		// Track token usage (including cache tokens)
 		result.InputTokens += response.Usage.InputTokens
 		result.OutputTokens += response.Usage.OutputTokens
-		result.CostUSD = CalculateCost(modelName, result.InputTokens, result.OutputTokens)
+		result.CacheCreationInputTokens += response.Usage.CacheCreationInputTokens
+		result.CacheReadInputTokens += response.Usage.CacheReadInputTokens
+		result.CostUSD = CalculateCostWithCache(modelName, TokenUsage{
+			InputTokens:              result.InputTokens,
+			OutputTokens:             result.OutputTokens,
+			CacheCreationInputTokens: result.CacheCreationInputTokens,
+			CacheReadInputTokens:     result.CacheReadInputTokens,
+		})
 
-		// Check budget (don't return error - let caller decide how to handle)
-		if l.config.BudgetUSD > 0 && result.CostUSD > l.config.BudgetUSD {
+		// Check per-run budget (don't return error - let caller decide how to handle)
+		if l.config.BudgetPerRunUSD > 0 && result.CostUSD >= l.config.BudgetPerRunUSD {
 			result.BudgetExceeded = true
+			result.BudgetExceededReason = "per-run"
+			result.Duration = time.Since(startTime)
+			return result, nil
+		}
+
+		// Check monthly budget (-1 = unlimited, >= 0 = remaining budget)
+		if l.config.RemainingMonthlyUSD >= 0 && result.CostUSD >= l.config.RemainingMonthlyUSD {
+			result.BudgetExceeded = true
+			result.BudgetExceededReason = "monthly"
 			result.Duration = time.Since(startTime)
 			return result, nil
 		}

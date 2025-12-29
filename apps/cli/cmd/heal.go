@@ -126,6 +126,12 @@ func runHeal(cmd *cobra.Command, args []string) error {
 
 	worktreePath = worktreeInfo.Path
 
+	// Check monthly budget before proceeding
+	remainingMonthly := cfg.RemainingMonthlyBudget()
+	if remainingMonthly == 0 {
+		return fmt.Errorf("monthly budget exhausted ($%.2f/$%.2f)", cfg.GetMonthlySpend(), cfg.BudgetMonthlyUSD)
+	}
+
 	// Display summary
 	fmt.Fprintf(os.Stderr, "%s Found %d errors\n", tui.Bullet(), len(errRecords))
 	fmt.Fprintf(os.Stderr, "%s Worktree: %s\n\n", tui.Bullet(), tui.MutedStyle.Render(worktreePath))
@@ -163,14 +169,25 @@ func runHeal(cmd *cobra.Command, args []string) error {
 	userPrompt := buildUserPrompt(errRecords)
 
 	// Create and run healing loop with merged config
-	loopConfig := loop.ConfigFromSettings(cfg.Model, cfg.TimeoutMins, cfg.BudgetUSD)
+	loopConfig := loop.ConfigFromSettings(cfg.Model, cfg.TimeoutMins, cfg.BudgetPerRunUSD, remainingMonthly)
 	healLoop := loop.New(c.API(), registry, loopConfig)
 
 	fmt.Fprintf(os.Stderr, "%s Starting healing...\n", tui.Bullet())
 
 	result, err := healLoop.Run(cmd.Context(), prompt.BuildSystemPrompt(), userPrompt)
 	if err != nil {
+		// Record spend even on error
+		if result != nil && result.CostUSD > 0 {
+			_ = cfg.RecordSpend(result.CostUSD)
+		}
 		return fmt.Errorf("healing loop failed: %w", err)
+	}
+
+	// Record spend after healing
+	if result.CostUSD > 0 {
+		if recordErr := cfg.RecordSpend(result.CostUSD); recordErr != nil {
+			fmt.Fprintf(os.Stderr, "%s Failed to record spend: %v\n", tui.WarningStyle.Render("!"), recordErr)
+		}
 	}
 
 	// Display result
@@ -178,8 +195,10 @@ func runHeal(cmd *cobra.Command, args []string) error {
 	switch {
 	case result.Success:
 		fmt.Fprintf(os.Stderr, "%s Healing complete\n", tui.SuccessStyle.Render("✓"))
+	case result.BudgetExceeded && result.BudgetExceededReason == "monthly":
+		fmt.Fprintf(os.Stderr, "%s Monthly budget limit reached\n", tui.WarningStyle.Render("!"))
 	case result.BudgetExceeded:
-		fmt.Fprintf(os.Stderr, "%s Budget limit reached\n", tui.WarningStyle.Render("!"))
+		fmt.Fprintf(os.Stderr, "%s Per-run budget limit reached\n", tui.WarningStyle.Render("!"))
 	default:
 		fmt.Fprintf(os.Stderr, "%s Healing incomplete\n", tui.ErrorStyle.Render("✗"))
 	}
@@ -192,6 +211,13 @@ func runHeal(cmd *cobra.Command, args []string) error {
 		tui.Bullet(),
 		result.CostUSD, result.InputTokens/1000, result.OutputTokens/1000)
 
+	// Display monthly budget info if set
+	if cfg.BudgetMonthlyUSD > 0 {
+		fmt.Fprintf(os.Stderr, "%s Monthly: $%.2f / $%.2f\n",
+			tui.Bullet(),
+			cfg.GetMonthlySpend(), cfg.BudgetMonthlyUSD)
+	}
+
 	if result.FinalMessage != "" {
 		fmt.Fprintf(os.Stderr, "\n%s\n%s\n",
 			tui.SecondaryStyle.Render("Summary"),
@@ -199,7 +225,10 @@ func runHeal(cmd *cobra.Command, args []string) error {
 	}
 
 	if result.BudgetExceeded {
-		return fmt.Errorf("budget limit ($%.2f) exceeded", cfg.BudgetUSD)
+		if result.BudgetExceededReason == "monthly" {
+			return fmt.Errorf("monthly budget limit ($%.2f) exceeded", cfg.BudgetMonthlyUSD)
+		}
+		return fmt.Errorf("per-run budget limit ($%.2f) exceeded", cfg.BudgetPerRunUSD)
 	}
 
 	return nil
@@ -218,22 +247,22 @@ func buildUserPrompt(errRecords []*persistence.ErrorRecord) string {
 	}
 
 	for filePath, fileErrors := range byFile {
-		sb.WriteString(fmt.Sprintf("## %s (%d errors)\n\n", filePath, len(fileErrors)))
+		fmt.Fprintf(&sb, "## %s (%d errors)\n\n", filePath, len(fileErrors))
 
 		for _, err := range fileErrors {
 			// Format: [category] file:line:column: message
-			sb.WriteString(fmt.Sprintf("[%s] %s:%d:%d: %s\n",
-				err.ErrorType, err.FilePath, err.LineNumber, err.ColumnNumber, err.Message))
+			fmt.Fprintf(&sb, "[%s] %s:%d:%d: %s\n",
+				err.ErrorType, err.FilePath, err.LineNumber, err.ColumnNumber, err.Message)
 
 			if err.RuleID != "" {
-				sb.WriteString(fmt.Sprintf("  Rule: %s | Source: %s\n", err.RuleID, err.Source))
+				fmt.Fprintf(&sb, "  Rule: %s | Source: %s\n", err.RuleID, err.Source)
 			}
 
 			if err.StackTrace != "" {
 				sb.WriteString("  Stack trace:\n")
 				lines := strings.Split(err.StackTrace, "\n")
 				for _, line := range lines[:min(10, len(lines))] {
-					sb.WriteString(fmt.Sprintf("    %s\n", line))
+					fmt.Fprintf(&sb, "    %s\n", line)
 				}
 			}
 

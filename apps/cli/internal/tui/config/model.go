@@ -216,8 +216,10 @@ func (m *Model) handleEnter() {
 
 	field := EditableFields[m.cursor]
 	switch field.Key {
-	case "budget":
-		m.startTextEdit("budget", formatBudgetRaw(m.config.BudgetUSD.Value))
+	case "budget_per_run":
+		m.startTextEdit("budget_per_run", formatBudgetRaw(m.config.BudgetPerRunUSD.Value))
+	case "budget_monthly":
+		m.startTextEdit("budget_monthly", formatBudgetRaw(m.config.BudgetMonthlyUSD.Value))
 	case "api_key":
 		m.startTextEdit("api_key", "")
 		m.textInput.EchoMode = textinput.EchoPassword
@@ -268,7 +270,7 @@ func (m *Model) saveTextInput() {
 	value := strings.TrimSpace(m.textInput.Value())
 
 	switch m.editField {
-	case "budget":
+	case "budget_per_run":
 		// Parse USD value
 		value = strings.TrimPrefix(value, "$")
 		if f, err := strconv.ParseFloat(value, 64); err == nil {
@@ -278,8 +280,22 @@ func (m *Model) saveTextInput() {
 			if f > 100 {
 				f = 100
 			}
-			m.config.BudgetUSD.Value = f
-			m.config.BudgetUSD.Source = persistence.SourceLocal
+			m.config.BudgetPerRunUSD.Value = f
+			m.config.BudgetPerRunUSD.Source = persistence.SourceLocal
+			m.dirty = true
+		}
+	case "budget_monthly":
+		// Parse USD value
+		value = strings.TrimPrefix(value, "$")
+		if f, err := strconv.ParseFloat(value, 64); err == nil {
+			if f < 0 {
+				f = 0
+			}
+			if f > 1000 {
+				f = 1000
+			}
+			m.config.BudgetMonthlyUSD.Value = f
+			m.config.BudgetMonthlyUSD.Source = persistence.SourceGlobal // Monthly budget is global only
 			m.dirty = true
 		}
 	case "api_key":
@@ -304,12 +320,12 @@ func (m *Model) saveConfig() error {
 		m.config.Local = &persistence.LocalConfig{}
 	}
 
-	// Apply changes to local config (except API key)
+	// Apply changes to local config (except API key and monthly budget)
 	m.config.Local.Model = m.config.Model.Value
 	timeout := m.config.TimeoutMins.Value
 	m.config.Local.TimeoutMins = &timeout
-	budget := m.config.BudgetUSD.Value
-	m.config.Local.BudgetUSD = &budget
+	budgetPerRun := m.config.BudgetPerRunUSD.Value
+	m.config.Local.BudgetPerRunUSD = &budgetPerRun
 
 	// Save local config
 	if m.config.RepoRoot != "" {
@@ -318,12 +334,15 @@ func (m *Model) saveConfig() error {
 		}
 	}
 
-	// API key goes to global - load config and save
-	if m.config.APIKey.Value != "" {
-		cfg, err := persistence.Load("")
-		if err == nil {
+	// API key and monthly budget go to global - load config and save
+	cfg, err := persistence.Load("")
+	if err == nil {
+		if m.config.APIKey.Value != "" {
 			_ = cfg.SetAPIKey(m.config.APIKey.Value)
 		}
+		// Save monthly budget to global config
+		budgetMonthly := m.config.BudgetMonthlyUSD.Value
+		_ = cfg.SetBudgetMonthlyUSD(budgetMonthly)
 	}
 
 	m.dirty = false

@@ -39,32 +39,35 @@ type TrustedRepo struct {
 // GlobalConfig is the user's global settings (~/.detent/config.json).
 // This is the raw structure that gets persisted to disk.
 type GlobalConfig struct {
-	Schema       string                 `json:"$schema,omitempty"`
-	APIKey       string                 `json:"api_key,omitempty"`
-	Model        string                 `json:"model,omitempty"`
-	BudgetUSD    *float64               `json:"budget_usd,omitempty"`
-	TimeoutMins  *int                   `json:"timeout_mins,omitempty"`
-	TrustedRepos map[string]TrustedRepo `json:"trusted_repos,omitempty"`
+	Schema           string                 `json:"$schema,omitempty"`
+	APIKey           string                 `json:"api_key,omitempty"`
+	Model            string                 `json:"model,omitempty"`
+	BudgetPerRunUSD  *float64               `json:"budget_per_run_usd,omitempty"`
+	BudgetMonthlyUSD *float64               `json:"budget_monthly_usd,omitempty"`
+	TimeoutMins      *int                   `json:"timeout_mins,omitempty"`
+	TrustedRepos     map[string]TrustedRepo `json:"trusted_repos,omitempty"`
+	SpendHistory     map[string]float64     `json:"spend_history,omitempty"` // key is YYYY-MM
 }
 
 // LocalConfig is per-repository settings (detent.json in repo root).
 // This overrides global config for the specific project.
 type LocalConfig struct {
-	Schema      string   `json:"$schema,omitempty"`
-	Model       string   `json:"model,omitempty"`
-	BudgetUSD   *float64 `json:"budget_usd,omitempty"`
-	TimeoutMins *int     `json:"timeout_mins,omitempty"`
-	Commands    []string `json:"commands,omitempty"` // Extra allowed commands
+	Schema          string   `json:"$schema,omitempty"`
+	Model           string   `json:"model,omitempty"`
+	BudgetPerRunUSD *float64 `json:"budget_per_run_usd,omitempty"`
+	TimeoutMins     *int     `json:"timeout_mins,omitempty"`
+	Commands        []string `json:"commands,omitempty"` // Extra allowed commands
 }
 
 // Config is the merged, resolved config used by the application.
 // Values are resolved from: env var > local config > global config > defaults.
 type Config struct {
 	// Resolved settings
-	APIKey      string
-	Model       string
-	BudgetUSD   float64
-	TimeoutMins int
+	APIKey           string
+	Model            string
+	BudgetPerRunUSD  float64
+	BudgetMonthlyUSD float64
+	TimeoutMins      int
 
 	// Aggregated allowlists (from local config)
 	ExtraCommands []string
@@ -80,16 +83,17 @@ type Config struct {
 const (
 	// DefaultModel is the default Claude model for AI healing.
 	DefaultModel = "claude-sonnet-4-5"
-	// DefaultBudgetUSD is the default max spend per healing run.
-	DefaultBudgetUSD = 1.00
+	// DefaultBudgetPerRunUSD is the default max spend per healing run.
+	DefaultBudgetPerRunUSD = 1.00
 	// DefaultTimeoutMins is the default max time per healing run.
 	DefaultTimeoutMins = 10
 
-	minTimeoutMins = 1
-	maxTimeoutMins = 60
-	minBudgetUSD   = 0.0
-	maxBudgetUSD   = 100.0
-	modelPrefix    = "claude-"
+	minTimeoutMins     = 1
+	maxTimeoutMins     = 60
+	minBudgetUSD       = 0.0
+	maxBudgetUSD       = 100.0
+	maxBudgetMonthlyUSD = 1000.0
+	modelPrefix        = "claude-"
 )
 
 // --- Value Source Tracking ---
@@ -129,10 +133,12 @@ type ConfigValue[T any] struct {
 // ConfigWithSources provides resolved values with source information.
 // Used by the TUI to show where each value came from.
 type ConfigWithSources struct {
-	APIKey      ConfigValue[string]
-	Model       ConfigValue[string]
-	BudgetUSD   ConfigValue[float64]
-	TimeoutMins ConfigValue[int]
+	APIKey           ConfigValue[string]
+	Model            ConfigValue[string]
+	BudgetPerRunUSD  ConfigValue[float64]
+	BudgetMonthlyUSD ConfigValue[float64]
+	TimeoutMins      ConfigValue[int]
+	MonthlySpend     float64
 
 	// Read-only (local config only)
 	ExtraCommands []string
@@ -233,13 +239,14 @@ func LoadWithSources(repoRoot string) (*ConfigWithSources, error) {
 // mergeWithSources combines global and local config, tracking value sources.
 func mergeWithSources(global *GlobalConfig, local *LocalConfig, repoRoot string) *ConfigWithSources {
 	c := &ConfigWithSources{
-		Model:       ConfigValue[string]{Value: DefaultModel, Source: SourceDefault},
-		BudgetUSD:   ConfigValue[float64]{Value: DefaultBudgetUSD, Source: SourceDefault},
-		TimeoutMins: ConfigValue[int]{Value: DefaultTimeoutMins, Source: SourceDefault},
-		APIKey:      ConfigValue[string]{Value: "", Source: SourceDefault},
-		Global:      global,
-		Local:       local,
-		RepoRoot:    repoRoot,
+		Model:            ConfigValue[string]{Value: DefaultModel, Source: SourceDefault},
+		BudgetPerRunUSD:  ConfigValue[float64]{Value: DefaultBudgetPerRunUSD, Source: SourceDefault},
+		BudgetMonthlyUSD: ConfigValue[float64]{Value: 0, Source: SourceDefault}, // 0 means unlimited
+		TimeoutMins:      ConfigValue[int]{Value: DefaultTimeoutMins, Source: SourceDefault},
+		APIKey:           ConfigValue[string]{Value: "", Source: SourceDefault},
+		Global:           global,
+		Local:            local,
+		RepoRoot:         repoRoot,
 	}
 
 	// Apply global config
@@ -252,9 +259,15 @@ func mergeWithSources(global *GlobalConfig, local *LocalConfig, repoRoot string)
 				c.Model = ConfigValue[string]{Value: global.Model, Source: SourceGlobal}
 			}
 		}
-		if global.BudgetUSD != nil {
-			c.BudgetUSD = ConfigValue[float64]{
-				Value:  clampBudget(*global.BudgetUSD),
+		if global.BudgetPerRunUSD != nil {
+			c.BudgetPerRunUSD = ConfigValue[float64]{
+				Value:  clampBudget(*global.BudgetPerRunUSD),
+				Source: SourceGlobal,
+			}
+		}
+		if global.BudgetMonthlyUSD != nil {
+			c.BudgetMonthlyUSD = ConfigValue[float64]{
+				Value:  clampMonthlyBudget(*global.BudgetMonthlyUSD),
 				Source: SourceGlobal,
 			}
 		}
@@ -264,18 +277,20 @@ func mergeWithSources(global *GlobalConfig, local *LocalConfig, repoRoot string)
 				Source: SourceGlobal,
 			}
 		}
+		// Calculate monthly spend from history
+		c.MonthlySpend = global.SpendHistory[currentMonth()]
 	}
 
-	// Apply local config (overrides global)
+	// Apply local config (overrides global for per-run budget)
 	if local != nil {
 		if local.Model != "" {
 			if strings.HasPrefix(local.Model, modelPrefix) {
 				c.Model = ConfigValue[string]{Value: local.Model, Source: SourceLocal}
 			}
 		}
-		if local.BudgetUSD != nil {
-			c.BudgetUSD = ConfigValue[float64]{
-				Value:  clampBudget(*local.BudgetUSD),
+		if local.BudgetPerRunUSD != nil {
+			c.BudgetPerRunUSD = ConfigValue[float64]{
+				Value:  clampBudget(*local.BudgetPerRunUSD),
 				Source: SourceLocal,
 			}
 		}
@@ -355,12 +370,13 @@ func loadLocal(dir string) (*LocalConfig, error) {
 // merge combines global and local config with proper precedence.
 func merge(global *GlobalConfig, local *LocalConfig, repoRoot string) *Config {
 	c := &Config{
-		Model:       DefaultModel,
-		BudgetUSD:   DefaultBudgetUSD,
-		TimeoutMins: DefaultTimeoutMins,
-		global:      global,
-		local:       local,
-		repoRoot:    repoRoot,
+		Model:            DefaultModel,
+		BudgetPerRunUSD:  DefaultBudgetPerRunUSD,
+		BudgetMonthlyUSD: 0, // 0 means unlimited
+		TimeoutMins:      DefaultTimeoutMins,
+		global:           global,
+		local:            local,
+		repoRoot:         repoRoot,
 	}
 
 	// Apply global config
@@ -375,15 +391,18 @@ func merge(global *GlobalConfig, local *LocalConfig, repoRoot string) *Config {
 				fmt.Fprintf(os.Stderr, "warning: ignoring invalid model %q (must start with %q)\n", global.Model, modelPrefix)
 			}
 		}
-		if global.BudgetUSD != nil {
-			c.BudgetUSD = clampBudget(*global.BudgetUSD)
+		if global.BudgetPerRunUSD != nil {
+			c.BudgetPerRunUSD = clampBudget(*global.BudgetPerRunUSD)
+		}
+		if global.BudgetMonthlyUSD != nil {
+			c.BudgetMonthlyUSD = clampMonthlyBudget(*global.BudgetMonthlyUSD)
 		}
 		if global.TimeoutMins != nil {
 			c.TimeoutMins = clampTimeout(*global.TimeoutMins)
 		}
 	}
 
-	// Apply local config (overrides global)
+	// Apply local config (overrides global for per-run budget)
 	if local != nil {
 		if local.Model != "" {
 			if strings.HasPrefix(local.Model, modelPrefix) {
@@ -392,8 +411,8 @@ func merge(global *GlobalConfig, local *LocalConfig, repoRoot string) *Config {
 				fmt.Fprintf(os.Stderr, "warning: ignoring invalid model %q (must start with %q)\n", local.Model, modelPrefix)
 			}
 		}
-		if local.BudgetUSD != nil {
-			c.BudgetUSD = clampBudget(*local.BudgetUSD)
+		if local.BudgetPerRunUSD != nil {
+			c.BudgetPerRunUSD = clampBudget(*local.BudgetPerRunUSD)
 		}
 		if local.TimeoutMins != nil {
 			c.TimeoutMins = clampTimeout(*local.TimeoutMins)
@@ -417,6 +436,16 @@ func clampBudget(value float64) float64 {
 	}
 	if value > maxBudgetUSD {
 		return maxBudgetUSD
+	}
+	return value
+}
+
+func clampMonthlyBudget(value float64) float64 {
+	if value < 0 {
+		return 0
+	}
+	if value > maxBudgetMonthlyUSD {
+		return maxBudgetMonthlyUSD
 	}
 	return value
 }
@@ -476,6 +505,16 @@ func (c *Config) SetAPIKey(key string) error {
 	}
 	c.global.APIKey = key
 	c.APIKey = key
+	return c.SaveGlobal()
+}
+
+// SetBudgetMonthlyUSD updates the monthly budget in global config and saves.
+func (c *Config) SetBudgetMonthlyUSD(budget float64) error {
+	if c.global == nil {
+		c.global = &GlobalConfig{}
+	}
+	c.global.BudgetMonthlyUSD = &budget
+	c.BudgetMonthlyUSD = budget
 	return c.SaveGlobal()
 }
 
@@ -560,6 +599,76 @@ func (c *Config) TrustRepo(firstCommitSHA, remoteURL string) error {
 		TrustedAt: time.Now(),
 	}
 	return c.SaveGlobal()
+}
+
+// --- Spend tracking helpers ---
+
+// currentMonth returns the current month in YYYY-MM format.
+func currentMonth() string {
+	return time.Now().Format("2006-01")
+}
+
+// GetMonthlySpend returns the total spend for the current month.
+func (c *Config) GetMonthlySpend() float64 {
+	if c.global == nil || c.global.SpendHistory == nil {
+		return 0
+	}
+	return c.global.SpendHistory[currentMonth()]
+}
+
+// RecordSpend adds the given amount to the current month's spend and saves to disk.
+// NOTE: This operation is not atomic across processes. If multiple CLI instances
+// run concurrently, there's a race condition where spend data could be lost.
+// This is acceptable for budget tracking (best-effort) but should not be relied
+// upon for strict financial controls.
+func (c *Config) RecordSpend(amount float64) error {
+	if amount < 0 {
+		return nil // Ignore negative amounts
+	}
+	if c.global == nil {
+		c.global = &GlobalConfig{}
+	}
+	if c.global.SpendHistory == nil {
+		c.global.SpendHistory = make(map[string]float64)
+	}
+
+	month := currentMonth()
+	c.global.SpendHistory[month] += amount
+	c.pruneSpendHistory()
+	return c.SaveGlobal()
+}
+
+// RemainingMonthlyBudget returns the remaining monthly budget.
+// Returns -1 if the monthly budget is unlimited (0).
+func (c *Config) RemainingMonthlyBudget() float64 {
+	if c.BudgetMonthlyUSD == 0 {
+		return -1 // Unlimited
+	}
+	remaining := c.BudgetMonthlyUSD - c.GetMonthlySpend()
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
+}
+
+// pruneSpendHistory removes entries older than 3 months to keep the config file small.
+func (c *Config) pruneSpendHistory() {
+	if c.global == nil || c.global.SpendHistory == nil {
+		return
+	}
+
+	// Calculate the cutoff month (3 months ago).
+	// Use local time consistently with currentMonth() to avoid timezone mismatches.
+	// Go's time.Date normalizes month values, so Month()-2 works correctly
+	// even for January/February (becomes November/December of previous year).
+	now := time.Now()
+	cutoff := time.Date(now.Year(), now.Month()-2, 1, 0, 0, 0, 0, now.Location()).Format("2006-01")
+
+	for month := range c.global.SpendHistory {
+		if month < cutoff {
+			delete(c.global.SpendHistory, month)
+		}
+	}
 }
 
 // --- Command helpers ---

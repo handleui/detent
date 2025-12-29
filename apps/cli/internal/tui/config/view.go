@@ -141,7 +141,7 @@ func (m *Model) renderHelp() string {
 			hints = append(hints, "[←/→] cycle")
 		case "timeout":
 			hints = append(hints, "[←/→] adjust")
-		case "budget":
+		case "budget_per_run", "budget_monthly":
 			hints = append(hints, "[enter] edit")
 		case "api_key":
 			hints = append(hints, "[enter] edit")
