@@ -2,6 +2,8 @@ package runner
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"os"
 	"os/exec"
@@ -14,6 +16,17 @@ import (
 	internalerrors "github.com/detent/cli/internal/errors"
 	"github.com/detent/cli/internal/git"
 )
+
+// generateTestRunID creates a unique 16-character hex string for test isolation.
+// Each test should use its own RunID to avoid conflicts with other tests.
+func generateTestRunID(t *testing.T) string {
+	t.Helper()
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		t.Fatalf("Failed to generate random bytes: %v", err)
+	}
+	return hex.EncodeToString(b)
+}
 
 // setupTestRepo creates a temporary git repository with a basic workflow for testing
 func setupTestRepo(t *testing.T) (repoPath string, cleanup func()) {
@@ -85,7 +98,7 @@ func TestCheckRunner_Prepare(t *testing.T) {
 		WorkflowPath: filepath.Join(repoPath, ".github", "workflows"),
 		WorkflowFile: "",
 		Event:        "push",
-		RunID:        "12345678-1234-1234-1234-123456789abc",
+		RunID:        generateTestRunID(t),
 		StreamOutput: false,
 		UseTUI:       false,
 	}
@@ -129,9 +142,8 @@ func TestCheckRunner_Prepare(t *testing.T) {
 		t.Error("cleanupWorkflows should be set after Prepare")
 	}
 
-	if runner.cleanupWorktree == nil {
-		t.Error("cleanupWorktree should be set after Prepare")
-	}
+	// Note: cleanupWorktree is nil for persistent worktrees (by design)
+	// Persistent worktrees are reused by heal command
 }
 
 // TestCheckRunner_PrepareCleanupOnError tests that preflight checks fail early in non-git directory
@@ -144,7 +156,7 @@ func TestCheckRunner_PrepareCleanupOnError(t *testing.T) {
 		WorkflowPath: filepath.Join(tmpDir, ".github", "workflows"),
 		WorkflowFile: "",
 		Event:        "push",
-		RunID:        "12345678-1234-1234-1234-123456789abc",
+		RunID:        "0123456789abcdef",
 	}
 
 	// Create workflow directory and file (won't be used due to early preflight failure)
@@ -199,7 +211,7 @@ func TestCheckRunner_RunWithoutPrepare(t *testing.T) {
 		RepoRoot:     "/nonexistent",
 		WorkflowPath: "/nonexistent/.github/workflows",
 		Event:        "push",
-		RunID:        "12345678-1234-1234-1234-123456789abc",
+		RunID:        "0123456789abcdef",
 	}
 
 	runner := New(cfg)
@@ -222,7 +234,7 @@ func TestCheckRunner_PersistWithoutRun(t *testing.T) {
 		RepoRoot:     repoPath,
 		WorkflowPath: filepath.Join(repoPath, ".github", "workflows"),
 		Event:        "push",
-		RunID:        "12345678-1234-1234-1234-123456789abc",
+		RunID:        generateTestRunID(t),
 	}
 
 	runner := New(cfg)
@@ -254,7 +266,7 @@ func TestCheckRunner_Cleanup_Idempotent(t *testing.T) {
 		RepoRoot:     repoPath,
 		WorkflowPath: filepath.Join(repoPath, ".github", "workflows"),
 		Event:        "push",
-		RunID:        "12345678-1234-1234-1234-123456789abc",
+		RunID:        generateTestRunID(t),
 	}
 
 	runner := New(cfg)
@@ -271,9 +283,10 @@ func TestCheckRunner_Cleanup_Idempotent(t *testing.T) {
 	runner.Cleanup()
 	runner.Cleanup()
 
-	// Verify worktree is removed
+	// Note: Worktrees are now ephemeral (removed on cleanup)
+	// Verify worktree is removed after cleanup
 	if _, err := os.Stat(worktreePath); !os.IsNotExist(err) {
-		t.Error("Worktree should be removed after Cleanup")
+		t.Error("Ephemeral worktree should be removed after Cleanup")
 	}
 }
 
@@ -283,7 +296,7 @@ func TestCheckRunner_Cleanup_WithoutPrepare(t *testing.T) {
 		RepoRoot:     "/nonexistent",
 		WorkflowPath: "/nonexistent/.github/workflows",
 		Event:        "push",
-		RunID:        "12345678-1234-1234-1234-123456789abc",
+		RunID:        "0123456789abcdef",
 	}
 
 	runner := New(cfg)
@@ -298,7 +311,7 @@ func TestCheckRunner_GetResultBeforeRun(t *testing.T) {
 		RepoRoot:     "/nonexistent",
 		WorkflowPath: "/nonexistent/.github/workflows",
 		Event:        "push",
-		RunID:        "12345678-1234-1234-1234-123456789abc",
+		RunID:        "0123456789abcdef",
 	}
 
 	runner := New(cfg)
@@ -334,7 +347,7 @@ func TestCheckRunner_buildActConfig_NonTUI(t *testing.T) {
 				RepoRoot:     "/test",
 				WorkflowPath: "/test/.github/workflows",
 				Event:        "push",
-				RunID:        "12345678-1234-1234-1234-123456789abc",
+				RunID:        "0123456789abcdef",
 				StreamOutput: tt.streamOutput,
 			}
 
@@ -379,7 +392,7 @@ func TestCheckRunner_buildActConfig_TUI(t *testing.T) {
 		RepoRoot:     "/test",
 		WorkflowPath: "/test/.github/workflows",
 		Event:        "push",
-		RunID:        "12345678-1234-1234-1234-123456789abc",
+		RunID:        "0123456789abcdef",
 		StreamOutput: true, // Should be ignored when logChan is provided
 	}
 
@@ -426,7 +439,7 @@ func TestCheckRunner_extractAndProcessErrors(t *testing.T) {
 		RepoRoot:     "/test/repo",
 		WorkflowPath: "/test/repo/.github/workflows",
 		Event:        "push",
-		RunID:        "12345678-1234-1234-1234-123456789abc",
+		RunID:        "0123456789abcdef",
 	}
 
 	runner := New(cfg)
@@ -498,7 +511,7 @@ func TestCheckRunner_NewRunner(t *testing.T) {
 		RepoRoot:     "/test",
 		WorkflowPath: "/test/.github/workflows",
 		Event:        "push",
-		RunID:        "12345678-1234-1234-1234-123456789abc",
+		RunID:        "0123456789abcdef",
 	}
 
 	runner := New(cfg)
@@ -542,7 +555,7 @@ func TestCheckRunner_PrepareWorkflowInjection(t *testing.T) {
 		WorkflowPath: filepath.Join(repoPath, ".github", "workflows"),
 		WorkflowFile: "",
 		Event:        "push",
-		RunID:        "12345678-1234-1234-1234-123456789abc",
+		RunID:        generateTestRunID(t),
 	}
 
 	runner := New(cfg)
@@ -587,7 +600,7 @@ func TestCheckRunner_PrepareWithSpecificWorkflowFile(t *testing.T) {
 		WorkflowPath: filepath.Join(repoPath, ".github", "workflows"),
 		WorkflowFile: "test.yml",
 		Event:        "push",
-		RunID:        "12345678-1234-1234-1234-123456789abc",
+		RunID:        generateTestRunID(t),
 	}
 
 	runner := New(cfg)
@@ -619,7 +632,7 @@ func TestCheckRunner_PersistWithoutWorktreeInfo(t *testing.T) {
 		RepoRoot:     "/test",
 		WorkflowPath: "/test/.github/workflows",
 		Event:        "push",
-		RunID:        "12345678-1234-1234-1234-123456789abc",
+		RunID:        "0123456789abcdef",
 	}
 
 	runner := New(cfg)
@@ -653,7 +666,7 @@ func TestCheckRunner_StartTimeTracking(t *testing.T) {
 		RepoRoot:     "/test",
 		WorkflowPath: "/test/.github/workflows",
 		Event:        "push",
-		RunID:        "12345678-1234-1234-1234-123456789abc",
+		RunID:        "0123456789abcdef",
 	}
 
 	runner := New(cfg)

@@ -3,16 +3,17 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 
-	"github.com/charmbracelet/lipgloss"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/detent/cli/internal/git"
+	"github.com/detent/cli/internal/persistence"
 	"github.com/detent/cli/internal/runner"
 	"github.com/detent/cli/internal/signal"
+	"github.com/detent/cli/internal/tui"
+	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
-)
-
-const (
-	brandingColor = "42"  // Green - matches colorSuccess in TUI
-	commandColor  = "15"  // Pure white for command name
 )
 
 var (
@@ -21,12 +22,9 @@ var (
 	workflowFile string
 )
 
-var (
-	brandingStyle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color(brandingColor))
-	commandStyle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color(commandColor))
-)
+// cfg holds the loaded and merged configuration, available to all commands.
+// Initialized in PersistentPreRunE.
+var cfg *persistence.Config
 
 var rootCmd = &cobra.Command{
 	Use:   "detent",
@@ -42,11 +40,40 @@ Requirements:
   - Docker (for running act containers)
   - act (nektos/act - automatically invoked)`,
 	Version: Version,
-	PersistentPreRun: func(cmd *cobra.Command, args []string) {
+	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		// Skip for config subcommands
+		for c := cmd; c != nil; c = c.Parent() {
+			if c == configCmd {
+				return nil
+			}
+		}
+
+		// Branding header
 		fmt.Println()
-		versionText := brandingStyle.Render(fmt.Sprintf("Detent v%s", Version))
-		commandText := commandStyle.Render(cmd.Name())
-		fmt.Printf("%s %s\n", versionText, commandText)
+		repoRoot, _ := filepath.Abs(".")
+		repoIdentifier := git.GetRepoIdentifier(repoRoot)
+		fmt.Println(tui.Header(Version, repoIdentifier))
+		fmt.Println()
+
+		// Load config (global + local merged)
+		loadedCfg, configErr := persistence.Load(repoRoot)
+		if configErr != nil {
+			fmt.Fprintf(os.Stderr, "%s Config error: %s\n",
+				tui.WarningStyle.Render("!"),
+				tui.MutedStyle.Render(configErr.Error()))
+			fmt.Fprintf(os.Stderr, "%s Run: detent config reset\n\n", tui.Bullet())
+			// Create empty config with defaults
+			loadedCfg, _ = persistence.Load("")
+		}
+		cfg = loadedCfg
+
+		// Trust check - FIRST thing before any command runs
+		// This ensures we never execute repo code without explicit trust
+		if err := ensureTrustedRepo(); err != nil {
+			return err
+		}
+
+		return nil
 	},
 }
 
@@ -58,14 +85,124 @@ func Execute() error {
 
 func init() {
 	rootCmd.AddCommand(checkCmd)
+	rootCmd.AddCommand(healCmd)
 	rootCmd.AddCommand(injectCmd)
+	rootCmd.AddCommand(frankensteinCmd)
+	rootCmd.AddCommand(configCmd)
 
 	// Persistent flags available to all commands
 	rootCmd.PersistentFlags().StringVarP(&workflowsDir, "workflows", "w", runner.WorkflowsDir, "workflows directory path")
 	rootCmd.PersistentFlags().StringVar(&workflowFile, "workflow", "", "specific workflow file (e.g., ci.yml)")
 
-	rootCmd.SetHelpTemplate(fmt.Sprintf(`%s
+	rootCmd.SetHelpTemplate(`Detent v` + Version + `
 {{with (or .Long .Short)}}{{. | trimTrailingWhitespaces}}
 
-{{end}}{{if or .Runnable .HasSubCommands}}{{.UsageString}}{{end}}`, brandingStyle.Render(fmt.Sprintf("Detent v%s", Version))))
+{{end}}{{if or .Runnable .HasSubCommands}}{{.UsageString}}{{end}}`)
+}
+
+// ensureAPIKey checks for API key and prompts interactively if missing.
+// Uses cfg and saves the key if prompted.
+// Returns the API key or an error if unavailable.
+func ensureAPIKey() (string, error) {
+	if cfg == nil {
+		// This indicates a programming error - config should always be loaded
+		// before commands that need API keys are run
+		return "", fmt.Errorf("internal error: configuration not initialized")
+	}
+
+	// Config already has merged API key (env > global)
+	if cfg.APIKey != "" {
+		return cfg.APIKey, nil
+	}
+
+	// No key found - prompt if interactive terminal
+	if !isatty.IsTerminal(os.Stdin.Fd()) {
+		return "", fmt.Errorf("no API key found: set ANTHROPIC_API_KEY environment variable or run 'detent config show' for configuration options")
+	}
+
+	// Show interactive prompt
+	model := tui.NewAPIKeyPromptModel()
+	program := tea.NewProgram(model)
+
+	if _, runErr := program.Run(); runErr != nil {
+		return "", fmt.Errorf("prompt failed: %w", runErr)
+	}
+
+	result := model.GetResult()
+	if result == nil || result.Cancelled {
+		return "", fmt.Errorf("API key input cancelled")
+	}
+
+	// Save key to config
+	if saveErr := cfg.SetAPIKey(result.Key); saveErr != nil {
+		return "", fmt.Errorf("failed to save API key: %w", saveErr)
+	}
+
+	fmt.Fprintf(os.Stderr, "%s API key saved\n\n", tui.SuccessStyle.Render("✓"))
+
+	return result.Key, nil
+}
+
+// ensureTrustedRepo checks if the current repository is trusted, prompts if not.
+// Returns error if user declines trust, not in a git repo, or not interactive.
+func ensureTrustedRepo() error {
+	if cfg == nil {
+		return fmt.Errorf("internal error: configuration not initialized")
+	}
+
+	repoRoot, err := filepath.Abs(".")
+	if err != nil {
+		return fmt.Errorf("resolving current directory: %w", err)
+	}
+
+	firstCommitSHA, err := git.GetFirstCommitSHA(repoRoot)
+	if err != nil {
+		return fmt.Errorf("failed to identify repository: %w", err)
+	}
+	if firstCommitSHA == "" {
+		return fmt.Errorf("repository has no commits yet")
+	}
+
+	// Check if already trusted
+	if cfg.IsTrustedRepo(firstCommitSHA) {
+		return nil
+	}
+
+	// Not interactive? Fail with instructions
+	if !isatty.IsTerminal(os.Stdin.Fd()) {
+		return fmt.Errorf("repository not trusted: run 'detent check' interactively first")
+	}
+
+	// Show trust prompt
+	remoteURL, _ := git.GetRemoteURL(repoRoot)
+	shortSHA := firstCommitSHA
+	if len(shortSHA) > 12 {
+		shortSHA = shortSHA[:12]
+	}
+
+	model := tui.NewTrustPromptModel(tui.TrustPromptInfo{
+		RemoteURL:      remoteURL,
+		FirstCommitSHA: shortSHA,
+	})
+	program := tea.NewProgram(model)
+
+	if _, runErr := program.Run(); runErr != nil {
+		return fmt.Errorf("trust prompt failed: %w", runErr)
+	}
+
+	result := model.GetResult()
+	if result == nil || result.Cancelled {
+		return fmt.Errorf("trust prompt cancelled")
+	}
+	if !result.Trusted {
+		return fmt.Errorf("repository trust declined")
+	}
+
+	// Save trust to config
+	if trustErr := cfg.TrustRepo(firstCommitSHA, remoteURL); trustErr != nil {
+		return fmt.Errorf("failed to save trust: %w", trustErr)
+	}
+
+	fmt.Fprintf(os.Stderr, "%s Repository trusted\n\n", tui.SuccessStyle.Render("✓"))
+	return nil
 }

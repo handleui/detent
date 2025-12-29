@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,11 +11,11 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/detent/cli/internal/cache"
 	internalerrors "github.com/detent/cli/internal/errors"
+	"github.com/detent/cli/internal/git"
 	"github.com/detent/cli/internal/output"
 	"github.com/detent/cli/internal/runner"
 	"github.com/detent/cli/internal/signal"
 	"github.com/detent/cli/internal/tui"
-	"github.com/detent/cli/internal/util"
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 )
@@ -25,6 +26,10 @@ const (
 )
 
 var (
+	// ErrFoundErrors is returned when the check command finds errors in workflow execution.
+	// This allows heal to distinguish between "errors found" (expected) and other failures.
+	ErrFoundErrors = errors.New("found errors in workflow execution")
+
 	// Command-specific flags
 	outputFormat string
 	event        string
@@ -95,10 +100,10 @@ func buildRunConfig() (*runner.RunConfig, error) {
 
 	workflowPath := filepath.Join(absRepoPath, workflowsDir)
 
-	// Generate UUID
-	runID, err := util.GenerateUUID()
+	// Compute deterministic run ID from tree+commit hash
+	runID, _, _, err := git.ComputeCurrentRunID(absRepoPath)
 	if err != nil {
-		return nil, fmt.Errorf("generating run ID: %w", err)
+		return nil, err
 	}
 
 	// Determine if TUI should be used
@@ -158,7 +163,7 @@ func checkWorkflowStatus(result *runner.RunResult) error {
 
 	// Check if there are any actual errors (not warnings) using O(1) method
 	if result.HasErrors() {
-		return fmt.Errorf("found errors in workflow execution")
+		return ErrFoundErrors
 	}
 
 	return nil

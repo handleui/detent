@@ -2,9 +2,12 @@ package git
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -27,6 +30,7 @@ type WorktreeInfo struct {
 // PrepareWorktree creates a git worktree for isolated workflow execution.
 // The worktree is created from the current HEAD commit.
 // If worktreeDir is empty, creates a temp directory. Otherwise uses the provided path.
+// If worktreeDir already exists and is a valid worktree at the same commit, it is reused.
 // Returns worktree info, cleanup function, and error.
 //
 // Note: This requires a clean worktree. Call ValidateCleanWorktree() before this.
@@ -39,6 +43,33 @@ func PrepareWorktree(ctx context.Context, repoRoot, worktreeDir string) (*Worktr
 		return nil, nil, fmt.Errorf("getting current commit SHA: %w", err)
 	}
 	commitSHA := strings.TrimSpace(string(output))
+
+	// Check if worktree already exists at the specified path and can be reused
+	if worktreeDir != "" {
+		if existingInfo, ok := isExistingWorktree(ctx, worktreeDir, commitSHA); ok {
+			// Worktree exists and is at the same commit - reuse it
+			cleanup := func() {
+				cleanupCtx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+				defer cancel()
+				if rmErr := removeWorktree(cleanupCtx, repoRoot, worktreeDir); rmErr != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to remove worktree at %s: %v\n", worktreeDir, rmErr)
+				}
+			}
+			return existingInfo, cleanup, nil
+		}
+		// Directory exists but is not a valid worktree (orphaned/broken) - clean it up
+		// SECURITY: Use Lstat to detect symlinks before removal
+		if info, statErr := os.Lstat(worktreeDir); statErr == nil {
+			// Only remove if it's an actual directory, not a symlink
+			if info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+				_ = os.RemoveAll(worktreeDir)
+				pruneWorktrees(ctx, repoRoot)
+			} else if info.Mode()&os.ModeSymlink != 0 {
+				// Symlink found where worktree should be - security issue
+				return nil, nil, fmt.Errorf("worktree path %s is a symlink, refusing to proceed", worktreeDir)
+			}
+		}
+	}
 
 	if checkErr := checkTmpDiskSpace(); checkErr != nil {
 		return nil, nil, checkErr
@@ -56,15 +87,20 @@ func PrepareWorktree(ctx context.Context, repoRoot, worktreeDir string) (*Worktr
 		}
 	}
 
-	// Defense in depth: verify not a symlink
+	// Defense in depth: verify not a symlink after creation
 	info, err := os.Lstat(worktreeDir)
-	if err != nil || info.Mode()&os.ModeSymlink != 0 {
-		_ = os.RemoveAll(worktreeDir)
-		return nil, nil, fmt.Errorf("worktree directory security check failed")
+	if err != nil {
+		return nil, nil, fmt.Errorf("worktree directory security check failed: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, nil, fmt.Errorf("worktree path %s is a symlink, refusing to proceed", worktreeDir)
+	}
+	if !info.IsDir() {
+		return nil, nil, fmt.Errorf("worktree path %s is not a directory", worktreeDir)
 	}
 
 	if err := createWorktree(ctx, repoRoot, worktreeDir, commitSHA); err != nil {
-		_ = os.RemoveAll(worktreeDir)
+		_ = safeRemoveDir(worktreeDir)
 		pruneWorktrees(ctx, repoRoot)
 		return nil, nil, fmt.Errorf("creating worktree: %w", err)
 	}
@@ -83,6 +119,39 @@ func PrepareWorktree(ctx context.Context, repoRoot, worktreeDir string) (*Worktr
 	}
 
 	return worktreeInfo, cleanup, nil
+}
+
+// isExistingWorktree checks if a valid git worktree exists at the given path
+// and is checked out at the expected commit SHA. Returns the worktree info if valid.
+func isExistingWorktree(ctx context.Context, worktreePath, expectedCommitSHA string) (*WorktreeInfo, bool) {
+	// Use Lstat to detect symlinks (security check)
+	info, err := os.Lstat(worktreePath)
+	if err != nil || !info.IsDir() {
+		return nil, false
+	}
+	// Reject symlinks - only accept actual directories
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, false
+	}
+
+	// Check if it's a git worktree by verifying HEAD
+	cmd := exec.CommandContext(ctx, "git", "-c", "core.hooksPath=/dev/null", "-C", worktreePath, "rev-parse", "HEAD")
+	cmd.Env = safeGitEnv()
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, false
+	}
+
+	currentSHA := strings.TrimSpace(string(output))
+	if currentSHA != expectedCommitSHA {
+		// Worktree exists but at different commit - needs recreation
+		return nil, false
+	}
+
+	return &WorktreeInfo{
+		Path:      worktreePath,
+		CommitSHA: currentSHA,
+	}, true
 }
 
 // safeGitEnv returns a minimal, safe environment for executing git commands.
@@ -175,6 +244,30 @@ func removeWorktree(ctx context.Context, repoRoot, worktreePath string) error {
 	return nil
 }
 
+// safeRemoveDir removes a directory only if it's a real directory (not a symlink).
+// This is a defense-in-depth measure to prevent TOCTOU attacks where an attacker
+// might replace a directory with a symlink between security checks.
+// Returns nil if path doesn't exist or is a symlink (no action taken).
+func safeRemoveDir(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // Already gone
+		}
+		return err
+	}
+
+	// Only remove actual directories, never symlinks
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil // Don't remove symlinks
+	}
+	if !info.IsDir() {
+		return nil // Don't remove non-directories
+	}
+
+	return os.RemoveAll(path)
+}
+
 // pruneWorktrees cleans up orphaned git worktree metadata.
 // Uses context for cancellation and wraps it with a cleanup timeout.
 func pruneWorktrees(ctx context.Context, repoRoot string) {
@@ -185,4 +278,62 @@ func pruneWorktrees(ctx context.Context, repoRoot string) {
 	cmd := exec.CommandContext(ctx, "git", "-c", "core.hooksPath=/dev/null", "-C", repoRoot, "worktree", "prune")
 	cmd.Env = safeGitEnv()
 	_ = cmd.Run() // Best effort
+}
+
+// ComputeRunID generates a deterministic run ID from tree and commit hashes.
+// The run ID is the first 16 characters of sha256(treeHash + commitSHA).
+// This ensures the same codebase state always produces the same run ID.
+func ComputeRunID(treeHash, commitSHA string) string {
+	h := sha256.Sum256([]byte(treeHash + commitSHA))
+	return hex.EncodeToString(h[:])[:16]
+}
+
+// ComputeCurrentRunID computes a deterministic run ID for the current codebase state.
+// This is a convenience wrapper that retrieves the tree hash and commit SHA in a single
+// git call, then computes the run ID. Returns the run ID, tree hash, commit SHA, and any error.
+func ComputeCurrentRunID(repoRoot string) (runID, treeHash, commitSHA string, err error) {
+	refs, err := GetCurrentRefs(repoRoot)
+	if err != nil {
+		return "", "", "", err
+	}
+	runID = ComputeRunID(refs.TreeHash, refs.CommitSHA)
+	return runID, refs.TreeHash, refs.CommitSHA, nil
+}
+
+// CreateEphemeralWorktreePath returns a path for an ephemeral worktree in the system temp directory.
+// Format: {tempDir}/detent-{runID}
+// Validates that the runID is a safe hex string to prevent path traversal attacks.
+func CreateEphemeralWorktreePath(runID string) (string, error) {
+	// Validate runID is a hex string (as produced by ComputeRunID)
+	// This prevents path traversal attacks with "../" or other malicious input
+	if !isValidRunID(runID) {
+		return "", fmt.Errorf("invalid run ID: must be a hex string")
+	}
+
+	tempDir := os.TempDir()
+	result := filepath.Join(tempDir, "detent-"+runID)
+
+	// Defense in depth: verify the result is still within tempDir
+	if !strings.HasPrefix(filepath.Clean(result), filepath.Clean(tempDir)) {
+		return "", fmt.Errorf("path traversal detected in run ID")
+	}
+
+	return result, nil
+}
+
+// isValidRunID validates that a run ID contains only hexadecimal characters.
+// This prevents path traversal attacks since ComputeRunID produces hex strings.
+func isValidRunID(runID string) bool {
+	if runID == "" || len(runID) > 64 {
+		return false
+	}
+	for _, c := range runID {
+		isDigit := c >= '0' && c <= '9'
+		isLowerHex := c >= 'a' && c <= 'f'
+		isUpperHex := c >= 'A' && c <= 'F'
+		if !isDigit && !isLowerHex && !isUpperHex {
+			return false
+		}
+	}
+	return true
 }

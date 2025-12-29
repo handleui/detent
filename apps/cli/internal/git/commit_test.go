@@ -395,3 +395,71 @@ func TestGetCurrentCommitSHA_ErrorWrapping(t *testing.T) {
 		t.Errorf("Error should contain context message, got: %s", errorMsg)
 	}
 }
+
+// TestGetCurrentRefs tests getting both commit SHA and tree hash in one call
+func TestGetCurrentRefs(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Initialize git repo with a commit
+	if err := exec.Command("git", "-C", tmpDir, "init").Run(); err != nil {
+		t.Fatalf("Failed to initialize git repo: %v", err)
+	}
+	if err := exec.Command("git", "-C", tmpDir, "config", "user.email", "test@example.com").Run(); err != nil {
+		t.Fatalf("Failed to configure git email: %v", err)
+	}
+	if err := exec.Command("git", "-C", tmpDir, "config", "user.name", "Test User").Run(); err != nil {
+		t.Fatalf("Failed to configure git name: %v", err)
+	}
+
+	testFile := filepath.Join(tmpDir, "test.txt")
+	if err := os.WriteFile(testFile, []byte("test content"), 0o644); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	if err := exec.Command("git", "-C", tmpDir, "add", "test.txt").Run(); err != nil {
+		t.Fatalf("Failed to add file: %v", err)
+	}
+	if err := exec.Command("git", "-C", tmpDir, "commit", "-m", "Test commit").Run(); err != nil {
+		t.Fatalf("Failed to commit: %v", err)
+	}
+
+	// Get refs using the combined function
+	refs, err := GetCurrentRefs(tmpDir)
+	if err != nil {
+		t.Fatalf("GetCurrentRefs() failed: %v", err)
+	}
+
+	// Verify commit SHA
+	if len(refs.CommitSHA) != 40 {
+		t.Errorf("CommitSHA length = %d, want 40", len(refs.CommitSHA))
+	}
+
+	// Verify tree hash
+	if len(refs.TreeHash) != 40 {
+		t.Errorf("TreeHash length = %d, want 40", len(refs.TreeHash))
+	}
+
+	// Verify they are different (commit != tree)
+	if refs.CommitSHA == refs.TreeHash {
+		t.Error("CommitSHA and TreeHash should be different")
+	}
+
+	// Verify consistency with individual functions
+	expectedTreeHash, err := GetCurrentTreeHash(tmpDir)
+	if err != nil {
+		t.Fatalf("GetCurrentTreeHash() failed: %v", err)
+	}
+	if refs.TreeHash != expectedTreeHash {
+		t.Errorf("TreeHash = %s, want %s", refs.TreeHash, expectedTreeHash)
+	}
+}
+
+// TestGetCurrentRefs_NonGitRepo tests error handling for non-git directory
+func TestGetCurrentRefs_NonGitRepo(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	_, err := GetCurrentRefs(tmpDir)
+	if err == nil {
+		t.Error("GetCurrentRefs() should fail in non-git directory")
+	}
+}
