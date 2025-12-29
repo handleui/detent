@@ -42,6 +42,13 @@ type RunConfig struct {
 
 	// DryRun skips actual workflow execution and shows simulated UI
 	DryRun bool
+
+	// IsAgentMode is true when running in an AI agent environment (Claude Code, Cursor, etc.)
+	// This enables verbose output and skips interactive prompts
+	IsAgentMode bool
+
+	// AgentName is the detected AI agent name (e.g., "Claude Code")
+	AgentName string
 }
 
 // Validate checks that all required fields are set and sets defaults for optional fields.

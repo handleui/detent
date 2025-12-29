@@ -15,6 +15,7 @@ import (
 	"github.com/detent/cli/internal/heal/tools"
 	"github.com/detent/cli/internal/persistence"
 	"github.com/detent/cli/internal/repo"
+	"github.com/detent/cli/internal/sentry"
 	"github.com/detent/cli/internal/tui"
 	"github.com/spf13/cobra"
 )
@@ -52,9 +53,12 @@ func init() {
 }
 
 func runHeal(cmd *cobra.Command, args []string) error {
+	sentry.AddBreadcrumb("heal", "starting heal command")
+
 	// Preflight: ensure API key is available
 	apiKey, err := ensureAPIKey()
 	if err != nil {
+		sentry.CaptureError(err)
 		return err
 	}
 
@@ -72,8 +76,10 @@ func runHeal(cmd *cobra.Command, args []string) error {
 	}
 
 	// Open database for error data (per-repo)
+	sentry.AddBreadcrumb("heal", "opening database")
 	db, err := persistence.NewSQLiteWriter(repoCtx.Path)
 	if err != nil {
+		sentry.CaptureError(err)
 		return fmt.Errorf("opening database: %w", err)
 	}
 	defer func() { _ = db.Close() }()
@@ -113,13 +119,16 @@ func runHeal(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create ephemeral worktree for healing
+	sentry.AddBreadcrumb("heal", "creating worktree")
 	worktreePath, err := git.CreateEphemeralWorktreePath(repoCtx.RunID)
 	if err != nil {
+		sentry.CaptureError(err)
 		return fmt.Errorf("creating worktree path: %w", err)
 	}
 
 	worktreeInfo, cleanupWorktree, err := git.PrepareWorktree(cmd.Context(), repoCtx.Path, worktreePath)
 	if err != nil {
+		sentry.CaptureError(err)
 		return fmt.Errorf("creating worktree: %w", err)
 	}
 	defer cleanupWorktree()
@@ -180,6 +189,10 @@ func runHeal(cmd *cobra.Command, args []string) error {
 	loopConfig := loop.ConfigFromSettings(cfg.Model, cfg.TimeoutMins, cfg.BudgetPerRunUSD, remainingMonthly)
 	healLoop := loop.New(c.API(), registry, loopConfig)
 
+	sentry.AddBreadcrumb("heal", "starting healing loop")
+	sentry.SetTag("model", cfg.Model)
+	sentry.SetTag("error_count", fmt.Sprintf("%d", len(errRecords)))
+
 	fmt.Fprintf(os.Stderr, "%s Starting healing...\n", tui.Bullet())
 
 	// Compute repo ID for spend tracking
@@ -191,6 +204,7 @@ func runHeal(cmd *cobra.Command, args []string) error {
 		if result != nil && result.CostUSD > 0 {
 			_ = spendDB.RecordSpend(result.CostUSD, repoID)
 		}
+		sentry.CaptureError(err)
 		return fmt.Errorf("healing loop failed: %w", err)
 	}
 

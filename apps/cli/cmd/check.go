@@ -9,11 +9,13 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/detent/cli/internal/agent"
 	"github.com/detent/cli/internal/cache"
 	internalerrors "github.com/detent/cli/internal/errors"
 	"github.com/detent/cli/internal/git"
 	"github.com/detent/cli/internal/output"
 	"github.com/detent/cli/internal/runner"
+	"github.com/detent/cli/internal/sentry"
 	"github.com/detent/cli/internal/signal"
 	"github.com/detent/cli/internal/tui"
 	"github.com/mattn/go-isatty"
@@ -106,8 +108,12 @@ func buildRunConfig() (*runner.RunConfig, error) {
 		return nil, err
 	}
 
+	// Detect AI agent environment
+	agentInfo := agent.Detect()
+
 	// Determine if TUI should be used
-	useTUI := isatty.IsTerminal(os.Stderr.Fd())
+	// Disable TUI when running in AI agent environments for better machine-readable output
+	useTUI := isatty.IsTerminal(os.Stderr.Fd()) && !agentInfo.IsAgent
 
 	cfg := &runner.RunConfig{
 		RepoRoot:     absRepoPath,
@@ -118,6 +124,8 @@ func buildRunConfig() (*runner.RunConfig, error) {
 		StreamOutput: false,
 		RunID:        runID,
 		DryRun:       dryRun,
+		IsAgentMode:  agentInfo.IsAgent,
+		AgentName:    agentInfo.Name,
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -178,10 +186,19 @@ func checkWorkflowStatus(result *runner.RunResult) error {
 // 5. Process and persist results
 // 6. Display output and return status
 func runCheck(cmd *cobra.Command, args []string) error {
+	sentry.AddBreadcrumb("check", "starting check command")
+
 	// Setup: validate flags and build config
 	cfg, err := buildRunConfig()
 	if err != nil {
+		sentry.CaptureError(err)
 		return err
+	}
+
+	// Print agent mode detection for AI agents
+	if cfg.IsAgentMode {
+		_, _ = fmt.Fprintf(os.Stderr, "[detent] AI agent detected (%s) - using verbose output mode\n", cfg.AgentName)
+		_, _ = fmt.Fprintf(os.Stderr, "[detent] TUI disabled, interactive prompts will auto-skip\n")
 	}
 
 	// Dry-run mode: show simulated TUI without actual execution
@@ -207,26 +224,31 @@ func runCheck(cmd *cobra.Command, args []string) error {
 	defer r.Cleanup()
 
 	// Prepare: run preflight or standard preparation
+	sentry.AddBreadcrumb("check", "running preflight checks")
 	if cfg.UseTUI {
 		err = r.PrepareWithTUI(ctx)
 	} else {
 		err = r.Prepare(ctx)
 	}
 	if err != nil {
+		sentry.CaptureError(err)
 		return err
 	}
 
 	// Execute: run workflow
+	sentry.AddBreadcrumb("check", "executing workflows")
 	var cancelled bool
 	if cfg.UseTUI {
 		cancelled, err = runCheckWithTUI(ctx, r)
 		if err != nil {
+			sentry.CaptureError(err)
 			return fmt.Errorf("running act: %w", err)
 		}
 	} else {
 		_, _ = fmt.Fprintf(os.Stderr, "Running workflows... ")
 		err = r.Run(ctx)
 		if err != nil {
+			sentry.CaptureError(err)
 			return fmt.Errorf("running act: %w", err)
 		}
 		result := r.GetResult()
@@ -240,8 +262,10 @@ func runCheck(cmd *cobra.Command, args []string) error {
 	}
 
 	// Persist results
+	sentry.AddBreadcrumb("check", "persisting results")
 	err = r.Persist()
 	if err != nil {
+		sentry.CaptureError(err)
 		return err
 	}
 
