@@ -21,7 +21,7 @@ import (
 const (
 	batchSize = 500 // Batch size for error inserts
 
-	currentSchemaVersion = 15 // Current database schema version
+	currentSchemaVersion = 16 // Current database schema version
 
 	// healSelectColumns is the standard column list for heal queries (must match scanHealFromScanner order)
 	healSelectColumns = `heal_id, error_id, run_id, diff_content, diff_content_hash, file_path, file_hash,
@@ -490,6 +490,28 @@ func (w *SQLiteWriter) applyMigrations(fromVersion int) error {
 			CREATE INDEX IF NOT EXISTS idx_heals_error_id_attempt ON heals(error_id, attempt_number);
 			`,
 		},
+		{
+			version: 16,
+			name:    "add_run_errors_junction",
+			sql: `
+			-- Junction table to track which errors appeared in which runs
+			-- This fixes caching: errors were deduplicated across runs but stored with only the first run_id
+			CREATE TABLE IF NOT EXISTS run_errors (
+				run_id TEXT NOT NULL,
+				error_id TEXT NOT NULL,
+				PRIMARY KEY (run_id, error_id),
+				FOREIGN KEY (run_id) REFERENCES runs(run_id),
+				FOREIGN KEY (error_id) REFERENCES errors(error_id)
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_run_errors_run_id ON run_errors(run_id);
+			CREATE INDEX IF NOT EXISTS idx_run_errors_error_id ON run_errors(error_id);
+
+			-- Backfill existing data: link errors to their original run_id
+			INSERT OR IGNORE INTO run_errors (run_id, error_id)
+			SELECT run_id, error_id FROM errors WHERE run_id IS NOT NULL;
+			`,
+		},
 	}
 
 	// Apply each migration in a transaction
@@ -639,15 +661,19 @@ func (w *SQLiteWriter) GetRunByID(runID string) (*RunRecord, error) {
 	return &run, nil
 }
 
-// GetErrorsByRunID retrieves all errors for a given run
+// GetErrorsByRunID retrieves all errors for a given run via the run_errors junction table.
+// This ensures we get ALL errors that appeared in the run, including deduplicated ones
+// that were first seen in previous runs.
 func (w *SQLiteWriter) GetErrorsByRunID(runID string) ([]*ErrorRecord, error) {
 	query := `
-		SELECT error_id, run_id, file_path, line_number, column_number,
-			error_type, message, stack_trace, file_hash, content_hash,
-			severity, rule_id, source, workflow_job, raw,
-			first_seen_at, last_seen_at, seen_count, status
-		FROM errors WHERE run_id = ?
-		ORDER BY file_path, line_number
+		SELECT e.error_id, e.run_id, e.file_path, e.line_number, e.column_number,
+			e.error_type, e.message, e.stack_trace, e.file_hash, e.content_hash,
+			e.severity, e.rule_id, e.source, e.workflow_job, e.raw,
+			e.first_seen_at, e.last_seen_at, e.seen_count, e.status
+		FROM errors e
+		INNER JOIN run_errors re ON e.error_id = re.error_id
+		WHERE re.run_id = ?
+		ORDER BY e.file_path, e.line_number
 	`
 
 	rows, err := w.db.Query(query, runID)
@@ -774,7 +800,7 @@ func (w *SQLiteWriter) flushBatch() (err error) {
 	}
 
 	// Setup cleanup function to handle rollback and statement closing
-	var insertStmt, updateStmt *sql.Stmt
+	var insertStmt, updateStmt, runErrorStmt *sql.Stmt
 	defer func() {
 		// Close prepared statements (best effort)
 		if insertStmt != nil {
@@ -785,6 +811,11 @@ func (w *SQLiteWriter) flushBatch() (err error) {
 		if updateStmt != nil {
 			if closeErr := updateStmt.Close(); closeErr != nil && err == nil {
 				err = fmt.Errorf("failed to close update statement: %w", closeErr)
+			}
+		}
+		if runErrorStmt != nil {
+			if closeErr := runErrorStmt.Close(); closeErr != nil && err == nil {
+				err = fmt.Errorf("failed to close run_errors statement: %w", closeErr)
 			}
 		}
 	}()
@@ -814,6 +845,15 @@ func (w *SQLiteWriter) flushBatch() (err error) {
 			return fmt.Errorf("failed to prepare update statement: %w (additionally, failed to rollback: %v)", err, rbErr)
 		}
 		return fmt.Errorf("failed to prepare update statement: %w", err)
+	}
+
+	// Prepare statement for run_errors junction table (links errors to runs for proper caching)
+	runErrorStmt, err = tx.Prepare(`INSERT OR IGNORE INTO run_errors (run_id, error_id) VALUES (?, ?)`)
+	if err != nil {
+		if rbErr := tx.Rollback(); rbErr != nil {
+			return fmt.Errorf("failed to prepare run_errors statement: %w (additionally, failed to rollback: %v)", err, rbErr)
+		}
+		return fmt.Errorf("failed to prepare run_errors statement: %w", err)
 	}
 
 	now := time.Now().Unix()
@@ -897,9 +937,11 @@ func (w *SQLiteWriter) flushBatch() (err error) {
 	// Process all findings using cached hashes (avoid recomputing)
 	for _, finding := range w.batch {
 		contentHash := findingHashes[finding]
+		var errorID string
 
 		if existingID, exists := existingErrors[contentHash]; exists {
 			// Update existing error
+			errorID = existingID
 			_, updateErr := updateStmt.Exec(now, existingID)
 			if updateErr != nil {
 				if rbErr := tx.Rollback(); rbErr != nil {
@@ -909,7 +951,8 @@ func (w *SQLiteWriter) flushBatch() (err error) {
 			}
 		} else {
 			// Insert new error
-			errorID, uuidErr := util.GenerateUUID()
+			var uuidErr error
+			errorID, uuidErr = util.GenerateUUID()
 			if uuidErr != nil {
 				if rbErr := tx.Rollback(); rbErr != nil {
 					return fmt.Errorf("failed to generate error ID: %w (additionally, failed to rollback: %v)", uuidErr, rbErr)
@@ -944,6 +987,15 @@ func (w *SQLiteWriter) flushBatch() (err error) {
 			w.errorCount++
 			// Add to map so subsequent duplicates in same batch are handled correctly
 			existingErrors[contentHash] = errorID
+		}
+
+		// Link error to current run in junction table (enables proper cache retrieval)
+		_, runErrExecErr := runErrorStmt.Exec(finding.RunID, errorID)
+		if runErrExecErr != nil {
+			if rbErr := tx.Rollback(); rbErr != nil {
+				return fmt.Errorf("failed to insert run_error: %w (additionally, failed to rollback: %v)", runErrExecErr, rbErr)
+			}
+			return fmt.Errorf("failed to insert run_error: %w", runErrExecErr)
 		}
 	}
 

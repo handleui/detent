@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -16,6 +17,7 @@ import (
 	"github.com/detent/cli/internal/runner"
 	"github.com/detent/cli/internal/sentry"
 	"github.com/detent/cli/internal/tui"
+	"github.com/detent/cli/internal/util"
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 )
@@ -34,7 +36,6 @@ var (
 	outputFormat string
 	event        string
 	forceRun     bool
-	dryRun       bool
 )
 
 var checkCmd = &cobra.Command{
@@ -67,10 +68,7 @@ Results are persisted to .detent/ for future analysis and comparison.`,
   detent check --event pull_request
 
   # Use JSON output for CI integration
-  detent check --output json
-
-  # Preview UI without running workflows
-  detent check --dry-run`,
+  detent check --output json`,
 	Args:          cobra.NoArgs,
 	RunE:          runCheck,
 	SilenceUsage:  true, // Don't show usage on runtime errors
@@ -81,7 +79,6 @@ func init() {
 	checkCmd.Flags().StringVarP(&outputFormat, "output", "o", "text", "output format (text, json, json-detailed)")
 	checkCmd.Flags().StringVarP(&event, "event", "e", "push", "GitHub event type (push, pull_request, etc.)")
 	checkCmd.Flags().BoolVarP(&forceRun, "force", "f", false, "force fresh run, ignoring cached results")
-	checkCmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview UI without running workflows")
 }
 
 // buildRunConfig validates flags, resolves paths, generates UUID, and builds a RunConfig.
@@ -119,7 +116,6 @@ func buildRunConfig() (*runner.RunConfig, error) {
 		UseTUI:       useTUI,
 		StreamOutput: !useTUI, // Non-TUI mode streams act logs for verbose output
 		RunID:        runID,
-		DryRun:       dryRun,
 		IsAgentMode:  agentInfo.IsAgent,
 		AgentName:    agentInfo.Name,
 	}
@@ -200,20 +196,22 @@ func printCompletionSummary(result *runner.RunResult) {
 		// Build details string
 		var details string
 		if errorCount > 0 || warningCount > 0 {
-			parts := []string{}
+			var parts []string
 			if errorCount > 0 {
-				parts = append(parts, fmt.Sprintf("%d error", errorCount))
+				word := "error"
 				if errorCount > 1 {
-					parts[len(parts)-1] += "s"
+					word = "errors"
 				}
+				parts = append(parts, fmt.Sprintf("%d %s", errorCount, word))
 			}
 			if warningCount > 0 {
-				parts = append(parts, fmt.Sprintf("%d warning", warningCount))
+				word := "warning"
 				if warningCount > 1 {
-					parts[len(parts)-1] += "s"
+					word = "warnings"
 				}
+				parts = append(parts, fmt.Sprintf("%d %s", warningCount, word))
 			}
-			details = " (" + joinParts(parts) + ")"
+			details = " (" + strings.Join(parts, ", ") + ")"
 		}
 		summary = fmt.Sprintf("  %s %s", icon, tui.ErrorStyle.Render(fmt.Sprintf("Check failed in %s%s", durationStr, details)))
 	}
@@ -221,23 +219,12 @@ func printCompletionSummary(result *runner.RunResult) {
 	_, _ = fmt.Fprintln(os.Stderr, summary)
 }
 
-// joinParts joins string parts with ", "
-func joinParts(parts []string) string {
-	result := ""
-	for i, part := range parts {
-		if i > 0 {
-			result += ", "
-		}
-		result += part
-	}
-	return result
-}
 
 // printExitMessage prints the final exit message with timing.
 // Format: "✓ No errors found in 2.3s" or "✗ Found 12 errors in 2.3s"
 func printExitMessage(result *runner.RunResult) {
 	duration := time.Since(StartTime).Round(100 * time.Millisecond)
-	durationStr := formatDuration(duration)
+	durationStr := util.FormatDurationCompact(duration)
 
 	// Count errors only (not warnings)
 	var errorCount int
@@ -261,19 +248,6 @@ func printExitMessage(result *runner.RunResult) {
 	fmt.Fprintln(os.Stderr, msg)
 }
 
-// formatDuration formats a duration in a human-readable way (e.g., "2.3s", "1m 23s")
-func formatDuration(d time.Duration) string {
-	if d < time.Minute {
-		return fmt.Sprintf("%.1fs", d.Seconds())
-	}
-	minutes := int(d.Minutes())
-	seconds := int(d.Seconds()) % 60
-	if seconds == 0 {
-		return fmt.Sprintf("%dm", minutes)
-	}
-	return fmt.Sprintf("%dm %ds", minutes, seconds)
-}
-
 // runCheck orchestrates the workflow execution and error reporting.
 // It performs these steps in sequence:
 // 1. Setup and validate environment configuration
@@ -290,11 +264,6 @@ func runCheck(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		sentry.CaptureError(err)
 		return err
-	}
-
-	// Dry-run mode: show simulated TUI without actual execution
-	if cfg.DryRun {
-		return runCheckDryRun(cmd.Context(), cfg)
 	}
 
 	// Check cache for prior run (skip if --force)
@@ -386,176 +355,6 @@ func runCheck(cmd *cobra.Command, args []string) error {
 
 	// Check status and return
 	return checkWorkflowStatus(result)
-}
-
-
-// runCheckDryRun shows simulated TUI without actual workflow execution.
-func runCheckDryRun(ctx context.Context, cfg *runner.RunConfig) error {
-	if !cfg.UseTUI {
-		_, _ = fmt.Fprintln(os.Stderr, tui.SecondaryStyle.Render("  Preparing workspace..."))
-		_, _ = fmt.Fprintln(os.Stderr, tui.SuccessStyle.Render("  ✓ Ready"))
-		_, _ = fmt.Fprintln(os.Stderr)
-		_, _ = fmt.Fprintln(os.Stderr, tui.SecondaryStyle.Render("─── Workflow Output (dry-run) ───"))
-		_, _ = fmt.Fprintln(os.Stderr, tui.MutedStyle.Render("  [no output in dry-run mode]"))
-		return nil
-	}
-
-	// Phase 1: Simulate preflight checks (1:1 faithful to real flow)
-	simulateDryRunPreflight()
-
-	// Phase 2: Main TUI with simulated workflow execution
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	model := tui.NewCheckModel(cancel)
-	program := tea.NewProgram(&model, tea.WithContext(ctx))
-	logChan := make(chan string, logChannelBufferSize)
-
-	// Start goroutine to send simulated progress
-	go simulateDryRunProgress(ctx, logChan, program)
-
-	// Start log processor
-	go func() {
-		for {
-			select {
-			case line, ok := <-logChan:
-				if !ok {
-					return
-				}
-				program.Send(tui.LogMsg(line))
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-
-	_, err := program.Run()
-	return err
-}
-
-// simulateDryRunPreflight displays animated preflight checks matching the real flow.
-func simulateDryRunPreflight() {
-	checks := []string{
-		"Validating repository",
-		"Checking prerequisites",
-		"Preparing workflows",
-		"Creating workspace",
-	}
-
-	// Single-line display that updates
-	for i, check := range checks {
-		if i > 0 {
-			fmt.Fprint(os.Stderr, "\033[1A\033[J") // Clear previous line
-		}
-		fmt.Fprintln(os.Stderr, tui.PrimaryStyle.Render("· "+check))
-		time.Sleep(150 * time.Millisecond)
-	}
-
-	// Clear the line on success
-	fmt.Fprint(os.Stderr, "\033[1A\033[J")
-}
-
-// simulateDryRunProgress sends simulated workflow progress to the TUI.
-// Matches the real act output format exactly for 1:1 faithful preview.
-func simulateDryRunProgress(ctx context.Context, logChan chan string, program *tea.Program) {
-	defer close(logChan)
-
-	// Simulated workflow steps - uses [dry-run] prefix for logs to indicate mock data.
-	// JobID matches what the TUI expects for step matching.
-	steps := []struct {
-		jobID string
-		logs  []string
-		delay time.Duration
-	}{
-		{
-			jobID: "build",
-			logs: []string{
-				"[dry-run] Starting container...",
-				"[dry-run] Pulling image: node:18-alpine",
-			},
-			delay: 500 * time.Millisecond,
-		},
-		{
-			jobID: "lint",
-			logs: []string{
-				"[dry-run] eslint .",
-				"[dry-run] Running linter...",
-			},
-			delay: 400 * time.Millisecond,
-		},
-		{
-			jobID: "test",
-			logs: []string{
-				"[dry-run] npm test",
-				"[dry-run] Running tests...",
-			},
-			delay: 600 * time.Millisecond,
-		},
-	}
-
-	for _, step := range steps {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-
-		// Send progress update with JobID for step matching
-		program.Send(tui.ProgressMsg{
-			Status: step.jobID,
-			JobID:  step.jobID,
-		})
-
-		// Send logs with realistic timing
-		for _, log := range step.logs {
-			select {
-			case logChan <- log:
-			case <-ctx.Done():
-				return
-			}
-			time.Sleep(150 * time.Millisecond)
-		}
-
-		time.Sleep(step.delay)
-	}
-
-	// Send completion with mock errors (demonstrates error report display)
-	mockExtracted := []*internalerrors.ExtractedError{
-		{
-			File:     "src/app.ts",
-			Line:     42,
-			Column:   5,
-			Message:  "Type 'string' is not assignable to type 'number'",
-			Severity: "error",
-			Category: internalerrors.CategoryTypeCheck,
-			Source:   "typescript",
-		},
-		{
-			File:     "src/utils.ts",
-			Line:     18,
-			Column:   10,
-			Message:  "'temp' is defined but never used",
-			Severity: "warning",
-			Category: internalerrors.CategoryLint,
-			Source:   "eslint",
-		},
-		{
-			File:     "src/index.ts",
-			Line:     7,
-			Column:   1,
-			Message:  "Missing semicolon",
-			Severity: "error",
-			Category: internalerrors.CategoryLint,
-			Source:   "eslint",
-		},
-	}
-	mockErrors := internalerrors.GroupByFile(mockExtracted)
-
-	program.Send(tui.DoneMsg{
-		Duration: 2700 * time.Millisecond,
-		ExitCode: 1,
-		Errors:   mockErrors,
-	})
 }
 
 // runCheckWithTUI executes a check run using the TUI interface.

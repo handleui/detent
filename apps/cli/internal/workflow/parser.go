@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"github.com/goccy/go-yaml"
 )
@@ -106,7 +108,7 @@ func DiscoverWorkflows(dir string) ([]string, error) {
 
 		// Ensure resolved path is within the directory using filepath.Rel
 		relPath, err := filepath.Rel(absDir, absPath)
-		if err != nil || len(relPath) >= 2 && relPath[:2] == ".." {
+		if err != nil || strings.HasPrefix(relPath, "..") {
 			continue
 		}
 
@@ -118,13 +120,21 @@ func DiscoverWorkflows(dir string) ([]string, error) {
 
 // ExtractJobInfo extracts job information from a workflow for TUI display.
 // Returns a slice of JobInfo with ID and display name for each job.
+// Jobs are sorted alphabetically by ID for deterministic ordering.
 func ExtractJobInfo(wf *Workflow) []JobInfo {
 	if wf == nil || wf.Jobs == nil {
 		return nil
 	}
 
+	ids := make([]string, 0, len(wf.Jobs))
+	for id := range wf.Jobs {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
 	jobs := make([]JobInfo, 0, len(wf.Jobs))
-	for id, job := range wf.Jobs {
+	for _, id := range ids {
+		job := wf.Jobs[id]
 		if job == nil {
 			continue
 		}
@@ -134,9 +144,25 @@ func ExtractJobInfo(wf *Workflow) []JobInfo {
 			name = id
 		}
 
+		// Parse needs (can be string or []string)
+		var needs []string
+		switch n := job.Needs.(type) {
+		case string:
+			if n != "" {
+				needs = []string{n}
+			}
+		case []any:
+			for _, v := range n {
+				if s, ok := v.(string); ok {
+					needs = append(needs, s)
+				}
+			}
+		}
+
 		jobs = append(jobs, JobInfo{
-			ID:   id,
-			Name: name,
+			ID:    id,
+			Name:  name,
+			Needs: needs,
 		})
 	}
 

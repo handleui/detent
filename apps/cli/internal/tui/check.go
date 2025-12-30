@@ -7,34 +7,19 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/detent/cli/internal/ci"
 	"github.com/detent/cli/internal/errors"
 	"github.com/detent/cli/internal/output"
 	"github.com/detent/cli/internal/workflow"
 	"github.com/handleui/shimmer"
 )
 
-// Step status constants
-const (
-	StepPending = "pending"
-	StepRunning = "running"
-	StepSuccess = "success"
-	StepError   = "error"
-)
-
-// Step represents a workflow step with its status
-type Step struct {
-	Name       string
-	Status     string
-	ErrorCount int
-}
-
 // LogMsg is sent when new log content arrives (ignored in TUI mode)
 type LogMsg string
 
-// ProgressMsg updates the current status
-type ProgressMsg struct {
-	Status string // Step info (for display, not used for matching)
-	JobID  string // Job ID for matching against known jobs
+// JobEventMsg wraps a ci.JobEvent for Bubble Tea message passing.
+type JobEventMsg struct {
+	Event *ci.JobEvent
 }
 
 // DoneMsg signals completion
@@ -50,20 +35,18 @@ type ErrMsg error
 
 // CheckModel is the Bubble Tea model for the check command TUI
 type CheckModel struct {
-	shimmer      shimmer.Model
-	steps        []Step
-	jobMap       map[string]int // Maps job ID to step index
-	jobNameMap   map[string]int // Maps job Name to step index (act uses names)
-	currentStep  int
-	done         bool
-	err          error
-	duration     time.Duration
-	exitCode     int
-	startTime    time.Time
-	errors       *errors.GroupedErrors
-	Cancelled    bool
-	cancelFunc   func()
-	quitting     bool
+	shimmer    shimmer.Model
+	tracker    *JobTracker
+	done       bool
+	err        error
+	duration   time.Duration
+	exitCode   int
+	startTime  time.Time
+	errors     *errors.GroupedErrors
+	Cancelled  bool
+	cancelFunc func()
+	quitting   bool
+	debugLogs  []string
 }
 
 // NewCheckModel creates a new TUI model for the check command
@@ -73,27 +56,25 @@ func NewCheckModel(cancelFunc func()) CheckModel {
 
 // NewCheckModelWithJobs creates a new TUI model with pre-populated job names
 func NewCheckModelWithJobs(cancelFunc func(), jobs []workflow.JobInfo) CheckModel {
+	tracker := NewJobTracker(jobs)
+
+	// Initialize shimmer with test text to verify it works
+	// Base color is grey (#585858) so shimmer wave can lighten to white
+	shim := shimmer.New("Initializing...", "#585858")
+	shim = shim.SetLoading(true)
+
 	model := CheckModel{
-		shimmer:    shimmer.New("", "#FFFFFF"),
-		steps:      []Step{},
-		jobMap:     make(map[string]int),
-		jobNameMap: make(map[string]int),
+		shimmer:    shim,
+		tracker:    tracker,
 		startTime:  time.Now(),
 		cancelFunc: cancelFunc,
 		quitting:   false,
+		debugLogs:  []string{},
 	}
 
-	if len(jobs) > 0 {
-		model.steps = make([]Step, len(jobs))
-		for i, job := range jobs {
-			model.steps[i] = Step{
-				Name:   job.Name,
-				Status: StepPending,
-			}
-			// Map by both ID and Name for flexible matching
-			model.jobMap[job.ID] = i
-			model.jobNameMap[job.Name] = i
-		}
+	// Debug: log registered jobs
+	for _, job := range tracker.GetJobs() {
+		model.debugLogs = append(model.debugLogs, fmt.Sprintf("Registered: ID=%q Name=%q", job.ID, job.Name))
 	}
 
 	return model
@@ -120,9 +101,22 @@ func (m *CheckModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 
-	case ProgressMsg:
-		m.updateSteps(msg)
-		return m, nil
+	case JobEventMsg:
+		if msg.Event != nil {
+			m.debugLogs = append(m.debugLogs, fmt.Sprintf("Event: Job=%q Action=%q Success=%v", msg.Event.JobName, msg.Event.Action, msg.Event.Success))
+			changed := m.tracker.ProcessEvent(msg.Event)
+			if changed {
+				// Update shimmer for first running job
+				for _, job := range m.tracker.GetJobs() {
+					if job.Status == ci.JobRunning {
+						m.shimmer = m.shimmer.SetText(job.Name).SetLoading(true)
+						// Continue to shimmer update below
+						break
+					}
+				}
+			}
+		}
+		// Fall through to shimmer update
 
 	case DoneMsg:
 		m.done = true
@@ -130,76 +124,35 @@ func (m *CheckModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.exitCode = msg.ExitCode
 		m.errors = msg.Errors
 		m.Cancelled = msg.Cancelled
-		m.markCurrentStepComplete()
+		hasErrors := m.errors != nil && m.errors.Total > 0
+		m.tracker.MarkAllRunningComplete(hasErrors)
 		return m, tea.Quit
 
 	case ErrMsg:
 		m.err = msg
 		return m, tea.Quit
 
-	case shimmer.TickMsg:
-		var cmd tea.Cmd
-		m.shimmer, cmd = m.shimmer.Update(msg)
-		return m, cmd
-
 	case LogMsg:
-		// Logs are ignored - verbose mode shows them
-		return m, nil
+		// Fall through to shimmer update
 	}
 
-	return m, nil
+	// Always forward messages to shimmer to keep animation running
+	var cmd tea.Cmd
+	m.shimmer, cmd = m.shimmer.Update(msg)
+	return m, cmd
 }
 
-// updateSteps updates the step list based on progress message
-// Observer pattern - only update pre-populated steps, never add new ones
-func (m *CheckModel) updateSteps(msg ProgressMsg) {
-	if msg.JobID == "" {
-		return
-	}
-
-	// Try to find step by job ID first, then by job Name
-	idx := -1
-	if i, ok := m.jobMap[msg.JobID]; ok {
-		idx = i
-	} else if i, ok := m.jobNameMap[msg.JobID]; ok {
-		idx = i
-	}
-
-	// No match found - ignore (don't add new steps)
-	if idx < 0 {
-		return
-	}
-
-	// Mark previous running steps as complete
-	for i := range m.steps {
-		if m.steps[i].Status == StepRunning && i != idx {
-			m.steps[i].Status = StepSuccess
-		}
-	}
-
-	// Update matched step to running
-	m.steps[idx].Status = StepRunning
-	m.currentStep = idx + 1
-
-	// Set shimmer to animate the step NAME
-	m.shimmer = m.shimmer.SetText(m.steps[idx].Name)
-}
-
-// markCurrentStepComplete marks the current step as complete based on errors
-func (m *CheckModel) markCurrentStepComplete() {
-	if m.currentStep > 0 && m.currentStep <= len(m.steps) {
-		idx := m.currentStep - 1
-		if m.errors != nil && m.errors.Total > 0 {
-			m.steps[idx].Status = StepError
-			m.steps[idx].ErrorCount = m.errors.Total
-		} else {
-			m.steps[idx].Status = StepSuccess
-		}
-	}
+// GetDebugLogs returns debug logs for troubleshooting
+func (m *CheckModel) GetDebugLogs() []string {
+	return m.debugLogs
 }
 
 // View renders the current model state as a string
 func (m *CheckModel) View() string {
+	if m.err != nil {
+		return ErrorStyle.Render(fmt.Sprintf("✗ Error: %s\n", m.err.Error()))
+	}
+
 	if m.done {
 		return m.renderCompletionView()
 	}
@@ -211,52 +164,52 @@ func (m *CheckModel) View() string {
 func (m *CheckModel) renderStepList() string {
 	var b strings.Builder
 
-	// Command header with elapsed time
 	elapsed := int(time.Since(m.startTime).Seconds())
 	header := fmt.Sprintf("$ act · %ds", elapsed)
 	b.WriteString(SecondaryStyle.Render(header) + "\n\n")
 
-	// Step list
-	for i, step := range m.steps {
-		line := m.renderStep(step, i+1 == m.currentStep)
+	jobs := m.tracker.GetJobs()
+	var firstRunning *TrackedJob
+	for _, job := range jobs {
+		if job.Status == ci.JobRunning && firstRunning == nil {
+			firstRunning = job
+		}
+	}
+
+	for _, job := range jobs {
+		line := m.renderJob(job, firstRunning)
 		b.WriteString("  " + line + "\n")
 	}
 
 	return b.String()
 }
 
-// renderStep renders a single step line
-func (m *CheckModel) renderStep(step Step, isCurrent bool) string {
+// renderJob renders a single job line
+func (m *CheckModel) renderJob(job, firstRunning *TrackedJob) string {
 	var icon string
 	var text string
 
-	switch step.Status {
-	case StepPending:
+	switch job.Status {
+	case ci.JobPending:
 		icon = MutedStyle.Render("·")
-		text = MutedStyle.Render(step.Name)
+		text = MutedStyle.Render(job.Name)
 
-	case StepRunning:
-		icon = PrimaryStyle.Render("·")
-		if isCurrent {
-			text = m.shimmer.View() // Shimmer animates step NAME
+	case ci.JobRunning:
+		icon = SecondaryStyle.Render("·")
+		if firstRunning != nil && job.ID == firstRunning.ID {
+			text = m.shimmer.View()
 		} else {
-			text = PrimaryStyle.Render(step.Name)
+			// Other running jobs show lighter grey (secondary) to distinguish from pending (muted)
+			text = SecondaryStyle.Render(job.Name)
 		}
 
-	case StepSuccess:
+	case ci.JobSuccess:
 		icon = SuccessStyle.Render("✓")
-		text = PrimaryStyle.Render(step.Name)
+		text = PrimaryStyle.Render(job.Name)
 
-	case StepError:
+	case ci.JobFailed:
 		icon = ErrorStyle.Render("✗")
-		text = PrimaryStyle.Render(step.Name)
-		if step.ErrorCount > 0 {
-			errText := "error"
-			if step.ErrorCount > 1 {
-				errText = "errors"
-			}
-			text += " " + ErrorStyle.Render(fmt.Sprintf("· %d %s", step.ErrorCount, errText))
-		}
+		text = PrimaryStyle.Render(job.Name)
 	}
 
 	return fmt.Sprintf("%s %s", icon, text)
@@ -265,6 +218,16 @@ func (m *CheckModel) renderStep(step Step, isCurrent bool) string {
 // renderCompletionView renders the final completion summary with error report
 func (m *CheckModel) renderCompletionView() string {
 	var b strings.Builder
+
+	// Show final job statuses
+	header := fmt.Sprintf("$ act · %s", m.duration.Round(time.Second))
+	b.WriteString(SecondaryStyle.Render(header) + "\n\n")
+
+	for _, job := range m.tracker.GetJobs() {
+		line := m.renderJob(job, nil)
+		b.WriteString("  " + line + "\n")
+	}
+	b.WriteString("\n")
 
 	hasIssues := m.errors != nil && m.errors.Total > 0
 	workflowFailed := m.exitCode != 0

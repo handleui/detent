@@ -32,8 +32,9 @@ type Job struct {
 
 // JobInfo contains extracted job information for TUI display
 type JobInfo struct {
-	ID   string // Job ID (key in jobs map, e.g., "cli-lint")
-	Name string // Display name (job.name or fallback to ID)
+	ID    string   // Job ID (key in jobs map, e.g., "cli-lint")
+	Name  string   // Display name (job.name or fallback to ID)
+	Needs []string // Job IDs this job depends on
 }
 
 // Step represents a step in a job

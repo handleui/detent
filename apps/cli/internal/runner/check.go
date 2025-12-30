@@ -13,6 +13,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/detent/cli/internal/act"
 	"github.com/detent/cli/internal/actbin"
+	actparser "github.com/detent/cli/internal/ci/act"
+	"github.com/detent/cli/internal/debug"
 	"github.com/detent/cli/internal/docker"
 	internalerrors "github.com/detent/cli/internal/errors"
 	"github.com/detent/cli/internal/git"
@@ -240,6 +242,12 @@ func (r *CheckRunner) Prepare(ctx context.Context) error {
 	jobs, _ := workflow.ExtractJobInfoFromDir(r.config.WorkflowPath)
 	r.jobs = jobs
 
+	// Initialize debug logging
+	_ = debug.Init(r.config.RepoRoot)
+	for _, job := range jobs {
+		debug.Log("Registered: ID=%q Name=%q", job.ID, job.Name)
+	}
+
 	return nil
 }
 
@@ -270,6 +278,12 @@ func (r *CheckRunner) PrepareWithTUI(ctx context.Context) error {
 	// Extract job info from workflows for TUI display
 	jobs, _ := workflow.ExtractJobInfoFromDir(r.config.WorkflowPath)
 	r.jobs = jobs
+
+	// Initialize debug logging
+	_ = debug.Init(r.config.RepoRoot)
+	for _, job := range jobs {
+		debug.Log("Registered: ID=%q Name=%q", job.ID, job.Name)
+	}
 
 	return nil
 }
@@ -435,12 +449,16 @@ func (r *CheckRunner) startActRunnerGoroutine(
 }
 
 // startLogProcessorGoroutine starts a goroutine to process log messages.
+// Uses a unified select to prevent goroutine leaks when context is cancelled
+// while blocked on channel receive.
 func (r *CheckRunner) startLogProcessorGoroutine(
 	ctx context.Context,
 	logChan chan string,
 	program *tea.Program,
 	wg *sync.WaitGroup,
 ) {
+	parser := actparser.New()
+
 	go func() {
 		defer wg.Done()
 		for {
@@ -449,16 +467,16 @@ func (r *CheckRunner) startLogProcessorGoroutine(
 				if !ok {
 					return
 				}
-				select {
-				case <-ctx.Done():
-					return
-				default:
-					sendToTUI(program, tui.LogMsg(line))
-					if progress := tui.ParseActProgress(line); progress != nil {
-						sendToTUI(program, *progress)
-					}
+				// Process line - context check is implicit in select
+				sendToTUI(program, tui.LogMsg(line))
+				if event, ok := parser.ParseLine(line); ok {
+					debug.Log("Event: Job=%q Action=%q Success=%v", event.JobName, event.Action, event.Success)
+					sendToTUI(program, tui.JobEventMsg{Event: event})
 				}
 			case <-ctx.Done():
+				// Drain remaining messages from channel to prevent sender blocking
+				for range logChan {
+				}
 				return
 			}
 		}
@@ -538,6 +556,9 @@ func (r *CheckRunner) Persist() error {
 // to ensure consistent state during cleanup.
 // If changes were stashed during preflight, they are restored here.
 func (r *CheckRunner) Cleanup() {
+	// Close debug log first
+	debug.Close()
+
 	if r.cleanupWorkflows != nil {
 		r.cleanupWorkflows()
 	}

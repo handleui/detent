@@ -88,7 +88,7 @@ func displayResults(run *persistence.RunRecord, cachedErrors []*persistence.Erro
 	// Print cache hit message
 	_, _ = fmt.Fprintf(os.Stderr, "Using cached results from %s ago (commit %s)\n",
 		agoStr, displaySHA)
-	_, _ = fmt.Fprintf(os.Stderr, "Use --force to run fresh.\n\n")
+	_, _ = fmt.Fprintf(os.Stderr, "\033[38;5;240mUse --force to run fresh.\033[0m\n\n")
 
 	// Convert cached errors to grouped format for display
 	extracted := convertToExtracted(cachedErrors)

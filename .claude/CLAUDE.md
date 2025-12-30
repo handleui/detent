@@ -2,9 +2,11 @@
 
 ## Commands
 
-- Build: `bun run build` | Test: (none configured) | Lint: `bun run lint` | Fix: `bun run fix`
+- Build: `bun run build` (builds all packages via Turborepo - always use this, never go build directly)
+- Lint: `bun run lint` | Fix: `bun run fix`
 - Type check: `bun run check-types` | Dev: `bun run dev`
-- Go lint: `cd apps/cli && golangci-lint run ./...` | Go fix: `cd apps/cli && golangci-lint run --fix ./...`
+- Go lint: `cd apps/cli && golangci-lint run ./...`
+- Go test: `cd apps/cli && go test ./...`
 - Git commits should have header only, no description, and follow conventional commit
 
 ## TypeScript Style
@@ -25,7 +27,6 @@
 - Follow golangci-lint standard preset with gosec, gocritic, misspell, errname, exhaustive enabled
 - Handle errors explicitly, use clear naming conventions (errors prefixed with Err)
 - Enable shadow and nilness checks via govet
-- Build with `bun run build` only, never create temp binaries (e.g., /tmp/detent-test)
 
 ## Project Structure
 

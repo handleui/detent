@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/goccy/go-yaml"
@@ -99,7 +100,7 @@ func PrepareWorkflows(srcDir, specificWorkflow string) (tmpDir string, cleanup f
 
 		// Validate the resolved path is within the source directory using filepath.Rel
 		relPath, relErr := filepath.Rel(absSrcDir, absPath)
-		if relErr != nil || len(relPath) >= 2 && relPath[:2] == ".." {
+		if relErr != nil || strings.HasPrefix(relPath, "..") {
 			return "", nil, fmt.Errorf("workflow path must be within the workflows directory")
 		}
 
