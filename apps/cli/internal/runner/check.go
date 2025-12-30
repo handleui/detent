@@ -64,11 +64,12 @@ type CheckRunner struct {
 	config *RunConfig // Configuration for this run
 
 	// Cleanup functions - set during Prepare phase
-	tmpDir           string            // Temporary directory for workflow files
-	worktreeInfo     *git.WorktreeInfo // Worktree metadata including path and commit info
-	cleanupWorkflows func()            // Cleanup function for workflow temp directory
-	cleanupWorktree  func()            // Cleanup function for worktree
-	stashInfo        *git.StashInfo    // Tracks if changes were stashed during preflight
+	tmpDir           string               // Temporary directory for workflow files
+	worktreeInfo     *git.WorktreeInfo    // Worktree metadata including path and commit info
+	cleanupWorkflows func()               // Cleanup function for workflow temp directory
+	cleanupWorktree  func()               // Cleanup function for worktree
+	stashInfo        *git.StashInfo       // Tracks if changes were stashed during preflight
+	jobs             []workflow.JobInfo   // Job information extracted from workflows
 
 	// Execution state - set during Run phase
 	startTime time.Time  // When execution started
@@ -235,6 +236,10 @@ func (r *CheckRunner) Prepare(ctx context.Context) error {
 	r.cleanupWorktree = worktreeRes.cleanupWorktree
 	// Note: Non-TUI prepare doesn't set stashInfo (interactive prompt only in TUI mode)
 
+	// Extract job info from workflows for TUI display
+	jobs, _ := workflow.ExtractJobInfoFromDir(r.config.WorkflowPath)
+	r.jobs = jobs
+
 	return nil
 }
 
@@ -261,6 +266,10 @@ func (r *CheckRunner) PrepareWithTUI(ctx context.Context) error {
 	r.cleanupWorkflows = result.CleanupWorkflows
 	r.cleanupWorktree = result.CleanupWorktree
 	r.stashInfo = result.StashInfo
+
+	// Extract job info from workflows for TUI display
+	jobs, _ := workflow.ExtractJobInfoFromDir(r.config.WorkflowPath)
+	r.jobs = jobs
 
 	return nil
 }
@@ -547,6 +556,12 @@ func (r *CheckRunner) Cleanup() {
 // The result includes all extracted errors, timing information, and act output.
 func (r *CheckRunner) GetResult() *RunResult {
 	return r.result
+}
+
+// GetJobs returns the job information extracted from workflow files.
+// This should be called after Prepare/PrepareWithTUI completes.
+func (r *CheckRunner) GetJobs() []workflow.JobInfo {
+	return r.jobs
 }
 
 // buildActConfig constructs an act.RunConfig with appropriate settings.

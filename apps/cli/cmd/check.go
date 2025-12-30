@@ -388,11 +388,6 @@ func runCheck(cmd *cobra.Command, args []string) error {
 	return checkWorkflowStatus(result)
 }
 
-// Timing constants for dry-run simulation
-const (
-	dryRunPreflightVisualDelay     = 200 * time.Millisecond
-	dryRunPreflightCompletionPause = 300 * time.Millisecond
-)
 
 // runCheckDryRun shows simulated TUI without actual workflow execution.
 func runCheckDryRun(ctx context.Context, cfg *runner.RunConfig) error {
@@ -447,32 +442,17 @@ func simulateDryRunPreflight() {
 		"Creating workspace",
 	}
 
-	display := tui.NewPreflightDisplay(checks)
-	display.Render()
-
-	// Visual delay before first check
-	time.Sleep(dryRunPreflightVisualDelay)
-
-	// Simulate each check passing sequentially
+	// Single-line display that updates
 	for i, check := range checks {
-		display.UpdateCheck(check, "running", nil)
-		display.Render()
-
-		time.Sleep(100 * time.Millisecond)
-		display.UpdateCheck(check, "success", nil)
-		display.Render()
-
-		// Transition delay between checks
-		if i < len(checks)-1 {
-			time.Sleep(100 * time.Millisecond)
+		if i > 0 {
+			fmt.Fprint(os.Stderr, "\033[1A\033[J") // Clear previous line
 		}
+		fmt.Fprintln(os.Stderr, tui.PrimaryStyle.Render("· "+check))
+		time.Sleep(150 * time.Millisecond)
 	}
 
-	// Completion pause to show all checks passed
-	time.Sleep(dryRunPreflightCompletionPause)
-
-	// Blank line before main TUI starts
-	_, _ = fmt.Fprintln(os.Stderr)
+	// Clear the line on success
+	fmt.Fprint(os.Stderr, "\033[1A\033[J")
 }
 
 // simulateDryRunProgress sends simulated workflow progress to the TUI.
@@ -481,14 +461,14 @@ func simulateDryRunProgress(ctx context.Context, logChan chan string, program *t
 	defer close(logChan)
 
 	// Simulated workflow steps - uses [dry-run] prefix for logs to indicate mock data.
-	// Status messages match the real TUI parser format for authentic progress display.
+	// JobID matches what the TUI expects for step matching.
 	steps := []struct {
-		status string
-		logs   []string
-		delay  time.Duration
+		jobID string
+		logs  []string
+		delay time.Duration
 	}{
 		{
-			status: "build: Set up job",
+			jobID: "build",
 			logs: []string{
 				"[dry-run] Starting container...",
 				"[dry-run] Pulling image: node:18-alpine",
@@ -496,58 +476,34 @@ func simulateDryRunProgress(ctx context.Context, logChan chan string, program *t
 			delay: 500 * time.Millisecond,
 		},
 		{
-			status: "build: Checkout",
+			jobID: "lint",
 			logs: []string{
-				"[dry-run] Checking out repository",
+				"[dry-run] eslint .",
+				"[dry-run] Running linter...",
 			},
-			delay: 300 * time.Millisecond,
+			delay: 400 * time.Millisecond,
 		},
 		{
-			status: "build: Install dependencies",
+			jobID: "test",
 			logs: []string{
-				"[dry-run] npm ci",
-				"[dry-run] Installing packages...",
+				"[dry-run] npm test",
+				"[dry-run] Running tests...",
 			},
 			delay: 600 * time.Millisecond,
 		},
-		{
-			status: "build: Type check",
-			logs: []string{
-				"[dry-run] tsc --noEmit",
-				"[dry-run] Simulated type error in src/app.ts:42",
-			},
-			delay: 400 * time.Millisecond,
-		},
-		{
-			status: "build: Lint",
-			logs: []string{
-				"[dry-run] eslint .",
-				"[dry-run] Simulated lint errors found",
-			},
-			delay: 400 * time.Millisecond,
-		},
-		{
-			status: "build: Build",
-			logs: []string{
-				"[dry-run] npm run build",
-				"[dry-run] Build complete",
-			},
-			delay: 500 * time.Millisecond,
-		},
 	}
 
-	for i, step := range steps {
+	for _, step := range steps {
 		select {
 		case <-ctx.Done():
 			return
 		default:
 		}
 
-		// Send progress update (matches TUI parser expectations)
+		// Send progress update with JobID for step matching
 		program.Send(tui.ProgressMsg{
-			Status:      step.status,
-			CurrentStep: i + 1,
-			TotalSteps:  len(steps),
+			Status: step.jobID,
+			JobID:  step.jobID,
 		})
 
 		// Send logs with realistic timing
@@ -609,8 +565,8 @@ func runCheckWithTUI(ctx context.Context, r *runner.CheckRunner) (bool, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// Setup TUI program
-	model := tui.NewCheckModel(cancel)
+	// Setup TUI program with pre-populated jobs from workflow files
+	model := tui.NewCheckModelWithJobs(cancel, r.GetJobs())
 	program := tea.NewProgram(
 		&model,
 		tea.WithContext(ctx),

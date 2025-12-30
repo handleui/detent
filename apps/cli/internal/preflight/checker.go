@@ -1,15 +1,11 @@
 // Package preflight provides orchestration logic for pre-flight checks
-// before running GitHub Actions workflows locally. This includes verifying
-// act installation, Docker availability, preparing workflows, and creating
-// isolated worktrees for execution.
+// before running GitHub Actions workflows locally.
 package preflight
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/detent/cli/internal/actbin"
@@ -22,49 +18,17 @@ import (
 // ErrCancelled is returned when the user cancels an operation
 var ErrCancelled = errors.New("cancelled")
 
-const (
-	// preflightVisualDelay allows the spinner to render before check execution begins.
-	// This improves perceived responsiveness in the TUI by giving users visual feedback
-	// that the tool is working before any actual work starts.
-	preflightVisualDelay = 200 * time.Millisecond
-
-	// preflightTransitionDelay creates a brief pause between checks to prevent
-	// visual "flashing" and give users time to process each check result before
-	// moving to the next one. This improves the UX of the sequential check display.
-	preflightTransitionDelay = 100 * time.Millisecond
-
-	// preflightCompletionPause provides a final pause after all checks pass to
-	// display the success state and give visual confirmation before proceeding
-	// to the main workflow execution.
-	preflightCompletionPause = 300 * time.Millisecond
-)
-
 // Result contains the results and cleanup functions from preflight checks.
 type Result struct {
 	TmpDir           string
 	WorktreeInfo     *git.WorktreeInfo
 	CleanupWorkflows func()
 	CleanupWorktree  func()
-	StashInfo        *git.StashInfo // Tracks if changes were stashed during preflight
-	RepoRoot         string         // Repository root path for stash restoration
+	StashInfo        *git.StashInfo
+	RepoRoot         string
 }
 
-// workflowPrepResult holds the results from workflow preparation.
-type workflowPrepResult struct {
-	tmpDir  string
-	cleanup func()
-}
-
-// worktreePrepResult holds the results from worktree preparation.
-type worktreePrepResult struct {
-	info    *git.WorktreeInfo
-	cleanup func()
-}
-
-// Cleanup executes both cleanup functions in the correct order (workflows first, then worktree).
-// Order matters: workflow temp files should be removed before the git worktree
-// to ensure consistent state during cleanup.
-// If changes were stashed during preflight, they are restored here.
+// Cleanup executes both cleanup functions in the correct order.
 func (r *Result) Cleanup() {
 	if r.CleanupWorkflows != nil {
 		r.CleanupWorkflows()
@@ -72,126 +36,39 @@ func (r *Result) Cleanup() {
 	if r.CleanupWorktree != nil {
 		r.CleanupWorktree()
 	}
-
-	// Restore stashed changes if we stashed them during preflight
 	repoRoot := r.RepoRoot
 	if repoRoot == "" {
-		repoRoot = "." // Fallback for backwards compatibility
+		repoRoot = "."
 	}
 	git.RestoreStashIfNeeded(repoRoot, r.StashInfo)
 }
 
-// preflightChecker helps execute individual preflight checks with consistent error handling.
-type preflightChecker struct {
-	display         *tui.PreflightDisplay
-	transitionDelay time.Duration
-}
-
-// executeCheck runs a single check with standardized error handling and UI updates.
-// It updates the display to show "running", executes the check function, and updates
-// the display to show "success" or "error" depending on the result.
-// For cancellation errors, it clears the display and returns the error for main to handle.
-func (p *preflightChecker) executeCheck(checkName string, checkFunc func() error) error {
-	time.Sleep(p.transitionDelay)
-	p.display.UpdateCheck(checkName, "running", nil)
-	p.display.Render()
-
-	err := checkFunc()
-	if err != nil {
-		if errors.Is(err, ErrCancelled) {
-			p.display.Clear()
-			return err
-		}
-		p.display.UpdateCheck(checkName, "error", err)
-		p.display.RenderFinal()
-		return err
-	}
-
-	p.display.UpdateCheck(checkName, "success", nil)
-	p.display.Render()
-	return nil
-}
-
-// executeWorkflowPrep runs the workflow preparation check with standardized error handling.
-func (p *preflightChecker) executeWorkflowPrep(checkName string, additionalSuccessChecks []string, checkFunc func() (workflowPrepResult, error)) (workflowPrepResult, error) {
-	time.Sleep(p.transitionDelay)
-	p.display.UpdateCheck(checkName, "running", nil)
-	p.display.Render()
-
-	result, err := checkFunc()
-	if err != nil {
-		p.display.UpdateCheck(checkName, "error", err)
-		p.display.RenderFinal()
-		return workflowPrepResult{}, err
-	}
-
-	p.display.UpdateCheck(checkName, "success", nil)
-	for _, check := range additionalSuccessChecks {
-		p.display.UpdateCheck(check, "success", nil)
-	}
-	p.display.Render()
-	return result, nil
-}
-
-// executeWorktreePrep runs the worktree preparation check with standardized error handling.
-func (p *preflightChecker) executeWorktreePrep(checkName string, checkFunc func() (worktreePrepResult, error)) (worktreePrepResult, error) {
-	time.Sleep(p.transitionDelay)
-	p.display.UpdateCheck(checkName, "running", nil)
-	p.display.Render()
-
-	result, err := checkFunc()
-	if err != nil {
-		p.display.UpdateCheck(checkName, "error", err)
-		p.display.RenderFinal()
-		return worktreePrepResult{}, err
-	}
-
-	p.display.UpdateCheck(checkName, "success", nil)
-	p.display.Render()
-	return result, nil
-}
-
 // EnsureCleanWorktree validates that the worktree is clean, or prompts the user
-// to clean it interactively. Returns StashInfo if changes were stashed, nil otherwise.
-//
-// The display parameter allows hiding the preflight checks while the prompt is shown.
-//
-// The function:
-// 1. Gets dirty files list (which also checks if worktree is clean)
-// 2. If clean, returns nil (no action needed)
-// 3. If dirty, clears the check display and launches interactive Bubble Tea prompt with options:
-//   - Commit: stages all changes and commits with user-provided message
-//   - Stash: stashes changes (with warning) to be restored during cleanup
-//   - Cancel: returns error to abort the run
-//
-// This ensures users understand WHY a clean worktree is required and provides
-// convenient ways to achieve it.
-func EnsureCleanWorktree(ctx context.Context, repoRoot string, display *tui.PreflightDisplay) (*git.StashInfo, error) {
-	// Get dirty files list (this also checks if worktree is clean)
+// to clean it interactively. Returns StashInfo if changes were stashed.
+func EnsureCleanWorktree(ctx context.Context, repoRoot string, program *tea.Program) (*git.StashInfo, error) {
 	files, err := git.GetDirtyFilesList(ctx, repoRoot)
 	if err != nil {
 		return nil, err
 	}
 
-	// If no dirty files, worktree is clean
 	if len(files) == 0 {
-		return nil, nil // Already clean, no action needed
+		return nil, nil
 	}
 
-	// Clear the preflight display to show a clean prompt
-	if display != nil {
-		display.Clear()
+	// Quit preflight TUI to show prompt
+	if program != nil {
+		program.Send(tui.PreflightDoneMsg{Err: nil})
+		program.Wait()
 	}
 
 	// Launch interactive prompt
 	model := tui.NewCleanWorktreePromptModel(files)
-	program := tea.NewProgram(model)
-	finalModel, err := program.Run()
+	promptProgram := tea.NewProgram(model)
+	finalModel, err := promptProgram.Run()
 	if err != nil {
 		return nil, fmt.Errorf("interactive prompt failed: %w", err)
 	}
 
-	// Extract result from final model
 	promptModel, ok := finalModel.(*tui.CleanWorktreePromptModel)
 	if !ok {
 		return nil, fmt.Errorf("unexpected model type")
@@ -202,20 +79,19 @@ func EnsureCleanWorktree(ctx context.Context, repoRoot string, display *tui.Pref
 		return nil, ErrCancelled
 	}
 
-	// Execute user's choice
 	switch result.Action {
 	case tui.ActionCommit:
 		if err := git.CommitAllChanges(ctx, repoRoot, result.CommitMessage); err != nil {
 			return nil, fmt.Errorf("failed to commit changes: %w", err)
 		}
-		return nil, nil // Committed, no stash needed
+		return nil, nil
 
 	case tui.ActionStash:
 		stashInfo, err := git.StashChanges(ctx, repoRoot)
 		if err != nil {
 			return nil, fmt.Errorf("failed to stash changes: %w", err)
 		}
-		return stashInfo, nil // Return stash info for later restoration
+		return stashInfo, nil
 
 	case tui.ActionCancel:
 		return nil, ErrCancelled
@@ -225,110 +101,114 @@ func EnsureCleanWorktree(ctx context.Context, repoRoot string, display *tui.Pref
 	}
 }
 
-// RunPreflightChecks performs and displays pre-flight checks before running act.
-// It verifies system requirements, prepares workflows, and creates an isolated worktree.
+// RunPreflightChecks performs pre-flight checks with a single-line shimmer display.
 func RunPreflightChecks(ctx context.Context, workflowPath, repoRoot, runID, workflowFile string) (*Result, error) {
-	checks := []string{
-		"Validating repository",
-		"Checking prerequisites",
-		"Preparing workflows",
-		"Creating workspace",
+	// Create single-line shimmer display
+	model := tui.NewPreflightModel()
+	program := tea.NewProgram(&model)
+
+	// Channel to collect results
+	type checkResult struct {
+		result *Result
+		err    error
 	}
+	resultChan := make(chan checkResult, 1)
 
-	display := tui.NewPreflightDisplay(checks)
-	display.Render()
+	// Run checks in background goroutine
+	go func() {
+		var stashInfo *git.StashInfo
+		var tmpDir string
+		var cleanupWorkflows func()
+		var worktreeInfo *git.WorktreeInfo
+		var cleanupWorktree func()
 
-	checker := &preflightChecker{
-		display:         display,
-		transitionDelay: preflightTransitionDelay,
-	}
+		sendError := func(err error) {
+			resultChan <- checkResult{err: err}
+			program.Send(tui.PreflightDoneMsg{Err: err})
+		}
 
-	// Check 1: Validate repository (clean worktree + security)
-	checker.transitionDelay = preflightVisualDelay
-	var stashInfo *git.StashInfo
-	if err := checker.executeCheck("Validating repository", func() error {
-		// Check for uncommitted changes (may show interactive prompt)
+		// Check 1: Validate repository
+		program.Send(tui.PreflightUpdateMsg("Validating repository"))
 		var err error
-		stashInfo, err = EnsureCleanWorktree(ctx, repoRoot, display)
+		stashInfo, err = EnsureCleanWorktree(ctx, repoRoot, program)
 		if err != nil {
-			return err
+			sendError(err)
+			return
 		}
-		// Check for symlinks that escape repository boundaries
-		if err := git.ValidateNoEscapingSymlinks(ctx, repoRoot); err != nil {
-			return fmt.Errorf("symlink security: %w", err)
+		err = git.ValidateNoEscapingSymlinks(ctx, repoRoot)
+		if err != nil {
+			sendError(fmt.Errorf("symlink security: %w", err))
+			return
 		}
-		// Check for submodules (not yet supported)
-		if err := git.ValidateNoSubmodules(repoRoot); err != nil {
-			return err
+		err = git.ValidateNoSubmodules(repoRoot)
+		if err != nil {
+			sendError(err)
+			return
 		}
-		return nil
-	}); err != nil {
-		return nil, err
-	}
-	checker.transitionDelay = preflightTransitionDelay
 
-	// Check 2: Prerequisites (act + docker)
-	if err := checker.executeCheck("Checking prerequisites", func() error {
-		if err := actbin.EnsureInstalled(ctx, nil); err != nil {
-			return err
+		// Check 2: Prerequisites
+		program.Send(tui.PreflightUpdateMsg("Checking prerequisites"))
+		err = actbin.EnsureInstalled(ctx, nil)
+		if err != nil {
+			sendError(err)
+			return
 		}
-		if err := docker.IsAvailable(ctx); err != nil {
-			return fmt.Errorf("docker is not available: %w", err)
+		err = docker.IsAvailable(ctx)
+		if err != nil {
+			sendError(fmt.Errorf("docker not available: %w", err))
+			return
 		}
-		return nil
-	}); err != nil {
-		return nil, err
-	}
 
-	// Check 3: Prepare workflows
-	workflowResult, err := checker.executeWorkflowPrep(
-		"Preparing workflows",
-		nil,
-		func() (workflowPrepResult, error) {
-			tmpDir, cleanup, prepErr := workflow.PrepareWorkflows(workflowPath, workflowFile)
-			if prepErr != nil {
-				return workflowPrepResult{}, fmt.Errorf("preparing workflows: %w", prepErr)
-			}
-			return workflowPrepResult{tmpDir: tmpDir, cleanup: cleanup}, nil
-		},
-	)
+		// Check 3: Prepare workflows
+		program.Send(tui.PreflightUpdateMsg("Preparing workflows"))
+		tmpDir, cleanupWorkflows, err = workflow.PrepareWorkflows(workflowPath, workflowFile)
+		if err != nil {
+			sendError(fmt.Errorf("preparing workflows: %w", err))
+			return
+		}
+
+		// Check 4: Create workspace
+		program.Send(tui.PreflightUpdateMsg("Creating workspace"))
+		var worktreePath string
+		worktreePath, err = git.CreateEphemeralWorktreePath(runID)
+		if err != nil {
+			cleanupWorkflows()
+			sendError(fmt.Errorf("worktree path: %w", err))
+			return
+		}
+		worktreeInfo, cleanupWorktree, err = git.PrepareWorktree(ctx, repoRoot, worktreePath)
+		if err != nil {
+			cleanupWorkflows()
+			sendError(fmt.Errorf("creating worktree: %w", err))
+			return
+		}
+
+		// Success
+		resultChan <- checkResult{
+			result: &Result{
+				TmpDir:           tmpDir,
+				WorktreeInfo:     worktreeInfo,
+				CleanupWorkflows: cleanupWorkflows,
+				CleanupWorktree:  cleanupWorktree,
+				StashInfo:        stashInfo,
+				RepoRoot:         repoRoot,
+			},
+		}
+		program.Send(tui.PreflightDoneMsg{Err: nil})
+	}()
+
+	// Run TUI
+	finalModel, err := program.Run()
 	if err != nil {
 		return nil, err
 	}
 
-	// Check 4: Create workspace (worktree)
-	worktreeResult, err := checker.executeWorktreePrep(
-		"Creating workspace",
-		func() (worktreePrepResult, error) {
-			worktreePath, pathErr := git.CreateEphemeralWorktreePath(runID)
-			if pathErr != nil {
-				workflowResult.cleanup()
-				return worktreePrepResult{}, fmt.Errorf("getting worktree path: %w", pathErr)
-			}
-			info, cleanup, wtErr := git.PrepareWorktree(ctx, repoRoot, worktreePath)
-			if wtErr != nil {
-				workflowResult.cleanup()
-				return worktreePrepResult{}, fmt.Errorf("creating worktree: %w", wtErr)
-			}
-			return worktreePrepResult{info: info, cleanup: cleanup}, nil
-		},
-	)
-	if err != nil {
-		return nil, err
+	// Check if cancelled
+	if m, ok := finalModel.(*tui.PreflightModel); ok && m.WasCancelled() {
+		return nil, ErrCancelled
 	}
 
-	// Small pause to show all checks passed
-	time.Sleep(preflightCompletionPause)
-
-	// Add a blank line before TUI starts
-	fmt.Fprintln(os.Stderr)
-
-	return &Result{
-		TmpDir:           workflowResult.tmpDir,
-		WorktreeInfo:     worktreeResult.info,
-		CleanupWorkflows: workflowResult.cleanup,
-		CleanupWorktree:  worktreeResult.cleanup,
-		StashInfo:        stashInfo,
-		RepoRoot:         repoRoot,
-	}, nil
+	// Get result from goroutine
+	res := <-resultChan
+	return res.result, res.err
 }

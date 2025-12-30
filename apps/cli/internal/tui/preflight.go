@@ -3,60 +3,102 @@ package tui
 import (
 	"fmt"
 	"os"
-	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/handleui/shimmer"
 )
 
-const (
-	// ANSI escape sequence values
-	cursorUpEscapePrefix = "\033["
-	cursorUpEscapeSuffix = "A"
-	clearToEndOfScreen   = "\033[J"
-)
+// PreflightModel is a single-line Bubble Tea model for preflight checks
+type PreflightModel struct {
+	shimmer  shimmer.Model
+	text     string
+	done     bool
+	err      error
+	quitting bool
+}
+
+// PreflightUpdateMsg updates the preflight status text
+type PreflightUpdateMsg string
+
+// PreflightDoneMsg signals preflight completion
+type PreflightDoneMsg struct {
+	Err error
+}
+
+// NewPreflightModel creates a new single-line preflight display
+func NewPreflightModel() PreflightModel {
+	return PreflightModel{
+		shimmer: shimmer.New("Preparing", "#FFFFFF"),
+	}
+}
+
+// Init initializes the preflight model
+func (m PreflightModel) Init() tea.Cmd {
+	return m.shimmer.Init()
+}
+
+// Update handles messages
+func (m PreflightModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "ctrl+c", "q":
+			m.quitting = true
+			return m, tea.Quit
+		}
+
+	case PreflightUpdateMsg:
+		m.text = string(msg)
+		m.shimmer = m.shimmer.SetText(m.text)
+		return m, nil
+
+	case PreflightDoneMsg:
+		m.done = true
+		m.err = msg.Err
+		return m, tea.Quit
+
+	case shimmer.TickMsg:
+		var cmd tea.Cmd
+		m.shimmer, cmd = m.shimmer.Update(msg)
+		return m, cmd
+	}
+
+	return m, nil
+}
+
+// View renders the preflight line
+func (m PreflightModel) View() string {
+	if m.quitting {
+		return ""
+	}
+
+	if m.done {
+		if m.err != nil {
+			return ErrorStyle.Render(fmt.Sprintf("✗ %s", m.err.Error())) + "\n"
+		}
+		return "" // Clear line on success, main TUI will take over
+	}
+
+	return PrimaryStyle.Render("· ") + m.shimmer.View() + "\n"
+}
+
+// WasCancelled returns true if the user quit
+func (m PreflightModel) WasCancelled() bool {
+	return m.quitting
+}
+
+// PreflightDisplay manages the display of pre-flight checks (legacy multi-line)
+type PreflightDisplay struct {
+	checks   []PreflightCheck
+	rendered bool
+	numLines int
+}
 
 // PreflightCheck represents a single pre-flight check
 type PreflightCheck struct {
 	Name   string
-	Status string // "pending", "running", "success", "error"
+	Status string
 	Error  error
-}
-
-// RenderPreflightCheck renders a single check line
-func RenderPreflightCheck(check PreflightCheck) string {
-	var icon string
-	var style lipgloss.Style
-	var suffix string
-
-	switch check.Status {
-	case "pending":
-		icon = "-"
-		style = SecondaryStyle
-	case "running":
-		icon = ">"
-		style = PrimaryStyle
-	case "success":
-		icon = "+"
-		style = SuccessStyle
-	case "error":
-		icon = "x"
-		style = ErrorStyle
-		if check.Error != nil {
-			suffix = fmt.Sprintf(" (%s)", check.Error.Error())
-		}
-	default:
-		icon = "-"
-		style = SecondaryStyle
-	}
-
-	return style.Render(fmt.Sprintf("%s %s%s", icon, check.Name, suffix))
-}
-
-// PreflightDisplay manages the display of pre-flight checks
-type PreflightDisplay struct {
-	checks       []PreflightCheck
-	rendered     bool // Track if we've rendered before
-	numLines     int  // Track how many lines we've rendered
 }
 
 // NewPreflightDisplay creates a new pre-flight display
@@ -84,71 +126,53 @@ func (p *PreflightDisplay) UpdateCheck(name, status string, err error) {
 
 // Render renders all checks to stderr
 func (p *PreflightDisplay) Render() {
-	var lines []string
+	// Single line: show current running check
+	var current string
 	for _, check := range p.checks {
-		lines = append(lines, RenderPreflightCheck(check))
+		if check.Status == "running" {
+			current = check.Name
+			break
+		}
 	}
 
 	if p.rendered {
-		// Move cursor up to overwrite previous output
-		fmt.Fprintf(os.Stderr, "%s%d%s", cursorUpEscapePrefix, p.numLines, cursorUpEscapeSuffix)
-		// Clear from cursor to end of screen
-		fmt.Fprint(os.Stderr, clearToEndOfScreen)
+		fmt.Fprint(os.Stderr, "\033[1A\033[J")
 	}
 
-	// Print all check lines
-	output := strings.Join(lines, "\n")
-	fmt.Fprintln(os.Stderr, output)
+	if current != "" {
+		fmt.Fprintln(os.Stderr, PrimaryStyle.Render("· "+current))
+	}
 
-	// Track that we've rendered and how many lines
 	p.rendered = true
-	p.numLines = len(lines)
+	p.numLines = 1
 }
 
-// RenderFinal renders the final state and waits for user.
-// Only shows non-pending checks to avoid overwhelming the user when errors occur.
+// RenderFinal renders the final state
 func (p *PreflightDisplay) RenderFinal() {
-	var lines []string
+	if p.rendered {
+		fmt.Fprint(os.Stderr, "\033[1A\033[J")
+	}
+
+	// Find error if any
 	for _, check := range p.checks {
-		// Skip pending checks in final render to reduce noise on error
-		if check.Status == "pending" {
+		if check.Status != "error" || check.Error == nil {
 			continue
 		}
-		lines = append(lines, RenderPreflightCheck(check))
+		fmt.Fprintln(os.Stderr, ErrorStyle.Render(fmt.Sprintf("✗ %s", check.Error.Error())))
+		fmt.Fprintln(os.Stderr)
+		p.rendered = true
+		p.numLines = 2
+		return
 	}
 
-	if p.rendered {
-		// Move cursor up to overwrite previous output
-		fmt.Fprintf(os.Stderr, "%s%d%s", cursorUpEscapePrefix, p.numLines, cursorUpEscapeSuffix)
-		// Clear from cursor to end of screen
-		fmt.Fprint(os.Stderr, clearToEndOfScreen)
-	}
-
-	// Print all check lines with trailing blank line for separation
-	output := strings.Join(lines, "\n")
-	fmt.Fprintln(os.Stderr, output)
-	fmt.Fprintln(os.Stderr)
-
-	// Track that we've rendered and how many lines (including blank line)
 	p.rendered = true
-	p.numLines = len(lines) + 1
+	p.numLines = 0
 }
 
-// AllSuccess returns true if all checks passed
-func (p *PreflightDisplay) AllSuccess() bool {
-	for _, check := range p.checks {
-		if check.Status != "success" {
-			return false
-		}
-	}
-	return true
-}
-
-// Clear removes the display from screen and resets render state
+// Clear removes the display from screen
 func (p *PreflightDisplay) Clear() {
 	if p.rendered && p.numLines > 0 {
-		fmt.Fprintf(os.Stderr, "%s%d%s", cursorUpEscapePrefix, p.numLines, cursorUpEscapeSuffix)
-		fmt.Fprint(os.Stderr, clearToEndOfScreen)
+		fmt.Fprintf(os.Stderr, "\033[%dA\033[J", p.numLines)
 	}
 	p.rendered = false
 	p.numLines = 0

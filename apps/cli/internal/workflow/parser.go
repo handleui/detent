@@ -115,3 +115,51 @@ func DiscoverWorkflows(dir string) ([]string, error) {
 
 	return workflows, nil
 }
+
+// ExtractJobInfo extracts job information from a workflow for TUI display.
+// Returns a slice of JobInfo with ID and display name for each job.
+func ExtractJobInfo(wf *Workflow) []JobInfo {
+	if wf == nil || wf.Jobs == nil {
+		return nil
+	}
+
+	jobs := make([]JobInfo, 0, len(wf.Jobs))
+	for id, job := range wf.Jobs {
+		if job == nil {
+			continue
+		}
+
+		name := job.Name
+		if name == "" {
+			name = id
+		}
+
+		jobs = append(jobs, JobInfo{
+			ID:   id,
+			Name: name,
+		})
+	}
+
+	return jobs
+}
+
+// ExtractJobInfoFromDir discovers and parses all workflows in a directory,
+// returning job info for all jobs across all workflows.
+func ExtractJobInfoFromDir(dir string) ([]JobInfo, error) {
+	workflows, err := DiscoverWorkflows(dir)
+	if err != nil {
+		return nil, err
+	}
+
+	var allJobs []JobInfo
+	for _, wfPath := range workflows {
+		wf, err := ParseWorkflowFile(wfPath)
+		if err != nil {
+			continue // Skip workflows that fail to parse
+		}
+		jobs := ExtractJobInfo(wf)
+		allJobs = append(allJobs, jobs...)
+	}
+
+	return allJobs, nil
+}

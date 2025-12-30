@@ -30,6 +30,12 @@ type Job struct {
 	Concurrency     any               `yaml:"concurrency,omitempty"`
 }
 
+// JobInfo contains extracted job information for TUI display
+type JobInfo struct {
+	ID   string // Job ID (key in jobs map, e.g., "cli-lint")
+	Name string // Display name (job.name or fallback to ID)
+}
+
 // Step represents a step in a job
 type Step struct {
 	ID              string            `yaml:"id,omitempty"`

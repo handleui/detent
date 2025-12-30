@@ -6,38 +6,35 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/detent/cli/internal/errors"
 	"github.com/detent/cli/internal/output"
+	"github.com/detent/cli/internal/workflow"
+	"github.com/handleui/shimmer"
 )
 
+// Step status constants
 const (
-	// Viewport display dimensions
-	viewportMinHeight     = 15
-	viewportMaxHeight     = 30
-	viewportReservedLines = 4  // status + borders + hint
-	viewportBorderPadding = 4  // borders and padding
-
-	// Log tail display settings
-	tailLinesToShow = 1
-	maxLogLines     = 10000 // Cap log history to prevent unbounded memory growth
-
-	// Color codes for unique elements
-	spinnerColor      = "205" // Pink spinner animation
-	logBoxBorderColor = "63"  // Purple log box border
+	StepPending = "pending"
+	StepRunning = "running"
+	StepSuccess = "success"
+	StepError   = "error"
 )
 
-// LogMsg is sent when new log content arrives
+// Step represents a workflow step with its status
+type Step struct {
+	Name       string
+	Status     string
+	ErrorCount int
+}
+
+// LogMsg is sent when new log content arrives (ignored in TUI mode)
 type LogMsg string
 
 // ProgressMsg updates the current status
 type ProgressMsg struct {
-	Status      string
-	CurrentStep int
-	TotalSteps  int
+	Status string // Step info (for display, not used for matching)
+	JobID  string // Job ID for matching against known jobs
 }
 
 // DoneMsg signals completion
@@ -45,7 +42,7 @@ type DoneMsg struct {
 	Duration  time.Duration
 	ExitCode  int
 	Errors    *errors.GroupedErrors
-	Cancelled bool // True if workflow was cancelled via Ctrl+C
+	Cancelled bool
 }
 
 // ErrMsg signals an error
@@ -53,143 +50,79 @@ type ErrMsg error
 
 // CheckModel is the Bubble Tea model for the check command TUI
 type CheckModel struct {
-	viewport     viewport.Model
-	spinner      spinner.Model
-	allLogs      []string        // Full log history
-	tailLines    []string        // Last line for compact display
-	status       string
+	shimmer      shimmer.Model
+	steps        []Step
+	jobMap       map[string]int // Maps job ID to step index
+	jobNameMap   map[string]int // Maps job Name to step index (act uses names)
 	currentStep  int
-	totalSteps   int
 	done         bool
 	err          error
-	width        int
-	height       int
 	duration     time.Duration
 	exitCode     int
-	ready        bool
-	logsExpanded bool                  // Track expanded/collapsed state
-	startTime    time.Time             // Track when workflow started
-	logsDirty    bool                  // Track if logs need viewport update
-	errors       *errors.GroupedErrors // Extracted errors from workflow run
-	Cancelled    bool                  // Track if workflow was cancelled via Ctrl+C
-	cancelFunc   func()                // Context cancel function for 'q' key handling
-	quitting     bool                  // Track if we're in the process of quitting
+	startTime    time.Time
+	errors       *errors.GroupedErrors
+	Cancelled    bool
+	cancelFunc   func()
+	quitting     bool
 }
 
 // NewCheckModel creates a new TUI model for the check command
-// cancelFunc is the context cancellation function to call when 'q' is pressed
 func NewCheckModel(cancelFunc func()) CheckModel {
-	s := spinner.New()
-	s.Spinner = spinner.Dot
-	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color(spinnerColor))
+	return NewCheckModelWithJobs(cancelFunc, nil)
+}
 
-	return CheckModel{
-		spinner:      s,
-		status:       "Initializing...",
-		allLogs:      []string{},
-		tailLines:    []string{},
-		logsExpanded: false,
-		startTime:    time.Now(),
-		cancelFunc:   cancelFunc,
-		quitting:     false,
+// NewCheckModelWithJobs creates a new TUI model with pre-populated job names
+func NewCheckModelWithJobs(cancelFunc func(), jobs []workflow.JobInfo) CheckModel {
+	model := CheckModel{
+		shimmer:    shimmer.New("", "#FFFFFF"),
+		steps:      []Step{},
+		jobMap:     make(map[string]int),
+		jobNameMap: make(map[string]int),
+		startTime:  time.Now(),
+		cancelFunc: cancelFunc,
+		quitting:   false,
 	}
+
+	if len(jobs) > 0 {
+		model.steps = make([]Step, len(jobs))
+		for i, job := range jobs {
+			model.steps[i] = Step{
+				Name:   job.Name,
+				Status: StepPending,
+			}
+			// Map by both ID and Name for flexible matching
+			model.jobMap[job.ID] = i
+			model.jobNameMap[job.Name] = i
+		}
+	}
+
+	return model
 }
 
-// Init initializes the model and starts the spinner
+// Init initializes the model
 func (m *CheckModel) Init() tea.Cmd {
-	return tea.Batch(
-		m.spinner.Tick,
-		waitForActivity,
-	)
-}
-
-func waitForActivity() tea.Msg {
-	return nil
+	return m.shimmer.Init()
 }
 
 // Update handles messages and updates the model state
 func (m *CheckModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var (
-		cmd  tea.Cmd
-		cmds []tea.Cmd
-	)
-
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "q":
-			// Don't handle quit if already done or quitting
 			if m.done || m.quitting {
 				return m, tea.Quit
 			}
-			// Cancel the context and wait for DoneMsg
 			m.quitting = true
-			m.status = "Stopping workflow gracefully..."
 			if m.cancelFunc != nil {
 				m.cancelFunc()
 			}
-			return m, nil
-		case "o":
-			// Toggle logs expanded/collapsed
-			m.logsExpanded = !m.logsExpanded
-			if m.logsExpanded && m.ready {
-				// Populate viewport with all logs when expanding
-				m.viewport.SetContent(strings.Join(m.allLogs, "\n"))
-				m.viewport.GotoBottom()
-			}
-			return m, nil
+			return m, tea.Quit
 		}
-
-	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
-
-		// Calculate viewport height for expanded mode
-		availableHeight := msg.Height - viewportReservedLines
-
-		// Clamp viewport height between min and max
-		viewportHeight := availableHeight
-		if viewportHeight < viewportMinHeight {
-			viewportHeight = viewportMinHeight
-		}
-		if viewportHeight > viewportMaxHeight {
-			viewportHeight = viewportMaxHeight
-		}
-
-		if !m.ready {
-			m.viewport = viewport.New(msg.Width-viewportBorderPadding, viewportHeight)
-			m.ready = true
-		} else {
-			m.viewport.Width = msg.Width - viewportBorderPadding
-			m.viewport.Height = viewportHeight
-		}
-
-	case LogMsg:
-		// Append to full log history
-		m.allLogs = append(m.allLogs, string(msg))
-
-		// Cap log history to prevent unbounded memory growth
-		if len(m.allLogs) > maxLogLines {
-			// Keep the last maxLogLines entries
-			m.allLogs = m.allLogs[len(m.allLogs)-maxLogLines:]
-		}
-
-		// Update tail lines (last N lines)
-		if len(m.allLogs) > tailLinesToShow {
-			m.tailLines = m.allLogs[len(m.allLogs)-tailLinesToShow:]
-		} else {
-			m.tailLines = m.allLogs
-		}
-
-		// Mark logs as dirty instead of immediate update
-		m.logsDirty = true
-
-		return m, waitForActivity
 
 	case ProgressMsg:
-		m.status = msg.Status
-		m.currentStep = msg.CurrentStep
-		m.totalSteps = msg.TotalSteps
+		m.updateSteps(msg)
+		return m, nil
 
 	case DoneMsg:
 		m.done = true
@@ -197,93 +130,136 @@ func (m *CheckModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.exitCode = msg.ExitCode
 		m.errors = msg.Errors
 		m.Cancelled = msg.Cancelled
-		m.logsExpanded = false // Auto-collapse on completion
+		m.markCurrentStepComplete()
 		return m, tea.Quit
 
 	case ErrMsg:
 		m.err = msg
-		m.logsExpanded = false // Auto-collapse on error
 		return m, tea.Quit
 
-	case spinner.TickMsg:
-		m.spinner, cmd = m.spinner.Update(msg)
+	case shimmer.TickMsg:
+		var cmd tea.Cmd
+		m.shimmer, cmd = m.shimmer.Update(msg)
 		return m, cmd
+
+	case LogMsg:
+		// Logs are ignored - verbose mode shows them
+		return m, nil
 	}
 
-	m.viewport, cmd = m.viewport.Update(msg)
-	cmds = append(cmds, cmd)
+	return m, nil
+}
 
-	return m, tea.Batch(cmds...)
+// updateSteps updates the step list based on progress message
+// Observer pattern - only update pre-populated steps, never add new ones
+func (m *CheckModel) updateSteps(msg ProgressMsg) {
+	if msg.JobID == "" {
+		return
+	}
+
+	// Try to find step by job ID first, then by job Name
+	idx := -1
+	if i, ok := m.jobMap[msg.JobID]; ok {
+		idx = i
+	} else if i, ok := m.jobNameMap[msg.JobID]; ok {
+		idx = i
+	}
+
+	// No match found - ignore (don't add new steps)
+	if idx < 0 {
+		return
+	}
+
+	// Mark previous running steps as complete
+	for i := range m.steps {
+		if m.steps[i].Status == StepRunning && i != idx {
+			m.steps[i].Status = StepSuccess
+		}
+	}
+
+	// Update matched step to running
+	m.steps[idx].Status = StepRunning
+	m.currentStep = idx + 1
+
+	// Set shimmer to animate the step NAME
+	m.shimmer = m.shimmer.SetText(m.steps[idx].Name)
+}
+
+// markCurrentStepComplete marks the current step as complete based on errors
+func (m *CheckModel) markCurrentStepComplete() {
+	if m.currentStep > 0 && m.currentStep <= len(m.steps) {
+		idx := m.currentStep - 1
+		if m.errors != nil && m.errors.Total > 0 {
+			m.steps[idx].Status = StepError
+			m.steps[idx].ErrorCount = m.errors.Total
+		} else {
+			m.steps[idx].Status = StepSuccess
+		}
+	}
 }
 
 // View renders the current model state as a string
 func (m *CheckModel) View() string {
-	// If done, show completion summary (auto-collapsed)
 	if m.done {
 		return m.renderCompletionView()
 	}
 
-	// If not ready yet (no WindowSizeMsg), show minimal status
-	if !m.ready {
-		return m.status + "\n"
-	}
-
-	// Render based on expanded state
-	if m.logsExpanded {
-		return m.renderExpandedView()
-	}
-
-	return m.renderCompactView()
+	return m.renderStepList()
 }
 
-// renderCompactView renders the compact (collapsed) view with tail lines
-func (m *CheckModel) renderCompactView() string {
+// renderStepList renders the step list with shimmer on current step
+func (m *CheckModel) renderStepList() string {
 	var b strings.Builder
 
-	// Status line with spinner and elapsed time
-	elapsed := time.Since(m.startTime).Round(time.Second)
-	statusLine := fmt.Sprintf("%s %s (%s)", m.spinner.View(), m.status, elapsed)
-	b.WriteString(statusLine + "\n")
+	// Command header with elapsed time
+	elapsed := int(time.Since(m.startTime).Seconds())
+	header := fmt.Sprintf("$ act · %ds", elapsed)
+	b.WriteString(SecondaryStyle.Render(header) + "\n\n")
 
-	// Show last log line indented
-	if len(m.tailLines) > 0 {
-		b.WriteString("  " + MutedStyle.Render(m.tailLines[len(m.tailLines)-1]) + "\n\n")
+	// Step list
+	for i, step := range m.steps {
+		line := m.renderStep(step, i+1 == m.currentStep)
+		b.WriteString("  " + line + "\n")
 	}
-
-	// Toggle hint
-	b.WriteString(MutedStyle.Render("⊕ Full logs (press 'o' to expand, 'q' to quit)\n"))
 
 	return b.String()
 }
 
-// renderExpandedView renders the expanded view with full logs in viewport
-func (m *CheckModel) renderExpandedView() string {
-	var b strings.Builder
+// renderStep renders a single step line
+func (m *CheckModel) renderStep(step Step, isCurrent bool) string {
+	var icon string
+	var text string
 
-	// Status line with spinner and elapsed time
-	elapsed := time.Since(m.startTime).Round(time.Second)
-	statusLine := fmt.Sprintf("%s %s (%s)", m.spinner.View(), m.status, elapsed)
-	b.WriteString(statusLine + "\n")
+	switch step.Status {
+	case StepPending:
+		icon = MutedStyle.Render("·")
+		text = MutedStyle.Render(step.Name)
 
-	// Update viewport only if logs changed
-	if m.logsDirty {
-		m.viewport.SetContent(strings.Join(m.allLogs, "\n"))
-		m.viewport.GotoBottom()
-		m.logsDirty = false
+	case StepRunning:
+		icon = PrimaryStyle.Render("·")
+		if isCurrent {
+			text = m.shimmer.View() // Shimmer animates step NAME
+		} else {
+			text = PrimaryStyle.Render(step.Name)
+		}
+
+	case StepSuccess:
+		icon = SuccessStyle.Render("✓")
+		text = PrimaryStyle.Render(step.Name)
+
+	case StepError:
+		icon = ErrorStyle.Render("✗")
+		text = PrimaryStyle.Render(step.Name)
+		if step.ErrorCount > 0 {
+			errText := "error"
+			if step.ErrorCount > 1 {
+				errText = "errors"
+			}
+			text += " " + ErrorStyle.Render(fmt.Sprintf("· %d %s", step.ErrorCount, errText))
+		}
 	}
 
-	// Bordered viewport with logs
-	logBoxStyle := lipgloss.NewStyle().
-		BorderStyle(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color(logBoxBorderColor)).
-		Padding(0, 1)
-
-	b.WriteString(logBoxStyle.Render(m.viewport.View()) + "\n")
-
-	// Toggle hint
-	b.WriteString(MutedStyle.Render("⊖ Full logs (press 'o' to collapse, 'q' to quit)\n"))
-
-	return b.String()
+	return fmt.Sprintf("%s %s", icon, text)
 }
 
 // renderCompletionView renders the final completion summary with error report
@@ -295,20 +271,16 @@ func (m *CheckModel) renderCompletionView() string {
 
 	switch {
 	case hasIssues:
-		// Show error report directly (it has its own header with problem count)
 		var errBuf bytes.Buffer
 		output.FormatText(&errBuf, m.errors)
 		b.WriteString(errBuf.String())
 	case workflowFailed:
-		// Workflow failed but no issues extracted - actual failure
 		headerStyle := ErrorStyle.Bold(true)
 		b.WriteString(headerStyle.Render(fmt.Sprintf("✗ Check failed in %s\n", m.duration)))
 	default:
-		// All good - no issues found
 		headerStyle := SuccessStyle.Bold(true)
 		b.WriteString(headerStyle.Render(fmt.Sprintf("✓ Check passed in %s\n", m.duration)))
 	}
 
 	return b.String()
 }
-
