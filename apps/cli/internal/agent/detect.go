@@ -16,7 +16,7 @@ var knownAgentEnvVars = []struct {
 	envVar        string
 	expectedValue string // empty = any non-empty value matches
 }{
-	{"CLAUDECODE", "1"},        // Claude Code (exact match)
+	{"CLAUDECODE", ""},         // Claude Code (alternative)
 	{"CLAUDE_CODE", ""},        // Claude Code (alternative)
 	{"CURSOR_AGENT", ""},       // Cursor AI
 	{"CODEX", ""},              // OpenAI Codex

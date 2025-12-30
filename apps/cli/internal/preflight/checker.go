@@ -22,9 +22,6 @@ import (
 // ErrCancelled is returned when the user cancels an operation
 var ErrCancelled = errors.New("cancelled")
 
-// cancelledMessage is the friendly goodbye shown when user cancels
-var cancelledMessage = tui.SecondaryStyle.Render("Action cancelled. Maybe next time?")
-
 const (
 	// preflightVisualDelay allows the spinner to render before check execution begins.
 	// This improves perceived responsiveness in the TUI by giving users visual feedback
@@ -93,7 +90,7 @@ type preflightChecker struct {
 // executeCheck runs a single check with standardized error handling and UI updates.
 // It updates the display to show "running", executes the check function, and updates
 // the display to show "success" or "error" depending on the result.
-// For cancellation errors, it shows a friendly goodbye message instead of error details.
+// For cancellation errors, it clears the display and returns the error for main to handle.
 func (p *preflightChecker) executeCheck(checkName string, checkFunc func() error) error {
 	time.Sleep(p.transitionDelay)
 	p.display.UpdateCheck(checkName, "running", nil)
@@ -103,8 +100,6 @@ func (p *preflightChecker) executeCheck(checkName string, checkFunc func() error
 	if err != nil {
 		if errors.Is(err, ErrCancelled) {
 			p.display.Clear()
-			fmt.Fprintln(os.Stderr, cancelledMessage)
-			fmt.Fprintln(os.Stderr)
 			return err
 		}
 		p.display.UpdateCheck(checkName, "error", err)

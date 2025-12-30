@@ -43,7 +43,7 @@ func (m *Model) View() string {
 
 // renderHeader renders the branded header.
 func (m *Model) renderHeader() string {
-	return tui.Header(m.version, m.repoIdentifier)
+	return tui.Header(m.version, "config")
 }
 
 // renderField renders a single configuration field.
@@ -68,7 +68,7 @@ func (m *Model) renderField(index int, field Field) string {
 	}
 
 	// Format field name with padding
-	name := nameStyle.Render(padRight(field.Key, 12))
+	name := nameStyle.Render(padRight(field.Key, 20))
 
 	// Value - show text input if editing this field
 	var displayValue string

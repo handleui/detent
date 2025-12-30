@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/detent/cli/internal/agent"
@@ -31,6 +32,10 @@ var cfg *persistence.Config
 // Initialized once in PersistentPreRunE, available to all commands.
 var agentInfo agent.Info
 
+// StartTime holds the command start time for duration calculation.
+// Set in PersistentPreRunE, used by commands to calculate elapsed time.
+var StartTime time.Time
+
 var rootCmd = &cobra.Command{
 	Use:   "detent",
 	Short: "Run GitHub Actions locally with enhanced error reporting",
@@ -46,6 +51,9 @@ Requirements:
   - act (nektos/act - automatically invoked)`,
 	Version: Version,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		// Track command start time
+		StartTime = time.Now()
+
 		// Skip for config subcommands
 		for c := cmd; c != nil; c = c.Parent() {
 			if c == configCmd {
@@ -56,12 +64,9 @@ Requirements:
 		// Detect AI agent environment once (cached, safe to call multiple times)
 		agentInfo = agent.Detect()
 
-		// Branding header
+		// Branding header (commands control spacing after)
 		fmt.Println()
-		repoRoot, _ := filepath.Abs(".")
-		repoIdentifier := git.GetRepoIdentifier(repoRoot)
-		fmt.Println(tui.Header(Version, repoIdentifier))
-		fmt.Println()
+		fmt.Println(tui.Header(Version, cmd.Name()))
 
 
 		// Load config

@@ -98,8 +98,10 @@ func New(config *RunConfig) *CheckRunner {
 //
 // This must be called before Run. All resources are tracked for cleanup.
 // Returns error if preparation fails. On error, partial resources are cleaned up.
+//
+// When verbose is true (non-TUI mode), prints status lines to stderr showing progress.
 func (r *CheckRunner) Prepare(ctx context.Context) error {
-	fmt.Fprintln(os.Stderr, tui.SecondaryStyle.Render("  Preparing..."))
+	verbose := !r.config.UseTUI
 
 	g, gctx := errgroup.WithContext(ctx)
 
@@ -116,7 +118,13 @@ func (r *CheckRunner) Prepare(ctx context.Context) error {
 	})
 
 	if err := g.Wait(); err != nil {
+		if verbose {
+			r.printStatus("Checking prerequisites", false)
+		}
 		return err
+	}
+	if verbose {
+		r.printStatus("Checking prerequisites", true)
 	}
 
 	// Best-effort cleanup of orphaned worktrees from previous runs (SIGKILL recovery)
@@ -138,7 +146,13 @@ func (r *CheckRunner) Prepare(ctx context.Context) error {
 	})
 
 	if err := g2.Wait(); err != nil {
+		if verbose {
+			r.printStatus("Validating repository", false)
+		}
 		return err
+	}
+	if verbose {
+		r.printStatus("Validating repository", true)
 	}
 
 	type workflowResult struct {
@@ -191,7 +205,13 @@ func (r *CheckRunner) Prepare(ctx context.Context) error {
 		if worktreeRes.cleanupWorktree != nil {
 			worktreeRes.cleanupWorktree()
 		}
+		if verbose {
+			r.printStatus("Preparing workflows", false)
+		}
 		return fmt.Errorf("preparing workflows: %w", workflowRes.err)
+	}
+	if verbose {
+		r.printStatus("Preparing workflows", true)
 	}
 
 	if worktreeRes.err != nil {
@@ -199,7 +219,13 @@ func (r *CheckRunner) Prepare(ctx context.Context) error {
 		if workflowRes.cleanupWorkflows != nil {
 			workflowRes.cleanupWorkflows()
 		}
+		if verbose {
+			r.printStatus("Creating workspace", false)
+		}
 		return fmt.Errorf("creating worktree: %w", worktreeRes.err)
+	}
+	if verbose {
+		r.printStatus("Creating workspace", true)
 	}
 
 	// Store results
@@ -210,6 +236,11 @@ func (r *CheckRunner) Prepare(ctx context.Context) error {
 	// Note: Non-TUI prepare doesn't set stashInfo (interactive prompt only in TUI mode)
 
 	return nil
+}
+
+// printStatus prints a status line to stderr for non-TUI mode.
+func (r *CheckRunner) printStatus(label string, success bool) {
+	_, _ = fmt.Fprintf(os.Stderr, "  %s... %s\n", label, tui.StatusIcon(success))
 }
 
 // PrepareWithTUI is like Prepare but sends progress updates to the TUI.

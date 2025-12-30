@@ -2,7 +2,6 @@ package signal
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
@@ -28,11 +27,4 @@ func SetupSignalHandler(parent context.Context) context.Context {
 	}()
 
 	return ctx
-}
-
-// PrintCancellationMessage prints an informational cancellation message to stderr.
-func PrintCancellationMessage(commandName string) {
-	const colorBlue = "\033[34m"
-	const colorReset = "\033[0m"
-	_, _ = fmt.Fprintf(os.Stderr, "\n%si %s stopped%s\n", colorBlue, commandName, colorReset)
 }

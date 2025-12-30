@@ -42,19 +42,17 @@ type Model struct {
 	editField string // Which field is being edited
 
 	// State
-	globalPath     string // Path to global config
-	version        string // App version for header
-	repoIdentifier string // owner/repo for header
-	quitting       bool
-	dirty          bool // Unsaved changes exist
-	saved          bool // Changes were saved during this session
+	globalPath string // Path to global config
+	version    string // App version for header
+	quitting   bool
+	dirty      bool // Unsaved changes exist
+	saved      bool // Changes were saved during this session
 }
 
 // Options for creating a new Model.
 type Options struct {
-	GlobalPath     string
-	Version        string
-	RepoIdentifier string
+	GlobalPath string
+	Version    string
 }
 
 // NewModel creates a new config model.
@@ -64,14 +62,13 @@ func NewModel(cfg *persistence.ConfigWithSources, opts Options) *Model {
 	ti.Width = 30
 
 	return &Model{
-		config:         cfg,
-		values:         GetFieldValues(cfg),
-		cursor:         0,
-		mode:           ModeView,
-		textInput:      ti,
-		globalPath:     opts.GlobalPath,
-		version:        opts.Version,
-		repoIdentifier: opts.RepoIdentifier,
+		config:     cfg,
+		values:     GetFieldValues(cfg),
+		cursor:     0,
+		mode:       ModeView,
+		textInput:  ti,
+		globalPath: opts.GlobalPath,
+		version:    opts.Version,
 	}
 }
 
@@ -210,9 +207,9 @@ func (m *Model) handleEnter() {
 	field := EditableFields[m.cursor]
 	switch field.Key {
 	case "budget_per_run":
-		m.startTextEdit("budget_per_run", persistence.FormatBudgetRaw(m.config.BudgetPerRunUSD.Value))
+		m.startTextEdit("budget_per_run", "")
 	case "budget_monthly":
-		m.startTextEdit("budget_monthly", persistence.FormatBudgetRaw(m.config.BudgetMonthlyUSD.Value))
+		m.startTextEdit("budget_monthly", "")
 	case "api_key":
 		m.startTextEdit("api_key", "")
 		m.textInput.EchoMode = textinput.EchoPassword

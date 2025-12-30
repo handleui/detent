@@ -81,7 +81,7 @@ func runAllow(cmd *cobra.Command, args []string) error {
 		if err := cfg.RemoveAllowedCommand(repoSHA, command); err != nil {
 			return fmt.Errorf("removing command: %w", err)
 		}
-		fmt.Fprintf(os.Stderr, "%s Removed: %s\n", tui.SuccessStyle.Render("-"), command)
+		fmt.Fprintln(os.Stderr, tui.ExitSuccess(fmt.Sprintf("Removed %q from allowlist", command)))
 		return nil
 	}
 
@@ -96,6 +96,6 @@ func runAllow(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("adding command: %w", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "%s Added: %s\n", tui.SuccessStyle.Render("+"), command)
+	fmt.Fprintln(os.Stderr, tui.ExitSuccess(fmt.Sprintf("Added %q to allowlist", command)))
 	return nil
 }

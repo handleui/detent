@@ -15,7 +15,6 @@ import (
 	"github.com/detent/cli/internal/output"
 	"github.com/detent/cli/internal/runner"
 	"github.com/detent/cli/internal/sentry"
-	"github.com/detent/cli/internal/signal"
 	"github.com/detent/cli/internal/tui"
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
@@ -174,6 +173,107 @@ func checkWorkflowStatus(result *runner.RunResult) error {
 	return nil
 }
 
+// printCompletionSummary prints a completion summary line for non-TUI/verbose mode.
+// Format: "  ✓ Check passed in 12s" or "  ✗ Check failed in 45s (2 errors, 1 warning)"
+func printCompletionSummary(result *runner.RunResult) {
+	duration := result.Duration.Round(time.Second)
+	durationStr := duration.String()
+
+	// Count errors and warnings
+	var errorCount, warningCount int
+	for _, err := range result.Extracted {
+		switch err.Severity {
+		case "error":
+			errorCount++
+		case "warning":
+			warningCount++
+		}
+	}
+
+	success := result.Success()
+	icon := tui.StatusIcon(success)
+
+	var summary string
+	if success {
+		summary = fmt.Sprintf("  %s %s", icon, tui.SuccessStyle.Render(fmt.Sprintf("Check passed in %s", durationStr)))
+	} else {
+		// Build details string
+		var details string
+		if errorCount > 0 || warningCount > 0 {
+			parts := []string{}
+			if errorCount > 0 {
+				parts = append(parts, fmt.Sprintf("%d error", errorCount))
+				if errorCount > 1 {
+					parts[len(parts)-1] += "s"
+				}
+			}
+			if warningCount > 0 {
+				parts = append(parts, fmt.Sprintf("%d warning", warningCount))
+				if warningCount > 1 {
+					parts[len(parts)-1] += "s"
+				}
+			}
+			details = " (" + joinParts(parts) + ")"
+		}
+		summary = fmt.Sprintf("  %s %s", icon, tui.ErrorStyle.Render(fmt.Sprintf("Check failed in %s%s", durationStr, details)))
+	}
+
+	_, _ = fmt.Fprintln(os.Stderr, summary)
+}
+
+// joinParts joins string parts with ", "
+func joinParts(parts []string) string {
+	result := ""
+	for i, part := range parts {
+		if i > 0 {
+			result += ", "
+		}
+		result += part
+	}
+	return result
+}
+
+// printExitMessage prints the final exit message with timing.
+// Format: "✓ No errors found in 2.3s" or "✗ Found 12 errors in 2.3s"
+func printExitMessage(result *runner.RunResult) {
+	duration := time.Since(StartTime).Round(100 * time.Millisecond)
+	durationStr := formatDuration(duration)
+
+	// Count errors only (not warnings)
+	var errorCount int
+	for _, err := range result.Extracted {
+		if err.Severity == "error" {
+			errorCount++
+		}
+	}
+
+	var msg string
+	if errorCount == 0 {
+		msg = tui.ExitSuccess(fmt.Sprintf("No errors found in %s", durationStr))
+	} else {
+		errorWord := "error"
+		if errorCount > 1 {
+			errorWord = "errors"
+		}
+		msg = tui.ExitError(fmt.Sprintf("Found %d %s in %s", errorCount, errorWord, durationStr))
+	}
+
+	fmt.Fprintln(os.Stderr, msg)
+}
+
+// formatDuration formats a duration in a human-readable way (e.g., "2.3s", "1m 23s")
+func formatDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%.1fs", d.Seconds())
+	}
+	minutes := int(d.Minutes())
+	seconds := int(d.Seconds()) % 60
+	if seconds == 0 {
+		return fmt.Sprintf("%dm", minutes)
+	}
+	return fmt.Sprintf("%dm %ds", minutes, seconds)
+}
+
 // runCheck orchestrates the workflow execution and error reporting.
 // It performs these steps in sequence:
 // 1. Setup and validate environment configuration
@@ -243,18 +343,23 @@ func runCheck(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("running act: %w", err)
 		}
 	} else {
-		_, _ = fmt.Fprintln(os.Stderr, tui.SecondaryStyle.Render("  Running..."))
+		_, _ = fmt.Fprintln(os.Stderr)
+		_, _ = fmt.Fprintln(os.Stderr, tui.SecondaryStyle.Render("─── Workflow Output ───"))
+		_, _ = fmt.Fprintln(os.Stderr)
 		err = r.Run(ctx)
 		if err != nil {
 			sentry.CaptureError(err)
 			return fmt.Errorf("running act: %w", err)
 		}
+		_, _ = fmt.Fprintln(os.Stderr)
+
+		// Print completion summary
+		printCompletionSummary(r.GetResult())
 	}
 
-	// Handle cancellation
+	// Handle cancellation - let main.go print the error message
 	if cancelled {
-		signal.PrintCancellationMessage("check")
-		return nil
+		return fmt.Errorf("cancelled")
 	}
 
 	// Persist results
@@ -274,6 +379,11 @@ func runCheck(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Print exit message with timing (TUI mode - non-TUI already printed via printCompletionSummary)
+	if cfg.UseTUI {
+		printExitMessage(result)
+	}
+
 	// Check status and return
 	return checkWorkflowStatus(result)
 }
@@ -287,8 +397,11 @@ const (
 // runCheckDryRun shows simulated TUI without actual workflow execution.
 func runCheckDryRun(ctx context.Context, cfg *runner.RunConfig) error {
 	if !cfg.UseTUI {
-		_, _ = fmt.Fprintln(os.Stderr, tui.SecondaryStyle.Render("  Preparing..."))
-		_, _ = fmt.Fprintln(os.Stderr, tui.SecondaryStyle.Render("  Running... (dry-run)"))
+		_, _ = fmt.Fprintln(os.Stderr, tui.SecondaryStyle.Render("  Preparing workspace..."))
+		_, _ = fmt.Fprintln(os.Stderr, tui.SuccessStyle.Render("  ✓ Ready"))
+		_, _ = fmt.Fprintln(os.Stderr)
+		_, _ = fmt.Fprintln(os.Stderr, tui.SecondaryStyle.Render("─── Workflow Output (dry-run) ───"))
+		_, _ = fmt.Fprintln(os.Stderr, tui.MutedStyle.Render("  [no output in dry-run mode]"))
 		return nil
 	}
 

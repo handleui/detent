@@ -81,11 +81,19 @@ func SourceBadge(sourceString string) string {
 }
 
 // Header renders the standard detent branding header.
-// Format: "Detent v0.1.0 · owner/repo"
-func Header(version, repoIdentifier string) string {
-	header := BrandStyle.Render("Detent") + " " + MutedStyle.Render("v"+version)
-	if repoIdentifier != "" && repoIdentifier != "." {
-		header += " " + MutedStyle.Render("· "+repoIdentifier)
-	}
-	return header
+// Format: "Detent v0.1.0 commandname" (brand green + white command)
+func Header(version, commandName string) string {
+	return BrandStyle.Render("Detent") + " " + BrandStyle.Render("v"+version) + " " + PrimaryStyle.Render(commandName)
+}
+
+// ExitSuccess returns a success exit message with green checkmark.
+// Message should be capitalized (e.g., "Configuration saved").
+func ExitSuccess(message string) string {
+	return SuccessStyle.Render("✓") + " " + message
+}
+
+// ExitError returns an error exit message with red X.
+// Message should be capitalized (e.g., "Repository not trusted").
+func ExitError(message string) string {
+	return ErrorStyle.Render("✗") + " " + message
 }

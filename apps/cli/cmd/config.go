@@ -3,10 +3,8 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/detent/cli/internal/git"
 	"github.com/detent/cli/internal/persistence"
 	"github.com/detent/cli/internal/tui"
 	tuiconfig "github.com/detent/cli/internal/tui/config"
@@ -79,10 +77,8 @@ func init() {
 
 func runConfigShow(_ *cobra.Command, _ []string) error {
 	// Show header
-	repoRoot, _ := filepath.Abs(".")
-	repoIdentifier := git.GetRepoIdentifier(repoRoot)
 	fmt.Println()
-	fmt.Println(tui.Header(Version, repoIdentifier))
+	fmt.Println(tui.Header(Version, "config"))
 	fmt.Println()
 
 	showCfg, err := persistence.LoadWithSources()
@@ -178,7 +174,8 @@ func runConfigReset(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("saving config: %w", err)
 	}
 
-	fmt.Printf("%s Configuration reset\n\n", tui.SuccessStyle.Render("✓"))
+	fmt.Println(tui.ExitSuccess("Configuration reset"))
+	fmt.Println()
 	fmt.Printf("  Model        %s\n", tui.PrimaryStyle.Render(persistence.DefaultModel))
 	fmt.Printf("  Timeout      %s\n", tui.PrimaryStyle.Render(fmt.Sprintf("%d min", persistence.DefaultTimeoutMins)))
 	fmt.Printf("  Per-run      %s\n", tui.PrimaryStyle.Render(persistence.FormatBudget(persistence.DefaultBudgetPerRunUSD)))
@@ -208,9 +205,6 @@ func runConfigSchema(_ *cobra.Command, _ []string) error {
 }
 
 func runConfigInteractive(_ *cobra.Command, _ []string) error {
-	repoRoot, _ := filepath.Abs(".")
-	repoIdentifier := git.GetRepoIdentifier(repoRoot)
-
 	// Load config with sources
 	cfg, err := persistence.LoadWithSources()
 	if err != nil {
@@ -221,9 +215,8 @@ func runConfigInteractive(_ *cobra.Command, _ []string) error {
 
 	// Create TUI model
 	model := tuiconfig.NewModel(cfg, tuiconfig.Options{
-		GlobalPath:     tuiconfig.GetGlobalPath(),
-		Version:        Version,
-		RepoIdentifier: repoIdentifier,
+		GlobalPath: tuiconfig.GetGlobalPath(),
+		Version:    Version,
 	})
 
 	// Run interactive TUI with alt screen to avoid duplication on editor open
@@ -234,12 +227,13 @@ func runConfigInteractive(_ *cobra.Command, _ []string) error {
 
 	// Outro: show header again after alt screen clears, then status
 	fmt.Println()
-	fmt.Println(tui.Header(Version, repoIdentifier))
+	fmt.Println(tui.Header(Version, "config"))
 	if model.WasSaved() {
-		fmt.Printf("  %s Config updated\n\n", tui.SuccessStyle.Render("✓"))
+		fmt.Println(tui.ExitSuccess("Configuration saved"))
 	} else {
-		fmt.Printf("  %s No changes\n\n", tui.MutedStyle.Render("·"))
+		fmt.Printf("%s No changes\n", tui.Bullet())
 	}
+	fmt.Println()
 
 	return nil
 }

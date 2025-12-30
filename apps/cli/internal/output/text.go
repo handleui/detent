@@ -9,14 +9,14 @@ import (
 	"github.com/detent/cli/internal/errors"
 )
 
-// ANSI color codes
+// ANSI color codes - using ANSI 256 palette to match TUI styles (internal/tui/styles.go)
 const (
 	colorReset  = "\033[0m"
-	colorRed    = "\033[31m"
-	colorYellow = "\033[33m"
-	colorGreen  = "\033[32m"
-	colorCyan   = "\033[36m"
-	colorGray   = "\033[90m"
+	colorRed    = "\033[38;5;203m"   // ColorError from styles.go
+	colorYellow = "\033[38;5;214m"   // ColorWarning from styles.go
+	colorGreen  = "\033[38;5;42m"    // ColorSuccess from styles.go
+	colorCyan   = "\033[38;5;45m"    // ColorAccent from styles.go
+	colorGray   = "\033[38;5;240m"   // ColorMuted from styles.go
 	colorBold   = "\033[1m"
 )
 
