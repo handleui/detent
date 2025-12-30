@@ -325,10 +325,41 @@ func runCheckDryRun(ctx context.Context, cfg *runner.RunConfig) error {
 	return err
 }
 
-// simulateDryRunPreflight displays minimal preflight output matching the real flow.
+// simulateDryRunPreflight displays animated preflight checks matching the real flow.
 func simulateDryRunPreflight() {
-	_, _ = fmt.Fprintln(os.Stderr, "  Preparing...")
-	time.Sleep(dryRunPreflightVisualDelay + dryRunPreflightCompletionPause)
+	checks := []string{
+		"Validating repository",
+		"Checking prerequisites",
+		"Preparing workflows",
+		"Creating workspace",
+	}
+
+	display := tui.NewPreflightDisplay(checks)
+	display.Render()
+
+	// Visual delay before first check
+	time.Sleep(dryRunPreflightVisualDelay)
+
+	// Simulate each check passing sequentially
+	for i, check := range checks {
+		display.UpdateCheck(check, "running", nil)
+		display.Render()
+
+		time.Sleep(100 * time.Millisecond)
+		display.UpdateCheck(check, "success", nil)
+		display.Render()
+
+		// Transition delay between checks
+		if i < len(checks)-1 {
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+
+	// Completion pause to show all checks passed
+	time.Sleep(dryRunPreflightCompletionPause)
+
+	// Blank line before main TUI starts
+	_, _ = fmt.Fprintln(os.Stderr)
 }
 
 // simulateDryRunProgress sends simulated workflow progress to the TUI.

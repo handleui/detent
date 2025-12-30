@@ -22,7 +22,7 @@ const (
 	viewportBorderPadding = 4  // borders and padding
 
 	// Log tail display settings
-	tailLinesToShow = 3
+	tailLinesToShow = 1
 	maxLogLines     = 10000 // Cap log history to prevent unbounded memory growth
 
 	// Color codes for unique elements
@@ -56,7 +56,7 @@ type CheckModel struct {
 	viewport     viewport.Model
 	spinner      spinner.Model
 	allLogs      []string        // Full log history
-	tailLines    []string        // Last 3 lines for compact display
+	tailLines    []string        // Last line for compact display
 	status       string
 	currentStep  int
 	totalSteps   int
@@ -245,12 +245,9 @@ func (m *CheckModel) renderCompactView() string {
 	statusLine := fmt.Sprintf("%s %s (%s)", m.spinner.View(), m.status, elapsed)
 	b.WriteString(statusLine + "\n")
 
-	// Show last 3 log lines indented
+	// Show last log line indented
 	if len(m.tailLines) > 0 {
-		for _, line := range m.tailLines {
-			b.WriteString("  " + line + "\n")
-		}
-		b.WriteString("\n")
+		b.WriteString("  " + MutedStyle.Render(m.tailLines[len(m.tailLines)-1]) + "\n\n")
 	}
 
 	// Toggle hint

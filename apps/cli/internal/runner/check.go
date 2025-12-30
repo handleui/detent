@@ -212,118 +212,24 @@ func (r *CheckRunner) Prepare(ctx context.Context) error {
 	return nil
 }
 
-// PrepareWithTUI is like Prepare but with interactive prompts for dirty worktree.
-// Uses minimal output (same as non-TUI) but can show interactive dialogs.
+// PrepareWithTUI is like Prepare but sends progress updates to the TUI.
+// It performs the same preparation steps but updates the UI with status messages.
 //
 // This must be called before RunWithTUI. All resources are tracked for cleanup.
 // Returns error if preparation fails. On error, partial resources are cleaned up.
 func (r *CheckRunner) PrepareWithTUI(ctx context.Context) error {
-	fmt.Fprintln(os.Stderr, "  Preparing...")
-
-	// Check for dirty worktree first - may need interactive prompt
-	stashInfo, err := preflight.EnsureCleanWorktree(ctx, r.config.RepoRoot, nil)
+	// Run preflight checks with visual feedback
+	result, err := preflight.RunPreflightChecks(ctx, r.config.WorkflowPath, r.config.RepoRoot, r.config.RunID, r.config.WorkflowFile)
 	if err != nil {
 		return err
 	}
-	r.stashInfo = stashInfo
 
-	// Run remaining checks in parallel
-	g, gctx := errgroup.WithContext(ctx)
-
-	g.Go(func() error {
-		return git.ValidateGitRepository(gctx, r.config.RepoRoot)
-	})
-
-	g.Go(func() error {
-		return actbin.EnsureInstalled(gctx, nil)
-	})
-
-	g.Go(func() error {
-		return docker.IsAvailable(gctx)
-	})
-
-	if err := g.Wait(); err != nil {
-		return err
-	}
-
-	// Best-effort cleanup of orphaned worktrees
-	_, _ = git.CleanupOrphanedWorktrees(ctx, r.config.RepoRoot)
-
-	// Validation checks in parallel
-	g2, gctx2 := errgroup.WithContext(ctx)
-
-	g2.Go(func() error {
-		return git.ValidateNoSubmodules(r.config.RepoRoot)
-	})
-
-	g2.Go(func() error {
-		return git.ValidateNoEscapingSymlinks(gctx2, r.config.RepoRoot)
-	})
-
-	if err := g2.Wait(); err != nil {
-		return err
-	}
-
-	// Prepare workflows and worktree in parallel
-	type workflowResult struct {
-		tmpDir           string
-		cleanupWorkflows func()
-		err              error
-	}
-
-	type worktreeResult struct {
-		worktreeInfo    *git.WorktreeInfo
-		cleanupWorktree func()
-		err             error
-	}
-
-	workflowChan := make(chan workflowResult, 1)
-	worktreeChan := make(chan worktreeResult, 1)
-
-	go func() {
-		tmpDir, cleanupWorkflows, err := workflow.PrepareWorkflows(r.config.WorkflowPath, r.config.WorkflowFile)
-		workflowChan <- workflowResult{
-			tmpDir:           tmpDir,
-			cleanupWorkflows: cleanupWorkflows,
-			err:              err,
-		}
-	}()
-
-	go func() {
-		worktreePath, pathErr := git.CreateEphemeralWorktreePath(r.config.RunID)
-		if pathErr != nil {
-			worktreeChan <- worktreeResult{err: pathErr}
-			return
-		}
-		worktreeInfo, cleanup, err := git.PrepareWorktree(ctx, r.config.RepoRoot, worktreePath)
-		worktreeChan <- worktreeResult{
-			worktreeInfo:    worktreeInfo,
-			cleanupWorktree: cleanup,
-			err:             err,
-		}
-	}()
-
-	workflowRes := <-workflowChan
-	worktreeRes := <-worktreeChan
-
-	if workflowRes.err != nil {
-		if worktreeRes.cleanupWorktree != nil {
-			worktreeRes.cleanupWorktree()
-		}
-		return fmt.Errorf("preparing workflows: %w", workflowRes.err)
-	}
-
-	if worktreeRes.err != nil {
-		if workflowRes.cleanupWorkflows != nil {
-			workflowRes.cleanupWorkflows()
-		}
-		return fmt.Errorf("creating worktree: %w", worktreeRes.err)
-	}
-
-	r.tmpDir = workflowRes.tmpDir
-	r.cleanupWorkflows = workflowRes.cleanupWorkflows
-	r.worktreeInfo = worktreeRes.worktreeInfo
-	r.cleanupWorktree = worktreeRes.cleanupWorktree
+	// Store preparation results
+	r.tmpDir = result.TmpDir
+	r.worktreeInfo = result.WorktreeInfo
+	r.cleanupWorkflows = result.CleanupWorkflows
+	r.cleanupWorktree = result.CleanupWorktree
+	r.stashInfo = result.StashInfo
 
 	return nil
 }

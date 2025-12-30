@@ -234,13 +234,10 @@ func EnsureCleanWorktree(ctx context.Context, repoRoot string, display *tui.Pref
 // It verifies system requirements, prepares workflows, and creates an isolated worktree.
 func RunPreflightChecks(ctx context.Context, workflowPath, repoRoot, runID, workflowFile string) (*Result, error) {
 	checks := []string{
-		"Checking for uncommitted changes",
-		"Validating repository security",
-		"Checking act installation",
-		"Checking Docker availability",
-		"Preparing workflows (injecting continue-on-error)",
-		"Creating temporary workspace",
-		"Creating isolated worktree",
+		"Validating repository",
+		"Checking prerequisites",
+		"Preparing workflows",
+		"Creating workspace",
 	}
 
 	display := tui.NewPreflightDisplay(checks)
@@ -251,26 +248,21 @@ func RunPreflightChecks(ctx context.Context, workflowPath, repoRoot, runID, work
 		transitionDelay: preflightTransitionDelay,
 	}
 
-	// Check 1: Clean worktree (uses visual delay for first check)
-	// Uses interactive prompt if uncommitted changes are detected
+	// Check 1: Validate repository (clean worktree + security)
 	checker.transitionDelay = preflightVisualDelay
 	var stashInfo *git.StashInfo
-	if err := checker.executeCheck("Checking for uncommitted changes", func() error {
+	if err := checker.executeCheck("Validating repository", func() error {
+		// Check for uncommitted changes (may show interactive prompt)
 		var err error
 		stashInfo, err = EnsureCleanWorktree(ctx, repoRoot, display)
-		return err
-	}); err != nil {
-		return nil, err
-	}
-	checker.transitionDelay = preflightTransitionDelay
-
-	// Check 2: Repository security (symlinks and submodules)
-	if err := checker.executeCheck("Validating repository security", func() error {
+		if err != nil {
+			return err
+		}
 		// Check for symlinks that escape repository boundaries
 		if err := git.ValidateNoEscapingSymlinks(ctx, repoRoot); err != nil {
 			return fmt.Errorf("symlink security: %w", err)
 		}
-		// Check for submodules (not yet supported, includes CVE-2025-48384 check)
+		// Check for submodules (not yet supported)
 		if err := git.ValidateNoSubmodules(repoRoot); err != nil {
 			return err
 		}
@@ -278,25 +270,25 @@ func RunPreflightChecks(ctx context.Context, workflowPath, repoRoot, runID, work
 	}); err != nil {
 		return nil, err
 	}
+	checker.transitionDelay = preflightTransitionDelay
 
-	// Check 3: Act installation (downloads if not present)
-	if err := checker.executeCheck("Checking act installation", func() error {
-		return actbin.EnsureInstalled(ctx, nil)
+	// Check 2: Prerequisites (act + docker)
+	if err := checker.executeCheck("Checking prerequisites", func() error {
+		if err := actbin.EnsureInstalled(ctx, nil); err != nil {
+			return err
+		}
+		if err := docker.IsAvailable(ctx); err != nil {
+			return fmt.Errorf("docker is not available: %w", err)
+		}
+		return nil
 	}); err != nil {
 		return nil, err
 	}
 
-	// Check 4: Docker availability
-	if err := checker.executeCheck("Checking Docker availability", func() error {
-		return docker.IsAvailable(ctx)
-	}); err != nil {
-		return nil, fmt.Errorf("docker is not available: %w", err)
-	}
-
-	// Check 5: Prepare workflows
+	// Check 3: Prepare workflows
 	workflowResult, err := checker.executeWorkflowPrep(
-		"Preparing workflows (injecting continue-on-error)",
-		[]string{"Creating temporary workspace"},
+		"Preparing workflows",
+		nil,
 		func() (workflowPrepResult, error) {
 			tmpDir, cleanup, prepErr := workflow.PrepareWorkflows(workflowPath, workflowFile)
 			if prepErr != nil {
@@ -309,9 +301,9 @@ func RunPreflightChecks(ctx context.Context, workflowPath, repoRoot, runID, work
 		return nil, err
 	}
 
-	// Check 6: Create worktree (ephemeral, cleaned up after use)
+	// Check 4: Create workspace (worktree)
 	worktreeResult, err := checker.executeWorktreePrep(
-		"Creating isolated worktree",
+		"Creating workspace",
 		func() (worktreePrepResult, error) {
 			worktreePath, pathErr := git.CreateEphemeralWorktreePath(runID)
 			if pathErr != nil {

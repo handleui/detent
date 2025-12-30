@@ -6,6 +6,7 @@ import (
 
 	"github.com/detent/cli/cmd"
 	"github.com/detent/cli/internal/sentry"
+	"github.com/detent/cli/internal/tui"
 )
 
 func main() {
@@ -23,7 +24,7 @@ func run() int {
 	if err := cmd.Execute(); err != nil {
 		sentry.CaptureError(err)
 		// Print error since commands use SilenceErrors
-		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+		fmt.Fprintf(os.Stderr, "%s %s\n", tui.ErrorStyle.Render("Error:"), err)
 		return 1
 	}
 	return 0
