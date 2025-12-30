@@ -243,21 +243,12 @@ func runCheck(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("running act: %w", err)
 		}
 	} else {
-		if cfg.IsAgentMode {
-			_, _ = fmt.Fprintln(os.Stderr, "  · Running workflows...")
-		} else {
-			_, _ = fmt.Fprint(os.Stderr, "Running workflows... ")
-		}
+		_, _ = fmt.Fprintln(os.Stderr, "  Running...")
 		err = r.Run(ctx)
 		if err != nil {
 			sentry.CaptureError(err)
 			return fmt.Errorf("running act: %w", err)
 		}
-		result := r.GetResult()
-		if !cfg.IsAgentMode {
-			_, _ = fmt.Fprintf(os.Stderr, "done (%s)\n", result.Duration)
-		}
-		// Agent mode: error report output provides all needed context
 	}
 
 	// Handle cancellation
@@ -287,20 +278,17 @@ func runCheck(cmd *cobra.Command, args []string) error {
 	return checkWorkflowStatus(result)
 }
 
-// Timing constants for dry-run simulation (matches real preflight timing)
+// Timing constants for dry-run simulation
 const (
 	dryRunPreflightVisualDelay     = 200 * time.Millisecond
-	dryRunPreflightTransitionDelay = 100 * time.Millisecond
 	dryRunPreflightCompletionPause = 300 * time.Millisecond
 )
 
 // runCheckDryRun shows simulated TUI without actual workflow execution.
-// This is 1:1 faithful to the real check command UI, using the same
-// preflight checks display and main TUI structure.
 func runCheckDryRun(ctx context.Context, cfg *runner.RunConfig) error {
 	if !cfg.UseTUI {
-		_, _ = fmt.Fprintf(os.Stderr, "[dry-run] Would run workflows with event '%s'\n", cfg.Event)
-		_, _ = fmt.Fprintf(os.Stderr, "[dry-run] No actual execution performed\n")
+		_, _ = fmt.Fprintln(os.Stderr, "  Preparing...")
+		_, _ = fmt.Fprintln(os.Stderr, "  Running... (dry-run)")
 		return nil
 	}
 
@@ -337,43 +325,10 @@ func runCheckDryRun(ctx context.Context, cfg *runner.RunConfig) error {
 	return err
 }
 
-// simulateDryRunPreflight displays the preflight checks UI with simulated success.
-// Uses simplified checks for dry-run while maintaining the same visual flow.
+// simulateDryRunPreflight displays minimal preflight output matching the real flow.
 func simulateDryRunPreflight() {
-	checks := []string{
-		"Checking for uncommitted changes",
-		"Validating repository security",
-		"Checking prerequisites",
-		"Preparing workflows",
-		"Creating isolated workspace",
-	}
-
-	display := tui.NewPreflightDisplay(checks)
-	display.Render()
-
-	// Visual delay before first check (same as real preflight)
-	time.Sleep(dryRunPreflightVisualDelay)
-
-	// Simulate each check passing sequentially
-	for i, check := range checks {
-		display.UpdateCheck(check, "running", nil)
-		display.Render()
-
-		time.Sleep(100 * time.Millisecond)
-		display.UpdateCheck(check, "success", nil)
-		display.Render()
-
-		// Transition delay between checks
-		if i < len(checks)-1 {
-			time.Sleep(dryRunPreflightTransitionDelay)
-		}
-	}
-
-	// Completion pause to show all checks passed
-	time.Sleep(dryRunPreflightCompletionPause)
-
-	// Blank line before main TUI starts
-	_, _ = fmt.Fprintln(os.Stderr)
+	_, _ = fmt.Fprintln(os.Stderr, "  Preparing...")
+	time.Sleep(dryRunPreflightVisualDelay + dryRunPreflightCompletionPause)
 }
 
 // simulateDryRunProgress sends simulated workflow progress to the TUI.

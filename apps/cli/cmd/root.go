@@ -63,10 +63,6 @@ Requirements:
 		fmt.Println(tui.Header(Version, repoIdentifier))
 		fmt.Println()
 
-		// Minimal agent mode indicator
-		if agentInfo.IsAgent {
-			fmt.Fprintf(os.Stderr, "  %s\n", tui.MutedStyle.Render("▸ "+agentInfo.Name+" detected, verbose mode"))
-		}
 
 		// Load config
 		loadedCfg, configErr := persistence.Load()
