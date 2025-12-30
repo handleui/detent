@@ -99,7 +99,7 @@ func New(config *RunConfig) *CheckRunner {
 // This must be called before Run. All resources are tracked for cleanup.
 // Returns error if preparation fails. On error, partial resources are cleaned up.
 func (r *CheckRunner) Prepare(ctx context.Context) error {
-	fmt.Fprintln(os.Stderr, "  Preparing...")
+	fmt.Fprintln(os.Stderr, tui.SecondaryStyle.Render("  Preparing..."))
 
 	g, gctx := errgroup.WithContext(ctx)
 

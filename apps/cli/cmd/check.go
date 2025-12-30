@@ -118,7 +118,7 @@ func buildRunConfig() (*runner.RunConfig, error) {
 		WorkflowFile: workflowFile,
 		Event:        event,
 		UseTUI:       useTUI,
-		StreamOutput: false,
+		StreamOutput: !useTUI, // Non-TUI mode streams act logs for verbose output
 		RunID:        runID,
 		DryRun:       dryRun,
 		IsAgentMode:  agentInfo.IsAgent,
@@ -243,7 +243,7 @@ func runCheck(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("running act: %w", err)
 		}
 	} else {
-		_, _ = fmt.Fprintln(os.Stderr, "  Running...")
+		_, _ = fmt.Fprintln(os.Stderr, tui.SecondaryStyle.Render("  Running..."))
 		err = r.Run(ctx)
 		if err != nil {
 			sentry.CaptureError(err)
@@ -287,8 +287,8 @@ const (
 // runCheckDryRun shows simulated TUI without actual workflow execution.
 func runCheckDryRun(ctx context.Context, cfg *runner.RunConfig) error {
 	if !cfg.UseTUI {
-		_, _ = fmt.Fprintln(os.Stderr, "  Preparing...")
-		_, _ = fmt.Fprintln(os.Stderr, "  Running... (dry-run)")
+		_, _ = fmt.Fprintln(os.Stderr, tui.SecondaryStyle.Render("  Preparing..."))
+		_, _ = fmt.Fprintln(os.Stderr, tui.SecondaryStyle.Render("  Running... (dry-run)"))
 		return nil
 	}
 
