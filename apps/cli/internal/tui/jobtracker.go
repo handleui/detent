@@ -76,19 +76,29 @@ func (t *JobTracker) ProcessEvent(event *ci.JobEvent) bool {
 	return false
 }
 
-// MarkAllRunningComplete marks all running jobs as complete.
+// MarkAllRunningComplete marks all running and pending jobs as complete.
 // Called when the entire workflow finishes.
+// Jobs that never started (stayed pending) are also marked - this handles cases
+// where act fails early (e.g., Docker issues) before emitting start events.
 func (t *JobTracker) MarkAllRunningComplete(hasErrors bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	for _, job := range t.jobs {
-		if job.Status == ci.JobRunning {
+		switch job.Status {
+		case ci.JobRunning:
+			// Running jobs get their final status based on errors
 			if hasErrors {
 				job.Status = ci.JobFailed
 			} else {
 				job.Status = ci.JobSuccess
 			}
+		case ci.JobPending:
+			// Pending jobs that never started should be marked as failed
+			// (they didn't run, which is a failure condition)
+			job.Status = ci.JobFailed
+		case ci.JobSuccess, ci.JobFailed:
+			// Already complete, no change needed
 		}
 	}
 }

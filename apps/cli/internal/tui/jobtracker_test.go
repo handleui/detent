@@ -155,3 +155,42 @@ func TestJobTracker_UnknownJob(t *testing.T) {
 		t.Error("ProcessEvent for unknown job should return false")
 	}
 }
+
+func TestJobTracker_PendingJobsMarkedFailed(t *testing.T) {
+	// This tests the case where some jobs never start (e.g., due to Docker issues)
+	// and should be marked as failed when the workflow completes
+	jobs := []workflow.JobInfo{
+		{ID: "a", Name: "A"},
+		{ID: "b", Name: "B"},
+		{ID: "c", Name: "C"},
+	}
+
+	tracker := NewJobTracker(jobs)
+
+	// Only A starts and completes
+	tracker.ProcessEvent(&ci.JobEvent{JobName: "A", Action: "start"})
+	tracker.ProcessEvent(&ci.JobEvent{JobName: "A", Action: "finish", Success: true})
+
+	// B starts but doesn't finish
+	tracker.ProcessEvent(&ci.JobEvent{JobName: "B", Action: "start"})
+
+	// C never starts (stays pending)
+
+	// Mark all complete - workflow had errors (because some jobs didn't finish)
+	tracker.MarkAllRunningComplete(true)
+
+	// A was already complete, should stay success
+	if tracker.jobByName["A"].Status != ci.JobSuccess {
+		t.Errorf("A should be success, got %s", tracker.jobByName["A"].Status)
+	}
+
+	// B was running, should be marked failed
+	if tracker.jobByName["B"].Status != ci.JobFailed {
+		t.Errorf("B should be failed (was running), got %s", tracker.jobByName["B"].Status)
+	}
+
+	// C never started, should be marked failed (not left as pending)
+	if tracker.jobByName["C"].Status != ci.JobFailed {
+		t.Errorf("C should be failed (never started), got %s", tracker.jobByName["C"].Status)
+	}
+}

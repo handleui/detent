@@ -1,6 +1,9 @@
 package errors
 
-import "regexp"
+import (
+	"regexp"
+	"strings"
+)
 
 // Regex patterns for extracting errors from act output.
 // Patterns use lazy quantifiers (.+?) where possible to prevent ReDoS.
@@ -97,4 +100,26 @@ var (
 
 	// Test output continuation pattern (lines after test failure)
 	testOutputPattern = regexp.MustCompile(`^\s{4,}`) // Indented test output lines
+
+	// Act debug noise pattern - matches act's verbose debug output that contains
+	// Go struct dumps with <nil> values (e.g., "Job.Strategy: <nil>")
+	actDebugStructPattern = regexp.MustCompile(`^\s*(?:Job\.|level=debug|time=).*<nil>`)
 )
+
+// isActDebugNoise returns true if the line is act debug noise that should be skipped.
+// This filters out Go struct dumps and debug messages that contain <nil> values,
+// which aren't actual errors but internal act state dumps.
+func isActDebugNoise(line string) bool {
+	// Skip lines that are just "<nil>" or contain act debug struct dumps
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "<nil>" {
+		return true
+	}
+
+	// Skip act debug messages with struct dumps containing <nil>
+	if actDebugStructPattern.MatchString(line) {
+		return true
+	}
+
+	return false
+}

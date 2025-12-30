@@ -278,6 +278,12 @@ func (e *Extractor) extractMetadata(line string) *ExtractedError {
 }
 
 func (e *Extractor) extractFromLine(line string) *ExtractedError {
+	// Skip act debug noise - these contain Go struct dumps with <nil> values
+	// that aren't actual errors (e.g., "Job.Strategy: <nil>", "level=debug msg=...")
+	if isActDebugNoise(line) {
+		return nil
+	}
+
 	// Check if we're continuing a stack trace
 	if e.isStackTraceContinuation(line) {
 		e.addStackTraceLine(line)

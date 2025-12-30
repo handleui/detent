@@ -327,3 +327,45 @@ func TestExtractorMultilineRust(t *testing.T) {
 		t.Errorf("Line = %d, want %d", result[0].Line, 10)
 	}
 }
+
+// TestExtractorFiltersActDebugNoise verifies that act's debug output with <nil>
+// values is filtered out and not treated as errors.
+func TestExtractorFiltersActDebugNoise(t *testing.T) {
+	// This input simulates act's verbose debug output that contains <nil> values
+	// from Go struct dumps - these should NOT be extracted as errors
+	input := `time="2025-12-30T14:23:14-06:00" level=debug msg="Job.Strategy: <nil>"
+time="2025-12-30T14:23:14-06:00" level=debug msg="Job.RawNeeds: {0 0    <nil> []    0 0}"
+Job.RawContainer: {0 0    <nil> []    0 0}
+<nil>
+level=debug msg="something with <nil> in it"
+error: actual error message
+src/main.go:10:5: undefined: foo`
+
+	extractor := NewExtractor()
+	result := extractor.Extract(input)
+	ApplySeverity(result)
+
+	// Should only extract the real errors, not the <nil> debug noise
+	if len(result) != 2 {
+		t.Fatalf("Expected 2 errors (ignoring <nil> noise), got %d", len(result))
+	}
+
+	// Verify we got the actual errors
+	foundGeneric := false
+	foundGo := false
+	for _, err := range result {
+		if err.Message == "actual error message" {
+			foundGeneric = true
+		}
+		if err.Message == "undefined: foo" && err.File == "src/main.go" {
+			foundGo = true
+		}
+	}
+
+	if !foundGeneric {
+		t.Error("Expected to find generic error 'actual error message'")
+	}
+	if !foundGo {
+		t.Error("Expected to find Go error 'undefined: foo'")
+	}
+}
