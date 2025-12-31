@@ -39,18 +39,15 @@ func (r *Result) Cleanup() {
 
 // RunPreflightChecks performs pre-flight checks with a single-line shimmer display.
 func RunPreflightChecks(ctx context.Context, workflowPath, repoRoot, runID, workflowFile string) (*Result, error) {
-	// Create single-line shimmer display
 	model := tui.NewPreflightModel()
 	program := tea.NewProgram(&model)
 
-	// Channel to collect results
 	type checkResult struct {
 		result *Result
 		err    error
 	}
 	resultChan := make(chan checkResult, 1)
 
-	// Run checks in background goroutine
 	go func() {
 		var tmpDir string
 		var cleanupWorkflows func()
@@ -62,7 +59,6 @@ func RunPreflightChecks(ctx context.Context, workflowPath, repoRoot, runID, work
 			program.Send(tui.PreflightDoneMsg{Err: err})
 		}
 
-		// Check 1: Validate repository
 		program.Send(tui.PreflightUpdateMsg("Validating repository"))
 		err := git.ValidateNoEscapingSymlinks(ctx, repoRoot)
 		if err != nil {
@@ -75,7 +71,6 @@ func RunPreflightChecks(ctx context.Context, workflowPath, repoRoot, runID, work
 			return
 		}
 
-		// Check 2: Prerequisites
 		program.Send(tui.PreflightUpdateMsg("Checking prerequisites"))
 		err = actbin.EnsureInstalled(ctx, nil)
 		if err != nil {
@@ -88,7 +83,6 @@ func RunPreflightChecks(ctx context.Context, workflowPath, repoRoot, runID, work
 			return
 		}
 
-		// Check 3: Prepare workflows
 		program.Send(tui.PreflightUpdateMsg("Preparing workflows"))
 		tmpDir, cleanupWorkflows, err = workflow.PrepareWorkflows(workflowPath, workflowFile)
 		if err != nil {
@@ -96,7 +90,6 @@ func RunPreflightChecks(ctx context.Context, workflowPath, repoRoot, runID, work
 			return
 		}
 
-		// Check 4: Create workspace
 		program.Send(tui.PreflightUpdateMsg("Creating workspace"))
 		var worktreePath string
 		worktreePath, err = git.CreateEphemeralWorktreePath(runID)
@@ -112,7 +105,6 @@ func RunPreflightChecks(ctx context.Context, workflowPath, repoRoot, runID, work
 			return
 		}
 
-		// Success
 		resultChan <- checkResult{
 			result: &Result{
 				TmpDir:           tmpDir,
@@ -125,18 +117,15 @@ func RunPreflightChecks(ctx context.Context, workflowPath, repoRoot, runID, work
 		program.Send(tui.PreflightDoneMsg{Err: nil})
 	}()
 
-	// Run TUI
 	finalModel, err := program.Run()
 	if err != nil {
 		return nil, err
 	}
 
-	// Check if cancelled
 	if m, ok := finalModel.(*tui.PreflightModel); ok && m.WasCancelled() {
 		return nil, ErrCancelled
 	}
 
-	// Get result from goroutine
 	res := <-resultChan
 	return res.result, res.err
 }

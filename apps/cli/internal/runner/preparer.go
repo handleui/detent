@@ -147,7 +147,6 @@ func (p *WorkflowPreparer) prepareWorkflowsAndWorktree(ctx context.Context, verb
 	workflowChan := make(chan workflowResult, 1)
 	worktreeChan := make(chan worktreeResult, 1)
 
-	// Prepare workflows in parallel
 	go func() {
 		tmpDir, cleanupWorkflows, err := workflow.PrepareWorkflows(p.config.WorkflowPath, p.config.WorkflowFile)
 		workflowChan <- workflowResult{
@@ -157,7 +156,6 @@ func (p *WorkflowPreparer) prepareWorkflowsAndWorktree(ctx context.Context, verb
 		}
 	}()
 
-	// Prepare worktree in parallel (ephemeral, cleaned up after use)
 	go func() {
 		worktreePath, pathErr := git.CreateEphemeralWorktreePath(p.config.RunID)
 		if pathErr != nil {
@@ -172,11 +170,9 @@ func (p *WorkflowPreparer) prepareWorkflowsAndWorktree(ctx context.Context, verb
 		}
 	}()
 
-	// Collect results
 	workflowRes := <-workflowChan
 	worktreeRes := <-worktreeChan
 
-	// Handle errors with proper cleanup
 	if workflowRes.err != nil {
 		if worktreeRes.cleanupWorktree != nil {
 			worktreeRes.cleanupWorktree()
@@ -203,7 +199,6 @@ func (p *WorkflowPreparer) prepareWorkflowsAndWorktree(ctx context.Context, verb
 		p.printStatus("Creating workspace", true)
 	}
 
-	// Extract job info from workflows
 	jobs, _ := workflow.ExtractJobInfoFromDir(p.config.WorkflowPath)
 	p.initDebugLogging(jobs)
 

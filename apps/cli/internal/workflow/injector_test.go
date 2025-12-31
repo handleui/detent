@@ -1520,10 +1520,10 @@ func TestBuildCombinedManifest(t *testing.T) {
 // TestFindFirstJobAcrossWorkflows tests finding the first job across multiple workflows.
 func TestFindFirstJobAcrossWorkflows(t *testing.T) {
 	tests := []struct {
-		name         string
-		workflows    map[string]*Workflow
-		wantPath     string
-		wantJobID    string
+		name      string
+		workflows map[string]*Workflow
+		wantPath  string
+		wantJobID string
 	}{
 		{
 			name:      "empty workflows",
@@ -1532,7 +1532,7 @@ func TestFindFirstJobAcrossWorkflows(t *testing.T) {
 			wantJobID: "",
 		},
 		{
-			name: "single workflow with jobs",
+			name: "single workflow with jobs - no dependencies",
 			workflows: map[string]*Workflow{
 				"/path/to/ci.yml": {
 					Jobs: map[string]*Job{
@@ -1542,24 +1542,51 @@ func TestFindFirstJobAcrossWorkflows(t *testing.T) {
 				},
 			},
 			wantPath:  "/path/to/ci.yml",
-			wantJobID: "lint", // Alphabetically first
+			wantJobID: "lint", // Alphabetically first among jobs without needs
 		},
 		{
-			name: "multiple workflows - first workflow path wins",
+			name: "prefer job without needs over alphabetically earlier job with needs",
 			workflows: map[string]*Workflow{
 				"/path/to/ci.yml": {
 					Jobs: map[string]*Job{
-						"test": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "test"}}},
+						"build": {RunsOn: "ubuntu-latest", Needs: []any{"lint", "test"}, Steps: []*Step{{Run: "build"}}},
+						"lint":  {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "lint"}}},
+						"test":  {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "test"}}},
+					},
+				},
+			},
+			wantPath:  "/path/to/ci.yml",
+			wantJobID: "lint", // lint has no needs, build does
+		},
+		{
+			name: "prefer job without needs - string needs format",
+			workflows: map[string]*Workflow{
+				"/path/to/ci.yml": {
+					Jobs: map[string]*Job{
+						"deploy": {RunsOn: "ubuntu-latest", Needs: "build", Steps: []*Step{{Run: "deploy"}}},
+						"build":  {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "build"}}},
+					},
+				},
+			},
+			wantPath:  "/path/to/ci.yml",
+			wantJobID: "build", // build has no needs
+		},
+		{
+			name: "multiple workflows - prefer workflow with job without needs",
+			workflows: map[string]*Workflow{
+				"/path/to/ci.yml": {
+					Jobs: map[string]*Job{
+						"build": {RunsOn: "ubuntu-latest", Needs: []any{"lint"}, Steps: []*Step{{Run: "build"}}},
 					},
 				},
 				"/path/to/release.yml": {
 					Jobs: map[string]*Job{
-						"build": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "build"}}},
+						"release": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "release"}}},
 					},
 				},
 			},
-			wantPath:  "/path/to/ci.yml", // Alphabetically first path
-			wantJobID: "test",
+			wantPath:  "/path/to/release.yml",
+			wantJobID: "release", // release has no needs, build does
 		},
 		{
 			name: "skip reusable workflow jobs",
@@ -1575,21 +1602,17 @@ func TestFindFirstJobAcrossWorkflows(t *testing.T) {
 			wantJobID: "build", // deploy skipped because it's a reusable workflow
 		},
 		{
-			name: "workflow with only reusable jobs skipped",
+			name: "fallback to job with needs if all have needs",
 			workflows: map[string]*Workflow{
-				"/path/to/deploy.yml": {
+				"/path/to/ci.yml": {
 					Jobs: map[string]*Job{
-						"deploy": {Uses: "org/repo/.github/workflows/deploy.yml@main"},
-					},
-				},
-				"/path/to/test.yml": {
-					Jobs: map[string]*Job{
-						"test": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "test"}}},
+						"deploy": {RunsOn: "ubuntu-latest", Needs: []any{"build"}, Steps: []*Step{{Run: "deploy"}}},
+						"build":  {RunsOn: "ubuntu-latest", Needs: []any{"test"}, Steps: []*Step{{Run: "build"}}},
 					},
 				},
 			},
-			wantPath:  "/path/to/test.yml",
-			wantJobID: "test",
+			wantPath:  "/path/to/ci.yml",
+			wantJobID: "build", // Alphabetically first fallback
 		},
 	}
 

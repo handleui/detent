@@ -80,12 +80,10 @@ func init() {
 // buildRunConfig validates flags, resolves paths, generates UUID, and builds a RunConfig.
 // Returns the runner configuration or an error.
 func buildRunConfig() (*runner.RunConfig, error) {
-	// Validate output format
 	if outputFormat != "text" && outputFormat != "json" && outputFormat != "json-detailed" {
 		return nil, fmt.Errorf("invalid output format %q: must be 'text', 'json', or 'json-detailed'", outputFormat)
 	}
 
-	// Resolve directory paths
 	absRepoPath, err := filepath.Abs(".")
 	if err != nil {
 		return nil, fmt.Errorf("resolving current directory: %w", err)
@@ -93,7 +91,6 @@ func buildRunConfig() (*runner.RunConfig, error) {
 
 	workflowPath := filepath.Join(absRepoPath, workflowsDir)
 
-	// Compute deterministic run ID from tree+commit hash
 	runID, _, _, err := git.ComputeCurrentRunID(absRepoPath)
 	if err != nil {
 		return nil, err
@@ -126,7 +123,6 @@ func buildRunConfig() (*runner.RunConfig, error) {
 // displayOutput formats and prints the workflow results based on the output format flag.
 // Only displays output in non-TUI mode (TUI shows results in completion view).
 func displayOutput(cfg *runner.RunConfig, result *runner.RunResult) error {
-	// Only print error report in non-TUI mode (TUI shows it in completion view)
 	if cfg.UseTUI {
 		return nil
 	}
@@ -150,7 +146,6 @@ func displayOutput(cfg *runner.RunConfig, result *runner.RunResult) error {
 // checkWorkflowStatus examines the workflow execution result and returns an error if the workflow failed
 // or if errors (not just warnings) were found.
 func checkWorkflowStatus(result *runner.RunResult) error {
-	// Return error if act failed
 	if result.ExitCode != 0 {
 		return fmt.Errorf("workflow execution failed with exit code %d", result.ExitCode)
 	}
@@ -169,7 +164,6 @@ func printCompletionSummary(result *runner.RunResult) {
 	duration := result.Duration.Round(time.Second)
 	durationStr := duration.String()
 
-	// Count errors and warnings
 	var errorCount, warningCount int
 	for _, err := range result.Extracted {
 		switch err.Severity {
@@ -187,8 +181,7 @@ func printCompletionSummary(result *runner.RunResult) {
 	if success {
 		summary = fmt.Sprintf("  %s %s", icon, tui.SuccessStyle.Render(fmt.Sprintf("Check passed in %s", durationStr)))
 	} else {
-		// Build details string
-		var details string
+			var details string
 		if errorCount > 0 || warningCount > 0 {
 			var parts []string
 			if errorCount > 0 {
@@ -220,7 +213,6 @@ func printExitMessage(result *runner.RunResult) {
 	duration := time.Since(StartTime).Round(100 * time.Millisecond)
 	durationStr := util.FormatDurationCompact(duration)
 
-	// Count errors only (not warnings)
 	var errorCount int
 	for _, err := range result.Extracted {
 		if err.Severity == "error" {
@@ -253,22 +245,18 @@ func printExitMessage(result *runner.RunResult) {
 func runCheck(cmd *cobra.Command, args []string) error {
 	sentry.AddBreadcrumb("check", "starting check command")
 
-	// Setup: validate flags and build config
 	cfg, err := buildRunConfig()
 	if err != nil {
 		sentry.CaptureError(err)
 		return err
 	}
 
-	// Create context with timeout
 	ctx, cancel := context.WithTimeout(cmd.Context(), runner.ActTimeout)
 	defer cancel()
 
-	// Create runner
 	r := runner.New(cfg)
 	defer r.Cleanup()
 
-	// Prepare: run preflight or standard preparation
 	sentry.AddBreadcrumb("check", "running preflight checks")
 	if cfg.UseTUI {
 		err = r.PrepareWithTUI(ctx)
@@ -280,7 +268,6 @@ func runCheck(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Execute: run workflow
 	sentry.AddBreadcrumb("check", "executing workflows")
 	var cancelled bool
 	if cfg.UseTUI {
@@ -300,16 +287,13 @@ func runCheck(cmd *cobra.Command, args []string) error {
 		}
 		_, _ = fmt.Fprintln(os.Stderr)
 
-		// Print completion summary
 		printCompletionSummary(r.GetResult())
 	}
 
-	// Handle cancellation - let main.go print the error message
 	if cancelled {
 		return fmt.Errorf("cancelled")
 	}
 
-	// Persist results
 	sentry.AddBreadcrumb("check", "persisting results")
 	err = r.Persist()
 	if err != nil {
@@ -317,32 +301,26 @@ func runCheck(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Get result for display and status check
 	result := r.GetResult()
 
-	// Display output (command concern)
 	err = displayOutput(cfg, result)
 	if err != nil {
 		return err
 	}
 
-	// Print exit message with timing (TUI mode - non-TUI already printed via printCompletionSummary)
 	if cfg.UseTUI {
 		printExitMessage(result)
 	}
 
-	// Check status and return
 	return checkWorkflowStatus(result)
 }
 
 // runCheckWithTUI executes a check run using the TUI interface.
 // It creates the TUI program and delegates execution to the CheckRunner's RunWithTUI method.
 func runCheckWithTUI(ctx context.Context, r *runner.CheckRunner) (bool, error) {
-	// Create cancellable context for TUI control
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// Setup TUI program - starts in waiting state until manifest arrives from workflow
 	model := tui.NewCheckModel(cancel)
 	program := tea.NewProgram(
 		&model,
@@ -350,6 +328,5 @@ func runCheckWithTUI(ctx context.Context, r *runner.CheckRunner) (bool, error) {
 	)
 	logChan := make(chan string, logChannelBufferSize)
 
-	// Run with TUI
 	return r.RunWithTUI(ctx, logChan, program)
 }

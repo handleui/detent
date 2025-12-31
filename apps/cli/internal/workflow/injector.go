@@ -163,14 +163,19 @@ func BuildCombinedManifest(workflows map[string]*Workflow) *ci.ManifestInfo {
 }
 
 // findFirstJobAcrossWorkflows finds the first valid job ID and its workflow path
-// across all workflows (alphabetically by workflow path, then job ID).
+// across all workflows. Prefers jobs WITHOUT dependencies (needs:) since those
+// run first. Among valid candidates, picks alphabetically first.
 func findFirstJobAcrossWorkflows(workflows map[string]*Workflow) (workflowPath, jobID string) {
-	// Sort workflow paths
+	// Sort workflow paths for deterministic ordering
 	paths := make([]string, 0, len(workflows))
 	for p := range workflows {
 		paths = append(paths, p)
 	}
 	sort.Strings(paths)
+
+	// First pass: find jobs without dependencies (they run first)
+	var bestPath, bestJobID string
+	var fallbackPath, fallbackJobID string // Fallback if all jobs have dependencies
 
 	for _, path := range paths {
 		wf := workflows[path]
@@ -178,23 +183,48 @@ func findFirstJobAcrossWorkflows(workflows map[string]*Workflow) (workflowPath, 
 			continue
 		}
 
-		// Find first valid job in this workflow
-		var firstInWf string
 		for jID, job := range wf.Jobs {
 			if job == nil || job.Uses != "" || !isValidJobID(jID) {
 				continue
 			}
-			if firstInWf == "" || jID < firstInWf {
-				firstInWf = jID
-			}
-		}
 
-		if firstInWf != "" {
-			return path, firstInWf
+			// Track fallback (any valid job, alphabetically first)
+			if fallbackJobID == "" || path < fallbackPath || (path == fallbackPath && jID < fallbackJobID) {
+				fallbackPath = path
+				fallbackJobID = jID
+			}
+
+			// Prefer jobs without dependencies
+			if !jobHasNeeds(job) {
+				if bestJobID == "" || path < bestPath || (path == bestPath && jID < bestJobID) {
+					bestPath = path
+					bestJobID = jID
+				}
+			}
 		}
 	}
 
-	return "", ""
+	// Return job without dependencies if found, otherwise fallback
+	if bestJobID != "" {
+		return bestPath, bestJobID
+	}
+	return fallbackPath, fallbackJobID
+}
+
+// jobHasNeeds returns true if the job has dependencies (needs field).
+func jobHasNeeds(job *Job) bool {
+	if job == nil || job.Needs == nil {
+		return false
+	}
+	switch v := job.Needs.(type) {
+	case string:
+		return v != ""
+	case []any:
+		return len(v) > 0
+	case []string:
+		return len(v) > 0
+	}
+	return false
 }
 
 // getStepDisplayName returns a human-readable name for a step.
