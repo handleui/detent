@@ -16,6 +16,11 @@ const (
 // Parser implements parser.ToolParser for ESLint output.
 // ESLint stylish format is multi-line: file path on one line, errors indented below.
 // Compact format is single-line with all info on one line.
+//
+// Thread Safety: Parser maintains internal state for multi-line parsing and is NOT
+// thread-safe. Create a new Parser instance per goroutine for concurrent use.
+// Additionally, Parse() mutates ctx.LastFile when processing file path lines in
+// stylish format - ensure each goroutine uses its own ParseContext via Clone().
 type Parser struct {
 	// Multi-line state for stylish format
 	currentFile string // Current file from file path line
@@ -27,30 +32,19 @@ func NewParser() *Parser {
 	return &Parser{}
 }
 
-// ID returns the unique identifier for this parser.
+// ID implements parser.ToolParser.
 func (p *Parser) ID() string {
 	return parserID
 }
 
-// Priority returns the parse order priority.
-// ESLint uses 85 (specific but below Go/TypeScript which use file extension patterns).
+// Priority implements parser.ToolParser.
 func (p *Parser) Priority() int {
 	return parserPriority
 }
 
-// CanParse returns a confidence score for parsing this line.
-// Returns 0.90+ for stylish error lines (when in multi-line context),
-// 0.85 for file paths, 0.92 for unix format (higher due to distinctive suffix),
-// and 0.90 for compact format matches.
+// CanParse implements parser.ToolParser.
 func (p *Parser) CanParse(line string, ctx *parser.ParseContext) float64 {
-	stripped := StripANSI(line)
-
-	// If in multi-line stylish mode, check for continuation
-	if p.inStylish && p.currentFile != "" {
-		if stylishErrorPattern.MatchString(stripped) {
-			return 0.90
-		}
-	}
+	stripped := parser.StripANSI(line)
 
 	// Check for unix format first (highest specificity due to [severity/rule] suffix)
 	// This MUST be checked before stylish file pattern to avoid false positives
@@ -63,10 +57,10 @@ func (p *Parser) CanParse(line string, ctx *parser.ParseContext) float64 {
 		return 0.85
 	}
 
-	// Check for stylish error line (with indentation)
+	// Check for stylish error line (with indentation) - single check handles both cases
 	if stylishErrorPattern.MatchString(stripped) {
-		// Need file context from ParseContext
-		if ctx != nil && ctx.LastFile != "" {
+		// High confidence if we have file context from parser state or ParseContext
+		if (p.inStylish && p.currentFile != "") || (ctx != nil && ctx.LastFile != "") {
 			return 0.90
 		}
 		return 0.70 // Lower confidence without file context
@@ -80,10 +74,9 @@ func (p *Parser) CanParse(line string, ctx *parser.ParseContext) float64 {
 	return 0
 }
 
-// Parse extracts an ESLint error from the line.
-// Returns nil if the line doesn't match ESLint error format.
+// Parse implements parser.ToolParser.
 func (p *Parser) Parse(line string, ctx *parser.ParseContext) *errors.ExtractedError {
-	stripped := StripANSI(line)
+	stripped := parser.StripANSI(line)
 
 	// Try unix format first (most specific due to [severity/rule] suffix)
 	if match := unixPattern.FindStringSubmatch(stripped); match != nil {
@@ -94,7 +87,8 @@ func (p *Parser) Parse(line string, ctx *parser.ParseContext) *errors.ExtractedE
 	if match := stylishFilePattern.FindStringSubmatch(stripped); match != nil {
 		p.currentFile = match[1]
 		p.inStylish = true
-		// Update context for other parsers
+		// Update context for cross-parser file context sharing.
+		// Note: This mutates ctx - for concurrent use, each goroutine needs its own ctx.
 		if ctx != nil {
 			ctx.LastFile = p.currentFile
 		}
@@ -116,6 +110,7 @@ func (p *Parser) Parse(line string, ctx *parser.ParseContext) *errors.ExtractedE
 
 // parseStylishError creates an ExtractedError from stylish format match.
 func (p *Parser) parseStylishError(match []string, rawLine string, ctx *parser.ParseContext) *errors.ExtractedError {
+	// Errors safe to ignore: regex captures (\d+) which guarantees numeric strings
 	lineNum, _ := strconv.Atoi(match[1])
 	colNum, _ := strconv.Atoi(match[2])
 	severity := strings.ToLower(match[3])
@@ -142,9 +137,7 @@ func (p *Parser) parseStylishError(match []string, rawLine string, ctx *parser.P
 		Raw:      rawLine,
 	}
 
-	if ctx != nil && ctx.WorkflowContext != nil {
-		err.WorkflowContext = ctx.WorkflowContext.Clone()
-	}
+	ctx.ApplyWorkflowContext(err)
 
 	return err
 }
@@ -152,6 +145,7 @@ func (p *Parser) parseStylishError(match []string, rawLine string, ctx *parser.P
 // parseCompactError creates an ExtractedError from compact format match.
 func (p *Parser) parseCompactError(match []string, rawLine string, ctx *parser.ParseContext) *errors.ExtractedError {
 	file := match[1]
+	// Errors safe to ignore: regex captures (\d+) which guarantees numeric strings
 	lineNum, _ := strconv.Atoi(match[2])
 	colNum, _ := strconv.Atoi(match[3])
 	severity := strings.ToLower(match[4])
@@ -173,9 +167,7 @@ func (p *Parser) parseCompactError(match []string, rawLine string, ctx *parser.P
 		Raw:      rawLine,
 	}
 
-	if ctx != nil && ctx.WorkflowContext != nil {
-		err.WorkflowContext = ctx.WorkflowContext.Clone()
-	}
+	ctx.ApplyWorkflowContext(err)
 
 	return err
 }
@@ -184,6 +176,7 @@ func (p *Parser) parseCompactError(match []string, rawLine string, ctx *parser.P
 // Unix format: "file.js:8:11: message [error/rule-id]"
 func (p *Parser) parseUnixError(match []string, rawLine string, ctx *parser.ParseContext) *errors.ExtractedError {
 	file := match[1]
+	// Errors safe to ignore: regex captures (\d+) which guarantees numeric strings
 	lineNum, _ := strconv.Atoi(match[2])
 	colNum, _ := strconv.Atoi(match[3])
 	message := strings.TrimSpace(match[4])
@@ -202,9 +195,7 @@ func (p *Parser) parseUnixError(match []string, rawLine string, ctx *parser.Pars
 		Raw:      rawLine,
 	}
 
-	if ctx != nil && ctx.WorkflowContext != nil {
-		err.WorkflowContext = ctx.WorkflowContext.Clone()
-	}
+	ctx.ApplyWorkflowContext(err)
 
 	return err
 }
@@ -220,10 +211,9 @@ func extractRuleID(messageAndRule string) (message, ruleID string) {
 	return messageAndRule, ""
 }
 
-// IsNoise returns true if the line is ESLint-specific noise.
-// Filters out summary lines, counts, and other non-error output.
+// IsNoise implements parser.ToolParser.
 func (p *Parser) IsNoise(line string) bool {
-	stripped := StripANSI(line)
+	stripped := parser.StripANSI(line)
 	for _, pattern := range noisePatterns {
 		if pattern.MatchString(stripped) {
 			return true
@@ -232,20 +222,18 @@ func (p *Parser) IsNoise(line string) bool {
 	return false
 }
 
-// SupportsMultiLine returns true as ESLint stylish format requires multi-line handling.
+// SupportsMultiLine implements parser.ToolParser.
 func (p *Parser) SupportsMultiLine() bool {
 	return true
 }
 
-// ContinueMultiLine processes a continuation line for stylish format.
-// Returns true if the line was consumed as part of the stylish output,
-// false if it signals the end of the file's errors.
+// ContinueMultiLine implements parser.ToolParser.
 func (p *Parser) ContinueMultiLine(line string, _ *parser.ParseContext) bool {
 	if !p.inStylish {
 		return false
 	}
 
-	stripped := StripANSI(line)
+	stripped := parser.StripANSI(line)
 
 	// Empty line signals potential end of file's errors
 	if strings.TrimSpace(stripped) == "" {
@@ -272,18 +260,34 @@ func (p *Parser) ContinueMultiLine(line string, _ *parser.ParseContext) bool {
 	return false
 }
 
-// FinishMultiLine finalizes the current multi-line error context.
-// For ESLint, errors are emitted immediately from Parse, so this just cleans up.
+// FinishMultiLine implements parser.ToolParser.
 func (p *Parser) FinishMultiLine(_ *parser.ParseContext) *errors.ExtractedError {
 	p.Reset()
 	return nil
 }
 
-// Reset clears any accumulated multi-line state.
+// Reset implements parser.ToolParser.
 func (p *Parser) Reset() {
 	p.currentFile = ""
 	p.inStylish = false
 }
 
+// NoisePatterns returns the ESLint parser's noise detection patterns for registry optimization.
+func (p *Parser) NoisePatterns() parser.NoisePatterns {
+	return parser.NoisePatterns{
+		FastPrefixes: []string{
+			"all files pass", // ESLint success message
+		},
+		FastContains: []string{
+			"potentially fixable", // ESLint fixable hints
+			"--fix option",        // ESLint fix suggestion
+		},
+		Regex: noisePatterns,
+	}
+}
+
 // Compile-time interface compliance check
 var _ parser.ToolParser = (*Parser)(nil)
+
+// Ensure Parser implements parser.NoisePatternProvider
+var _ parser.NoisePatternProvider = (*Parser)(nil)

@@ -9,13 +9,23 @@ import (
 )
 
 const (
+	parserID       = "rust"
+	parserPriority = 85
+
 	// maxContextLines limits context accumulation to prevent memory exhaustion
 	maxContextLines = 200
 	// maxContextBytes limits total context size (256KB)
 	maxContextBytes = 256 * 1024
+	// maxNotes limits note accumulation to prevent unbounded growth
+	maxNotes = 50
+	// maxHelps limits help message accumulation to prevent unbounded growth
+	maxHelps = 50
 )
 
 // Parser implements parser.ToolParser for Rust compiler (rustc), Cargo, and Clippy output.
+//
+// Thread Safety: Parser maintains internal state for multi-line error accumulation
+// and is NOT thread-safe. Create a new Parser instance per goroutine for concurrent use.
 type Parser struct {
 	// Multi-line state for error accumulation
 	inError      bool
@@ -43,26 +53,28 @@ func NewParser() *Parser {
 	return &Parser{}
 }
 
-// ID returns the unique identifier for this parser.
+// ID implements parser.ToolParser.
 func (p *Parser) ID() string {
-	return "rust"
+	return parserID
 }
 
-// Priority returns the parse order priority.
-// Rust errors have a specific format with error codes and location arrows.
+// Priority implements parser.ToolParser.
 func (p *Parser) Priority() int {
-	return 85
+	return parserPriority
 }
 
-// CanParse returns a confidence score for whether this parser can handle the line.
+// CanParse implements parser.ToolParser.
 func (p *Parser) CanParse(line string, _ *parser.ParseContext) float64 {
+	// Strip ANSI escape codes for pattern matching
+	stripped := parser.StripANSI(line)
+
 	// Check if we're in a multi-line state
 	if p.inError {
 		return 0.9
 	}
 
 	// Check for error/warning header with code (high confidence)
-	if match := rustErrorHeaderPattern.FindStringSubmatch(line); match != nil {
+	if match := rustErrorHeaderPattern.FindStringSubmatch(stripped); match != nil {
 		// Higher confidence if it has an error code
 		if match[2] != "" {
 			return 0.95
@@ -71,22 +83,25 @@ func (p *Parser) CanParse(line string, _ *parser.ParseContext) float64 {
 	}
 
 	// Location arrow is Rust-specific
-	if rustLocationPattern.MatchString(line) {
+	if rustLocationPattern.MatchString(stripped) {
 		return 0.90
 	}
 
 	// Test failure
-	if rustTestFailPattern.MatchString(line) {
+	if rustTestFailPattern.MatchString(stripped) {
 		return 0.95
 	}
 
 	return 0
 }
 
-// Parse extracts an error from the line.
+// Parse implements parser.ToolParser.
 func (p *Parser) Parse(line string, ctx *parser.ParseContext) *errors.ExtractedError {
+	// Strip ANSI escape codes for pattern matching
+	stripped := parser.StripANSI(line)
+
 	// Handle error/warning header
-	if match := rustErrorHeaderPattern.FindStringSubmatch(line); match != nil {
+	if match := rustErrorHeaderPattern.FindStringSubmatch(stripped); match != nil {
 		// If we have a pending error, finalize it first
 		if p.inError {
 			err := p.buildError(ctx)
@@ -99,9 +114,10 @@ func (p *Parser) Parse(line string, ctx *parser.ParseContext) *errors.ExtractedE
 	}
 
 	// Handle location arrow (extract file/line/col)
-	if match := rustLocationPattern.FindStringSubmatch(line); match != nil {
+	if match := rustLocationPattern.FindStringSubmatch(stripped); match != nil {
 		if p.inError && p.errorFile == "" {
 			p.errorFile = match[1]
+			// Errors safe to ignore: regex captures (\d+) which guarantees numeric strings
 			p.errorLine, _ = strconv.Atoi(match[2])
 			p.errorColumn, _ = strconv.Atoi(match[3])
 		}
@@ -110,28 +126,16 @@ func (p *Parser) Parse(line string, ctx *parser.ParseContext) *errors.ExtractedE
 	}
 
 	// Handle note/help lines
-	if match := rustNotePattern.FindStringSubmatch(line); match != nil {
+	if match := rustNotePattern.FindStringSubmatch(stripped); match != nil {
 		if p.inError {
-			noteType := match[1]
-			noteMsg := match[2]
-
-			switch noteType {
-			case "note":
-				p.notes = append(p.notes, noteMsg)
-				// Check for Clippy lint code in note
-				if lintMatch := rustClippyLintPattern.FindStringSubmatch(noteMsg); lintMatch != nil {
-					p.clippyLint = lintMatch[1]
-				}
-			case "help":
-				p.helps = append(p.helps, noteMsg)
-			}
+			p.processNoteOrHelp(match[1], match[2])
 		}
 		p.addContextLine(line)
 		return nil
 	}
 
 	// Handle test failure
-	if match := rustTestFailPattern.FindStringSubmatch(line); match != nil {
+	if match := rustTestFailPattern.FindStringSubmatch(stripped); match != nil {
 		return &errors.ExtractedError{
 			Message:  "test failed: " + match[1],
 			Severity: "error",
@@ -176,6 +180,27 @@ func (p *Parser) addContextLine(line string) {
 	p.contextLines.WriteString(line)
 	p.contextLines.WriteString("\n")
 	p.contextCount++
+}
+
+// processNoteOrHelp extracts and stores note/help messages with bounds checking.
+// This consolidates the duplicate logic from Parse() and ContinueMultiLine().
+func (p *Parser) processNoteOrHelp(noteType, noteMsg string) {
+	switch noteType {
+	case "note":
+		if len(p.notes) < maxNotes {
+			p.notes = append(p.notes, noteMsg)
+		}
+		// Check for Clippy lint code in note (only if not already found)
+		if p.clippyLint == "" {
+			if lintMatch := rustClippyLintPattern.FindStringSubmatch(noteMsg); lintMatch != nil {
+				p.clippyLint = lintMatch[1]
+			}
+		}
+	case "help":
+		if len(p.helps) < maxHelps {
+			p.helps = append(p.helps, noteMsg)
+		}
+	}
 }
 
 // buildError creates an ExtractedError from accumulated state.
@@ -224,29 +249,30 @@ func (p *Parser) buildError(ctx *parser.ParseContext) *errors.ExtractedError {
 		Source:     errors.SourceRust,
 	}
 
-	if ctx != nil && ctx.WorkflowContext != nil {
-		err.WorkflowContext = ctx.WorkflowContext.Clone()
-	}
+	ctx.ApplyWorkflowContext(err)
 
 	return err
 }
 
-// IsNoise returns true if the line is Rust-specific noise.
+// IsNoise implements parser.ToolParser.
 func (p *Parser) IsNoise(line string) bool {
+	// Strip ANSI escape codes for pattern matching
+	stripped := parser.StripANSI(line)
+
 	for _, pattern := range noisePatterns {
-		if pattern.MatchString(line) {
+		if pattern.MatchString(stripped) {
 			return true
 		}
 	}
 	return false
 }
 
-// SupportsMultiLine returns true as Rust errors span multiple lines.
+// SupportsMultiLine implements parser.ToolParser.
 func (p *Parser) SupportsMultiLine() bool {
 	return true
 }
 
-// ContinueMultiLine processes a continuation line for multi-line errors.
+// ContinueMultiLine implements parser.ToolParser.
 func (p *Parser) ContinueMultiLine(line string, _ *parser.ParseContext) bool {
 	if !p.inError {
 		return false
@@ -286,19 +312,7 @@ func (p *Parser) ContinueMultiLine(line string, _ *parser.ParseContext) bool {
 
 	// Note/help lines - extract content and continue
 	if match := rustNotePattern.FindStringSubmatch(line); match != nil {
-		noteType := match[1]
-		noteMsg := match[2]
-
-		switch noteType {
-		case "note":
-			p.notes = append(p.notes, noteMsg)
-			// Check for Clippy lint code in note
-			if lintMatch := rustClippyLintPattern.FindStringSubmatch(noteMsg); lintMatch != nil {
-				p.clippyLint = lintMatch[1]
-			}
-		case "help":
-			p.helps = append(p.helps, noteMsg)
-		}
+		p.processNoteOrHelp(match[1], match[2])
 		p.addContextLine(line)
 		return true
 	}
@@ -341,7 +355,7 @@ func isErrorBoundary(line string) bool {
 	return false
 }
 
-// FinishMultiLine finalizes the current multi-line error.
+// FinishMultiLine implements parser.ToolParser.
 func (p *Parser) FinishMultiLine(ctx *parser.ParseContext) *errors.ExtractedError {
 	if !p.inError {
 		return nil
@@ -352,7 +366,7 @@ func (p *Parser) FinishMultiLine(ctx *parser.ParseContext) *errors.ExtractedErro
 	return err
 }
 
-// Reset clears any accumulated multi-line state.
+// Reset implements parser.ToolParser.
 func (p *Parser) Reset() {
 	p.inError = false
 	p.errorLevel = ""
@@ -368,5 +382,38 @@ func (p *Parser) Reset() {
 	p.clippyLint = ""
 }
 
+// NoisePatterns returns the Rust parser's noise detection patterns for registry optimization.
+func (p *Parser) NoisePatterns() parser.NoisePatterns {
+	return parser.NoisePatterns{
+		FastPrefixes: []string{
+			"compiling ",     // Cargo compiling crate
+			"downloading",    // Cargo downloading crate
+			"downloaded ",    // Cargo downloaded crate
+			"finished ",      // Cargo build complete
+			"doc-tests ",     // Cargo doc tests
+			"updating ",      // Cargo update
+			"blocking ",      // Cargo blocking message
+			"fresh ",         // Cargo fresh (no rebuild needed)
+			"packaging ",     // Cargo package
+			"verifying ",     // Cargo verify
+			"archiving ",     // Cargo archive
+			"uploading ",     // Cargo upload
+			"waiting ",       // Cargo waiting
+			"caused by:",     // Cargo error chain (not useful for error extraction)
+			"test result:",   // Rust test summary
+			"running ",       // Rust test/cargo progress
+			"for more information", // rustc help hint
+			"aborting due to",      // rustc abort summary
+			"some errors have",     // rustc multiple errors hint
+			"error: could not compile", // Cargo high-level compile fail
+			"warning: build failed",    // Cargo high-level build fail
+		},
+		Regex: noisePatterns,
+	}
+}
+
 // Ensure Parser implements parser.ToolParser
 var _ parser.ToolParser = (*Parser)(nil)
+
+// Ensure Parser implements parser.NoisePatternProvider
+var _ parser.NoisePatternProvider = (*Parser)(nil)

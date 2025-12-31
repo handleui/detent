@@ -15,25 +15,57 @@ const (
 	maxStackTraceBytes = 512 * 1024
 )
 
-// Parser implements parser.ToolParser for Go compiler, go test, and golangci-lint output.
-type Parser struct {
-	// Multi-line state for panic/stack trace accumulation
-	inPanic         bool
-	panicMessage    string
-	panicFile       string
-	panicLine       int
-	stackTrace      strings.Builder
-	stackTraceLines int // Track line count for limiting
-	goroutineSeen   bool
+// panicState holds multi-line state for panic/stack trace accumulation.
+type panicState struct {
+	inPanic       bool
+	message       string
+	file          string
+	line          int
+	stackTrace    strings.Builder
+	stackLines    int
+	goroutineSeen bool
+}
 
-	// Multi-line state for test failure accumulation
-	inTestFailure      bool
-	testName           string
-	testFile           string
-	testLine           int
-	testMessage        string
-	testStackTrace     strings.Builder
-	testStackLineCount int // Track line count for limiting
+func (s *panicState) reset() {
+	s.inPanic = false
+	s.message = ""
+	s.file = ""
+	s.line = 0
+	s.stackTrace.Reset()
+	s.stackLines = 0
+	s.goroutineSeen = false
+}
+
+// testFailureState holds multi-line state for test failure accumulation.
+type testFailureState struct {
+	inTestFailure  bool
+	testName       string
+	file           string
+	line           int
+	message        string
+	stackTrace     strings.Builder
+	stackLineCount int
+}
+
+func (s *testFailureState) reset() {
+	s.inTestFailure = false
+	s.testName = ""
+	s.file = ""
+	s.line = 0
+	s.message = ""
+	s.stackTrace.Reset()
+	s.stackLineCount = 0
+}
+
+// Parser implements parser.ToolParser for Go compiler, go test, and golangci-lint output.
+//
+// Thread Safety: Parser maintains internal state for panic and test failure accumulation
+// and is NOT thread-safe. Create a new Parser instance per goroutine for concurrent use.
+// This parser does not mutate ParseContext fields directly (only reads WorkflowContext
+// for cloning into extracted errors).
+type Parser struct {
+	panic panicState
+	test  testFailureState
 }
 
 // NewParser creates a new Go parser instance.
@@ -41,97 +73,110 @@ func NewParser() *Parser {
 	return &Parser{}
 }
 
-// ID returns the unique identifier for this parser.
+// ID implements parser.ToolParser.
 func (p *Parser) ID() string {
 	return "go"
 }
 
-// Priority returns the parse order priority.
-// Go errors have a very specific format (file.go:line:col: message).
+// Priority implements parser.ToolParser.
 func (p *Parser) Priority() int {
 	return 90
 }
 
-// CanParse returns a confidence score for whether this parser can handle the line.
+// CanParse implements parser.ToolParser.
 func (p *Parser) CanParse(line string, _ *parser.ParseContext) float64 {
+	// Strip ANSI escape codes for pattern matching
+	stripped := parser.StripANSI(line)
+
 	// Check if we're in a multi-line state (panic or test failure)
-	if p.inPanic || p.inTestFailure {
+	if p.panic.inPanic || p.test.inTestFailure {
 		return 0.9
 	}
 
 	// Check for exact pattern matches (high confidence)
-	if goErrorPattern.MatchString(line) {
+	if goErrorPattern.MatchString(stripped) {
 		return 0.95
 	}
 
 	// Error without column number (still high confidence for Go files)
-	if goErrorNoColPattern.MatchString(line) {
+	if goErrorNoColPattern.MatchString(stripped) {
 		return 0.93
 	}
 
-	if goTestFailPattern.MatchString(line) {
+	if goTestFailPattern.MatchString(stripped) {
 		return 0.95
 	}
 
-	if goPanicPattern.MatchString(line) {
+	if goPanicPattern.MatchString(stripped) {
 		return 0.95
 	}
 
 	// Go module errors
-	if goModuleErrorPattern.MatchString(line) {
+	if goModuleErrorPattern.MatchString(stripped) {
 		return 0.9
 	}
 
 	// Lower confidence for stack trace continuation lines
-	if goGoroutinePattern.MatchString(line) || goStackFramePattern.MatchString(line) {
+	if goGoroutinePattern.MatchString(stripped) || goStackFramePattern.MatchString(stripped) {
 		return 0.8
 	}
 
 	return 0
 }
 
-// Parse extracts an error from the line.
+// Parse implements parser.ToolParser.
 func (p *Parser) Parse(line string, ctx *parser.ParseContext) *errors.ExtractedError {
+	// Strip ANSI escape codes for pattern matching
+	stripped := parser.StripANSI(line)
+
 	// Handle panic start
-	if matches := goPanicPattern.FindStringSubmatch(line); matches != nil {
+	if matches := goPanicPattern.FindStringSubmatch(stripped); matches != nil {
 		p.startPanic(matches[1], line)
 		return nil // Wait for stack trace to complete
 	}
 
 	// Handle test failure start
-	if matches := goTestFailPattern.FindStringSubmatch(line); matches != nil {
+	if matches := goTestFailPattern.FindStringSubmatch(stripped); matches != nil {
 		p.startTestFailure(matches[1])
 		return nil // Wait for test output to complete
 	}
 
 	// Handle standard Go error (compiler, linter) with column
-	if matches := goErrorPattern.FindStringSubmatch(line); matches != nil {
-		return p.parseGoError(matches, line, ctx)
+	if matches := goErrorPattern.FindStringSubmatch(stripped); matches != nil {
+		// Error safe to ignore: regex captures (\d+) which guarantees numeric string
+		lineNum, _ := strconv.Atoi(matches[2])
+		col, _ := strconv.Atoi(matches[3])
+		return p.parseGoError(matches[1], lineNum, col, matches[4], line, ctx)
 	}
 
 	// Handle Go error without column (import cycle, some build errors)
-	if matches := goErrorNoColPattern.FindStringSubmatch(line); matches != nil {
-		return p.parseGoErrorNoCol(matches, line, ctx)
+	if matches := goErrorNoColPattern.FindStringSubmatch(stripped); matches != nil {
+		// Error safe to ignore: regex captures (\d+) which guarantees numeric string
+		lineNum, _ := strconv.Atoi(matches[2])
+		return p.parseGoError(matches[1], lineNum, 0, matches[3], line, ctx)
 	}
 
 	// Handle Go module errors
-	if matches := goModuleErrorPattern.FindStringSubmatch(line); matches != nil {
+	if matches := goModuleErrorPattern.FindStringSubmatch(stripped); matches != nil {
 		return p.parseModuleError(matches, line, ctx)
 	}
 
 	return nil
 }
 
-// parseGoError creates an ExtractedError from a Go error pattern match.
-func (p *Parser) parseGoError(matches []string, rawLine string, ctx *parser.ParseContext) *errors.ExtractedError {
-	file := matches[1]
-	lineNum, _ := strconv.Atoi(matches[2])
-	col, _ := strconv.Atoi(matches[3])
-	message := matches[4]
-
+// parseGoError creates an ExtractedError from a Go error.
+// col can be 0 if no column information is available.
+func (p *Parser) parseGoError(file string, lineNum, col int, message, rawLine string, ctx *parser.ParseContext) *errors.ExtractedError {
 	// Determine source and category based on context and message content
 	source := errors.SourceGo
 	category := errors.CategoryCompile
+
+	// Check for specific error types (only relevant when no column, but harmless to check always)
+	if goImportCyclePattern.MatchString(message) {
+		category = errors.CategoryCompile
+	} else if goBuildConstraintPattern.MatchString(message) {
+		category = errors.CategoryCompile
+	}
 
 	// Check for lint tool indicators in context
 	if ctx != nil && strings.Contains(strings.ToLower(ctx.Step), "lint") {
@@ -179,75 +224,7 @@ func (p *Parser) parseGoError(matches []string, rawLine string, ctx *parser.Pars
 		RuleID:   ruleID,
 	}
 
-	if ctx != nil && ctx.WorkflowContext != nil {
-		err.WorkflowContext = ctx.WorkflowContext.Clone()
-	}
-
-	return err
-}
-
-// parseGoErrorNoCol creates an ExtractedError from a Go error without column number.
-func (p *Parser) parseGoErrorNoCol(matches []string, rawLine string, ctx *parser.ParseContext) *errors.ExtractedError {
-	file := matches[1]
-	lineNum, _ := strconv.Atoi(matches[2])
-	message := matches[3]
-
-	source := errors.SourceGo
-	category := errors.CategoryCompile
-
-	// Check for specific error types
-	if goImportCyclePattern.MatchString(message) {
-		category = errors.CategoryCompile
-	} else if goBuildConstraintPattern.MatchString(message) {
-		category = errors.CategoryCompile
-	}
-
-	// Check for lint tool indicators in context
-	if ctx != nil && strings.Contains(strings.ToLower(ctx.Step), "lint") {
-		category = errors.CategoryLint
-	}
-
-	// Extract rule ID from golangci-lint format
-	ruleID := ""
-	linterName := ""
-	if ruleMatches := golangciLintRulePattern.FindStringSubmatch(message); ruleMatches != nil {
-		message = ruleMatches[1]
-		ruleID = ruleMatches[2]
-		linterName = ruleMatches[2]
-		category = errors.CategoryLint
-	}
-
-	// Check for static analysis codes
-	codePrefix := ""
-	if codeMatches := golangciLintCodePattern.FindStringSubmatch(message); codeMatches != nil {
-		code := codeMatches[1]
-		if ruleID == "" {
-			ruleID = code
-		} else {
-			ruleID = code + "/" + ruleID
-		}
-		message = codeMatches[2]
-		category = errors.CategoryLint
-		codePrefix = extractCodePrefix(code)
-	}
-
-	severity := determineLintSeverity(linterName, codePrefix)
-
-	err := &errors.ExtractedError{
-		Message:  message,
-		File:     file,
-		Line:     lineNum,
-		Column:   0, // No column info
-		Severity: severity,
-		Raw:      rawLine,
-		Category: category,
-		Source:   source,
-		RuleID:   ruleID,
-	}
-
-	if ctx != nil && ctx.WorkflowContext != nil {
-		err.WorkflowContext = ctx.WorkflowContext.Clone()
-	}
+	ctx.ApplyWorkflowContext(err)
 
 	return err
 }
@@ -264,9 +241,7 @@ func (p *Parser) parseModuleError(matches []string, rawLine string, ctx *parser.
 		Source:   errors.SourceGo,
 	}
 
-	if ctx != nil && ctx.WorkflowContext != nil {
-		err.WorkflowContext = ctx.WorkflowContext.Clone()
-	}
+	ctx.ApplyWorkflowContext(err)
 
 	return err
 }
@@ -303,50 +278,53 @@ func determineLintSeverity(linterName, codePrefix string) string {
 
 // startPanic begins accumulating a panic stack trace.
 func (p *Parser) startPanic(message, rawLine string) {
-	p.inPanic = true
-	p.panicMessage = message
-	p.stackTrace.Reset()
-	p.stackTrace.WriteString(rawLine)
-	p.stackTrace.WriteString("\n")
-	p.stackTraceLines = 1
-	p.goroutineSeen = false
-	p.panicFile = ""
-	p.panicLine = 0
+	p.panic.inPanic = true
+	p.panic.message = message
+	p.panic.stackTrace.Reset()
+	p.panic.stackTrace.WriteString(rawLine)
+	p.panic.stackTrace.WriteString("\n")
+	p.panic.stackLines = 1
+	p.panic.goroutineSeen = false
+	p.panic.file = ""
+	p.panic.line = 0
 }
 
 // startTestFailure begins accumulating test failure output.
 func (p *Parser) startTestFailure(testName string) {
-	p.inTestFailure = true
-	p.testName = testName
-	p.testFile = ""
-	p.testLine = 0
-	p.testMessage = ""
-	p.testStackTrace.Reset()
-	p.testStackLineCount = 0
+	p.test.inTestFailure = true
+	p.test.testName = testName
+	p.test.file = ""
+	p.test.line = 0
+	p.test.message = ""
+	p.test.stackTrace.Reset()
+	p.test.stackLineCount = 0
 }
 
-// IsNoise returns true if the line is Go-specific noise.
+// IsNoise implements parser.ToolParser.
 func (p *Parser) IsNoise(line string) bool {
+	// Strip ANSI escape codes for pattern matching
+	stripped := parser.StripANSI(line)
+
 	for _, pattern := range noisePatterns {
-		if pattern.MatchString(line) {
+		if pattern.MatchString(stripped) {
 			return true
 		}
 	}
 	return false
 }
 
-// SupportsMultiLine returns true as Go supports panic stack traces and test output.
+// SupportsMultiLine implements parser.ToolParser.
 func (p *Parser) SupportsMultiLine() bool {
 	return true
 }
 
-// ContinueMultiLine processes a continuation line for multi-line errors.
+// ContinueMultiLine implements parser.ToolParser.
 func (p *Parser) ContinueMultiLine(line string, _ *parser.ParseContext) bool {
-	if p.inPanic {
+	if p.panic.inPanic {
 		return p.continuePanic(line)
 	}
 
-	if p.inTestFailure {
+	if p.test.inTestFailure {
 		return p.continueTestFailure(line)
 	}
 
@@ -356,9 +334,9 @@ func (p *Parser) ContinueMultiLine(line string, _ *parser.ParseContext) bool {
 // continuePanic handles panic stack trace continuation.
 func (p *Parser) continuePanic(line string) bool {
 	// Check resource limits to prevent memory exhaustion
-	if p.stackTraceLines >= maxStackTraceLines || p.stackTrace.Len() >= maxStackTraceBytes {
+	if p.panic.stackLines >= maxStackTraceLines || p.panic.stackTrace.Len() >= maxStackTraceBytes {
 		// Stop accumulating but continue parsing to find end of stack trace
-		if p.goroutineSeen && strings.TrimSpace(line) == "" {
+		if p.panic.goroutineSeen && strings.TrimSpace(line) == "" {
 			return false
 		}
 		return true
@@ -367,57 +345,58 @@ func (p *Parser) continuePanic(line string) bool {
 	// Empty line might signal end of stack trace
 	if strings.TrimSpace(line) == "" {
 		// Only end if we've seen at least one goroutine
-		if p.goroutineSeen {
+		if p.panic.goroutineSeen {
 			return false
 		}
 		// Otherwise include it and continue
-		p.stackTrace.WriteString(line)
-		p.stackTrace.WriteString("\n")
-		p.stackTraceLines++
+		p.panic.stackTrace.WriteString(line)
+		p.panic.stackTrace.WriteString("\n")
+		p.panic.stackLines++
 		return true
 	}
 
 	// Goroutine header
 	if goGoroutinePattern.MatchString(line) {
-		p.goroutineSeen = true
-		p.stackTrace.WriteString(line)
-		p.stackTrace.WriteString("\n")
-		p.stackTraceLines++
+		p.panic.goroutineSeen = true
+		p.panic.stackTrace.WriteString(line)
+		p.panic.stackTrace.WriteString("\n")
+		p.panic.stackLines++
 		return true
 	}
 
 	// Stack frame (function call or file location)
 	if goStackFramePattern.MatchString(line) {
-		p.stackTrace.WriteString(line)
-		p.stackTrace.WriteString("\n")
-		p.stackTraceLines++
+		p.panic.stackTrace.WriteString(line)
+		p.panic.stackTrace.WriteString("\n")
+		p.panic.stackLines++
 
 		// Extract first file location as the error location
-		if p.panicFile == "" {
+		if p.panic.file == "" {
 			if matches := goStackFilePattern.FindStringSubmatch(line); matches != nil {
-				p.panicFile = matches[1]
-				p.panicLine, _ = strconv.Atoi(matches[2])
+				p.panic.file = matches[1]
+				// Error safe to ignore: regex captures (\d+) which guarantees numeric string
+				p.panic.line, _ = strconv.Atoi(matches[2])
 			}
 		}
 		return true
 	}
 
 	// If we've seen a goroutine but this line doesn't match stack patterns, end
-	if p.goroutineSeen {
+	if p.panic.goroutineSeen {
 		return false
 	}
 
 	// Before goroutine, accumulate everything (could be additional panic info)
-	p.stackTrace.WriteString(line)
-	p.stackTrace.WriteString("\n")
-	p.stackTraceLines++
+	p.panic.stackTrace.WriteString(line)
+	p.panic.stackTrace.WriteString("\n")
+	p.panic.stackLines++
 	return true
 }
 
 // continueTestFailure handles test failure output continuation.
 func (p *Parser) continueTestFailure(line string) bool {
 	// Check resource limits to prevent memory exhaustion
-	if p.testStackLineCount >= maxStackTraceLines || p.testStackTrace.Len() >= maxStackTraceBytes {
+	if p.test.stackLineCount >= maxStackTraceLines || p.test.stackTrace.Len() >= maxStackTraceBytes {
 		// Stop accumulating but continue to find end of test output
 		if strings.TrimSpace(line) == "" || !testOutputPattern.MatchString(line) {
 			return false
@@ -428,22 +407,23 @@ func (p *Parser) continueTestFailure(line string) bool {
 	// Check for test output with file:line reference
 	if matches := testFileLinePattern.FindStringSubmatch(line); matches != nil {
 		// Only capture first file/line as the error location
-		if p.testFile == "" {
-			p.testFile = matches[1]
-			p.testLine, _ = strconv.Atoi(matches[2])
-			p.testMessage = matches[3]
+		if p.test.file == "" {
+			p.test.file = matches[1]
+			// Error safe to ignore: regex captures (\d+) which guarantees numeric string
+			p.test.line, _ = strconv.Atoi(matches[2])
+			p.test.message = matches[3]
 		}
-		p.testStackTrace.WriteString(line)
-		p.testStackTrace.WriteString("\n")
-		p.testStackLineCount++
+		p.test.stackTrace.WriteString(line)
+		p.test.stackTrace.WriteString("\n")
+		p.test.stackLineCount++
 		return true
 	}
 
 	// Indented continuation lines
 	if testOutputPattern.MatchString(line) {
-		p.testStackTrace.WriteString(line)
-		p.testStackTrace.WriteString("\n")
-		p.testStackLineCount++
+		p.test.stackTrace.WriteString(line)
+		p.test.stackTrace.WriteString("\n")
+		p.test.stackLineCount++
 		return true
 	}
 
@@ -456,13 +436,13 @@ func (p *Parser) continueTestFailure(line string) bool {
 	return false
 }
 
-// FinishMultiLine finalizes the current multi-line error.
+// FinishMultiLine implements parser.ToolParser.
 func (p *Parser) FinishMultiLine(ctx *parser.ParseContext) *errors.ExtractedError {
-	if p.inPanic {
+	if p.panic.inPanic {
 		return p.finishPanic(ctx)
 	}
 
-	if p.inTestFailure {
+	if p.test.inTestFailure {
 		return p.finishTestFailure(ctx)
 	}
 
@@ -471,24 +451,22 @@ func (p *Parser) FinishMultiLine(ctx *parser.ParseContext) *errors.ExtractedErro
 
 // finishPanic creates an error from accumulated panic data.
 func (p *Parser) finishPanic(ctx *parser.ParseContext) *errors.ExtractedError {
-	if !p.inPanic {
+	if !p.panic.inPanic {
 		return nil
 	}
 
 	err := &errors.ExtractedError{
-		Message:    "panic: " + p.panicMessage,
-		File:       p.panicFile,
-		Line:       p.panicLine,
+		Message:    "panic: " + p.panic.message,
+		File:       p.panic.file,
+		Line:       p.panic.line,
 		Severity:   "error",
-		Raw:        strings.TrimSuffix(p.stackTrace.String(), "\n"),
-		StackTrace: strings.TrimSuffix(p.stackTrace.String(), "\n"),
+		Raw:        strings.TrimSuffix(p.panic.stackTrace.String(), "\n"),
+		StackTrace: strings.TrimSuffix(p.panic.stackTrace.String(), "\n"),
 		Category:   errors.CategoryRuntime,
 		Source:     errors.SourceGo,
 	}
 
-	if ctx != nil && ctx.WorkflowContext != nil {
-		err.WorkflowContext = ctx.WorkflowContext.Clone()
-	}
+	ctx.ApplyWorkflowContext(err)
 
 	p.Reset()
 	return err
@@ -496,54 +474,66 @@ func (p *Parser) finishPanic(ctx *parser.ParseContext) *errors.ExtractedError {
 
 // finishTestFailure creates an error from accumulated test failure data.
 func (p *Parser) finishTestFailure(ctx *parser.ParseContext) *errors.ExtractedError {
-	if !p.inTestFailure {
+	if !p.test.inTestFailure {
 		return nil
 	}
 
-	message := "FAIL: " + p.testName
-	if p.testMessage != "" {
-		message = p.testMessage
+	message := "FAIL: " + p.test.testName
+	if p.test.message != "" {
+		message = p.test.message
 	}
 
-	stackTrace := strings.TrimSuffix(p.testStackTrace.String(), "\n")
+	stackTrace := strings.TrimSuffix(p.test.stackTrace.String(), "\n")
 
 	err := &errors.ExtractedError{
 		Message:    message,
-		File:       p.testFile,
-		Line:       p.testLine,
+		File:       p.test.file,
+		Line:       p.test.line,
 		Severity:   "error",
-		Raw:        "--- FAIL: " + p.testName,
+		Raw:        "--- FAIL: " + p.test.testName,
 		StackTrace: stackTrace,
 		Category:   errors.CategoryTest,
 		Source:     errors.SourceGoTest,
 	}
 
-	if ctx != nil && ctx.WorkflowContext != nil {
-		err.WorkflowContext = ctx.WorkflowContext.Clone()
-	}
+	ctx.ApplyWorkflowContext(err)
 
 	p.Reset()
 	return err
 }
 
-// Reset clears any accumulated multi-line state.
+// Reset implements parser.ToolParser.
 func (p *Parser) Reset() {
-	p.inPanic = false
-	p.panicMessage = ""
-	p.panicFile = ""
-	p.panicLine = 0
-	p.stackTrace.Reset()
-	p.stackTraceLines = 0
-	p.goroutineSeen = false
+	p.panic.reset()
+	p.test.reset()
+}
 
-	p.inTestFailure = false
-	p.testName = ""
-	p.testFile = ""
-	p.testLine = 0
-	p.testMessage = ""
-	p.testStackTrace.Reset()
-	p.testStackLineCount = 0
+// NoisePatterns returns the Go parser's noise detection patterns for registry optimization.
+func (p *Parser) NoisePatterns() parser.NoisePatterns {
+	return parser.NoisePatterns{
+		FastPrefixes: []string{
+			"=== run",   // Go test start
+			"=== pause", // Go test pause
+			"=== cont",  // Go test continue
+			"=== name",  // Go test name (Go 1.20+)
+			"--- pass:", // Go test pass
+			"--- skip:", // Go test skip
+			"pass",      // Go overall pass (exact)
+			"ok ",       // Go package pass (ok package 0.123s)
+			"? ",        // Go no test files
+			"# ",        // Go build package header (# package/path)
+			"go: ",      // Go tool messages (go: downloading, go: finding)
+			"level=",    // golangci-lint debug output
+			"issues:",   // golangci-lint summary
+			"coverage:", // Go test coverage
+			"running ",  // golangci-lint progress
+		},
+		Regex: noisePatterns,
+	}
 }
 
 // Ensure Parser implements parser.ToolParser
 var _ parser.ToolParser = (*Parser)(nil)
+
+// Ensure Parser implements parser.NoisePatternProvider
+var _ parser.NoisePatternProvider = (*Parser)(nil)

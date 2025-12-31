@@ -232,7 +232,7 @@ func TestParser_Parse_TestFailure(t *testing.T) {
 		t.Error("expected nil during test failure accumulation")
 	}
 
-	if !p.inTestFailure {
+	if !p.test.inTestFailure {
 		t.Error("expected inTestFailure to be true")
 	}
 
@@ -289,7 +289,7 @@ func TestParser_Parse_Panic(t *testing.T) {
 		t.Error("expected nil during panic accumulation")
 	}
 
-	if !p.inPanic {
+	if !p.panic.inPanic {
 		t.Error("expected inPanic to be true")
 	}
 
@@ -378,23 +378,23 @@ func TestParser_Reset(t *testing.T) {
 	p := NewParser()
 
 	// Set up some state
-	p.inPanic = true
-	p.panicMessage = "test"
-	p.inTestFailure = true
-	p.testName = "TestFoo"
+	p.panic.inPanic = true
+	p.panic.message = "test"
+	p.test.inTestFailure = true
+	p.test.testName = "TestFoo"
 
 	p.Reset()
 
-	if p.inPanic {
+	if p.panic.inPanic {
 		t.Error("expected inPanic to be false after Reset")
 	}
-	if p.panicMessage != "" {
+	if p.panic.message != "" {
 		t.Error("expected panicMessage to be empty after Reset")
 	}
-	if p.inTestFailure {
+	if p.test.inTestFailure {
 		t.Error("expected inTestFailure to be false after Reset")
 	}
-	if p.testName != "" {
+	if p.test.testName != "" {
 		t.Error("expected testName to be empty after Reset")
 	}
 }
@@ -441,10 +441,6 @@ func TestParser_LintCategoryFromContext(t *testing.T) {
 	if err.Category != errors.CategoryLint {
 		t.Errorf("Category = %q, want %q", err.Category, errors.CategoryLint)
 	}
-}
-
-func TestParser_ImplementsInterface(t *testing.T) {
-	var _ parser.ToolParser = (*Parser)(nil)
 }
 
 func TestParser_IntegrationScenario(t *testing.T) {
@@ -501,60 +497,60 @@ func TestParser_ResetClearsAllState(t *testing.T) {
 	p := NewParser()
 
 	// Simulate panic accumulation
-	p.inPanic = true
-	p.panicMessage = "test panic"
-	p.panicFile = "/path/to/file.go"
-	p.panicLine = 42
-	p.stackTrace.WriteString("goroutine 1 [running]:")
-	p.goroutineSeen = true
+	p.panic.inPanic = true
+	p.panic.message = "test panic"
+	p.panic.file = "/path/to/file.go"
+	p.panic.line = 42
+	p.panic.stackTrace.WriteString("goroutine 1 [running]:")
+	p.panic.goroutineSeen = true
 
 	// Simulate test failure accumulation
-	p.inTestFailure = true
-	p.testName = "TestFoo"
-	p.testFile = "foo_test.go"
-	p.testLine = 10
-	p.testMessage = "assertion failed"
-	p.testStackTrace.WriteString("    foo_test.go:10: assertion failed")
+	p.test.inTestFailure = true
+	p.test.testName = "TestFoo"
+	p.test.file = "foo_test.go"
+	p.test.line = 10
+	p.test.message = "assertion failed"
+	p.test.stackTrace.WriteString("    foo_test.go:10: assertion failed")
 
 	p.Reset()
 
 	// Verify panic state is cleared
-	if p.inPanic {
+	if p.panic.inPanic {
 		t.Error("inPanic should be false after Reset")
 	}
-	if p.panicMessage != "" {
+	if p.panic.message != "" {
 		t.Error("panicMessage should be empty after Reset")
 	}
-	if p.panicFile != "" {
+	if p.panic.file != "" {
 		t.Error("panicFile should be empty after Reset")
 	}
-	if p.panicLine != 0 {
+	if p.panic.line != 0 {
 		t.Error("panicLine should be 0 after Reset")
 	}
-	if p.stackTrace.Len() != 0 {
+	if p.panic.stackTrace.Len() != 0 {
 		t.Error("stackTrace should be empty after Reset")
 	}
-	if p.goroutineSeen {
+	if p.panic.goroutineSeen {
 		t.Error("goroutineSeen should be false after Reset")
 	}
 
 	// Verify test failure state is cleared
-	if p.inTestFailure {
+	if p.test.inTestFailure {
 		t.Error("inTestFailure should be false after Reset")
 	}
-	if p.testName != "" {
+	if p.test.testName != "" {
 		t.Error("testName should be empty after Reset")
 	}
-	if p.testFile != "" {
+	if p.test.file != "" {
 		t.Error("testFile should be empty after Reset")
 	}
-	if p.testLine != 0 {
+	if p.test.line != 0 {
 		t.Error("testLine should be 0 after Reset")
 	}
-	if p.testMessage != "" {
+	if p.test.message != "" {
 		t.Error("testMessage should be empty after Reset")
 	}
-	if p.testStackTrace.Len() != 0 {
+	if p.test.stackTrace.Len() != 0 {
 		t.Error("testStackTrace should be empty after Reset")
 	}
 }
@@ -569,7 +565,7 @@ func TestParser_CanParseInMultiLineState(t *testing.T) {
 	}
 
 	// When in panic state, should return high confidence
-	p.inPanic = true
+	p.panic.inPanic = true
 	score = p.CanParse("unrelated line", nil)
 	if score < 0.8 {
 		t.Errorf("expected high score in panic state, got %f", score)
@@ -577,7 +573,7 @@ func TestParser_CanParseInMultiLineState(t *testing.T) {
 	p.Reset()
 
 	// When in test failure state, should return high confidence
-	p.inTestFailure = true
+	p.test.inTestFailure = true
 	score = p.CanParse("unrelated line", nil)
 	if score < 0.8 {
 		t.Errorf("expected high score in test failure state, got %f", score)
@@ -1213,12 +1209,12 @@ func TestParser_SubtestFailure(t *testing.T) {
 		t.Error("expected nil during test failure accumulation")
 	}
 
-	if !p.inTestFailure {
+	if !p.test.inTestFailure {
 		t.Error("expected inTestFailure to be true")
 	}
 
-	if p.testName != "TestSomething/subtest_name" {
-		t.Errorf("testName = %q, want %q", p.testName, "TestSomething/subtest_name")
+	if p.test.testName != "TestSomething/subtest_name" {
+		t.Errorf("testName = %q, want %q", p.test.testName, "TestSomething/subtest_name")
 	}
 
 	// Continue with test output

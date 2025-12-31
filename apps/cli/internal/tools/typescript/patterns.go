@@ -36,12 +36,6 @@ var (
 	// - (.+?)\s*$ : the message (lazy match to avoid trailing whitespace)
 	tsErrorPattern = regexp.MustCompile(`^([^\s(]+\.(?:d\.)?[cm]?tsx?)\((\d+),(\d+)\):\s*(?:error\s+(TS\d+):\s*)?(.+?)\s*$`)
 
-	// tsPrettyErrorPattern matches TypeScript errors from --pretty output after stripping ANSI codes.
-	// Pretty output adds file path and location on separate lines with code snippets.
-	// We handle this by first stripping ANSI codes, then matching the standard pattern.
-	// ANSI escape sequence pattern: \x1b\[[0-9;]*m
-	ansiEscapePattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)
-
 	// noisePatterns are lines that should be skipped as TypeScript-specific noise
 	noisePatterns = []*regexp.Regexp{
 		// Watch mode output
@@ -250,11 +244,5 @@ var (
 
 		// JSX errors (TS8xxx)
 		"TS8006": "An implementation cannot be declared in ambient contexts",
-	}
-
-	// StripANSI removes ANSI escape sequences from a string.
-	// This is used to clean up pretty-printed tsc output before parsing.
-	StripANSI = func(s string) string {
-		return ansiEscapePattern.ReplaceAllString(s, "")
 	}
 )

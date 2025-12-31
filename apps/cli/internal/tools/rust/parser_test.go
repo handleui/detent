@@ -430,5 +430,200 @@ func TestParser_WarningWithoutCode(t *testing.T) {
 	}
 }
 
-// Verify interface compliance
-var _ parser.ToolParser = (*Parser)(nil)
+func TestParser_CanParseInMultiLineState(t *testing.T) {
+	p := NewParser()
+	ctx := &parser.ParseContext{}
+
+	// Start parsing an error
+	p.Parse("error[E0308]: mismatched types", ctx)
+
+	// While in multi-line state, CanParse should return high confidence for any line
+	score := p.CanParse("some random line", nil)
+	if score != 0.9 {
+		t.Errorf("CanParse in multi-line state = %v, want 0.9", score)
+	}
+}
+
+func TestParser_ResourceLimits(t *testing.T) {
+	p := NewParser()
+	ctx := &parser.ParseContext{}
+
+	// Start an error
+	p.Parse("error[E0308]: mismatched types", ctx)
+	p.Parse("  --> src/main.rs:4:5", ctx)
+
+	// Add many notes to test bounds
+	for i := 0; i < 100; i++ {
+		line := "   = note: this is note number " + string(rune('0'+i%10))
+		p.ContinueMultiLine(line, ctx)
+	}
+
+	// Add many help messages
+	for i := 0; i < 100; i++ {
+		line := "   = help: this is help number " + string(rune('0'+i%10))
+		p.ContinueMultiLine(line, ctx)
+	}
+
+	result := p.FinishMultiLine(ctx)
+	if result == nil {
+		t.Fatal("FinishMultiLine returned nil")
+	}
+
+	// Notes and helps should be bounded (maxNotes=50, maxHelps=50)
+	// We can't directly access p.notes/p.helps, but the parser should not crash
+	// and should produce a valid result
+	if result.Message != "mismatched types" {
+		t.Errorf("Message = %q, want %q", result.Message, "mismatched types")
+	}
+}
+
+func TestParser_ContextLineLimits(t *testing.T) {
+	p := NewParser()
+	ctx := &parser.ParseContext{}
+
+	// Start an error
+	p.Parse("error[E0308]: mismatched types", ctx)
+	p.Parse("  --> src/main.rs:4:5", ctx)
+
+	// Add many context lines (more than maxContextLines=200)
+	for i := 0; i < 300; i++ {
+		line := " " + string(rune('0'+i%10)) + " | let x = 1;"
+		p.ContinueMultiLine(line, ctx)
+	}
+
+	result := p.FinishMultiLine(ctx)
+	if result == nil {
+		t.Fatal("FinishMultiLine returned nil")
+	}
+
+	// Result should be valid and context should be bounded
+	if result.Message != "mismatched types" {
+		t.Errorf("Message = %q, want %q", result.Message, "mismatched types")
+	}
+}
+
+func TestParser_AllNoisePatterns(t *testing.T) {
+	p := NewParser()
+
+	noiseLines := []string{
+		"   Compiling myproject v0.1.0 (/path/to/project)",
+		"   Downloading crate_name v1.2.3",
+		"   Downloaded crate_name v1.2.3",
+		"    Finished dev [unoptimized + debuginfo] target(s) in 10.50s",
+		"     Running `target/debug/myproject`",
+		"   Doc-tests myproject",
+		"running 5 tests",
+		"test tests::test_foo ... ok",
+		"test result: ok. 5 passed; 0 failed; 0 ignored",
+		"   Caused by:",
+		"   Updating crates.io index",
+		"   Blocking waiting for file lock on package cache",
+		"   Fresh serde v1.0.0",
+		"   Packaging myproject v0.1.0",
+		"   Verifying myproject v0.1.0",
+		"   Archiving myproject v0.1.0",
+		"   Uploading myproject v0.1.0",
+		"   Waiting for crates.io index",
+		"For more information about this error",
+		"aborting due to previous error",
+		"Some errors have detailed explanations",
+		"error: could not compile `myproject`",
+		"warning: build failed",
+	}
+
+	for _, line := range noiseLines {
+		if !p.IsNoise(line) {
+			t.Errorf("IsNoise(%q) = false, want true", line)
+		}
+	}
+}
+
+func TestParser_ErrorBoundaryDetection(t *testing.T) {
+	p := NewParser()
+	ctx := &parser.ParseContext{}
+
+	// Start an error
+	p.Parse("error[E0308]: mismatched types", ctx)
+	p.Parse("  --> src/main.rs:4:5", ctx)
+
+	// Empty line should end multi-line after location is seen
+	shouldContinue := p.ContinueMultiLine("", ctx)
+	if shouldContinue {
+		t.Error("Empty line after location should end multi-line, but ContinueMultiLine returned true")
+	}
+}
+
+func TestParser_ErrorWithNotes(t *testing.T) {
+	p := NewParser()
+	ctx := &parser.ParseContext{}
+
+	lines := []string{
+		"error[E0277]: the trait bound `String: Copy` is not satisfied",
+		"  --> src/main.rs:5:5",
+		"   |",
+		" 5 |     foo(s);",
+		"   |         ^ the trait `Copy` is not implemented for `String`",
+		"   |",
+		"   = note: required by a bound in `foo`",
+		"   = help: consider cloning the value if you need to",
+		"",
+	}
+
+	// Parse header and location
+	p.Parse(lines[0], ctx)
+	p.Parse(lines[1], ctx)
+
+	// Continue with remaining lines
+	for i := 2; i < len(lines); i++ {
+		if !p.ContinueMultiLine(lines[i], ctx) {
+			break
+		}
+	}
+
+	result := p.FinishMultiLine(ctx)
+	if result == nil {
+		t.Fatal("FinishMultiLine returned nil")
+	}
+
+	// Verify the message and that notes were captured
+	if result.Message != "the trait bound `String: Copy` is not satisfied" {
+		t.Errorf("Message = %q, want %q", result.Message, "the trait bound `String: Copy` is not satisfied")
+	}
+
+	// Verify stack trace contains note and help
+	if !strings.Contains(result.StackTrace, "required by a bound") {
+		t.Error("StackTrace should contain note text")
+	}
+	if !strings.Contains(result.StackTrace, "consider cloning") {
+		t.Error("StackTrace should contain help text")
+	}
+}
+
+func TestParser_SecondErrorHeaderTriggersFinalize(t *testing.T) {
+	p := NewParser()
+	ctx := &parser.ParseContext{}
+
+	// First error without location (edge case)
+	p.Parse("error: cannot find macro `println` in this scope", ctx)
+
+	// Second error should finalize the first
+	result := p.Parse("error[E0425]: cannot find value `x` in this scope", ctx)
+
+	if result == nil {
+		t.Fatal("Second error header should return finalized first error")
+	}
+
+	if result.Message != "cannot find macro `println` in this scope" {
+		t.Errorf("First error message = %q, want %q", result.Message, "cannot find macro `println` in this scope")
+	}
+
+	// Second error should now be in progress
+	result2 := p.FinishMultiLine(ctx)
+	if result2 == nil {
+		t.Fatal("FinishMultiLine should return second error")
+	}
+
+	if result2.Message != "cannot find value `x` in this scope" {
+		t.Errorf("Second error message = %q, want %q", result2.Message, "cannot find value `x` in this scope")
+	}
+}

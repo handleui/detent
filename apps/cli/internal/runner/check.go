@@ -2,37 +2,17 @@ package runner
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
-	"strings"
-	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/detent/cli/internal/act"
-	"github.com/detent/cli/internal/actbin"
-	actparser "github.com/detent/cli/internal/ci/act"
 	"github.com/detent/cli/internal/debug"
-	"github.com/detent/cli/internal/docker"
-	internalerrors "github.com/detent/cli/internal/errors"
-	"github.com/detent/cli/internal/extract"
+	"github.com/detent/cli/internal/errors"
 	"github.com/detent/cli/internal/git"
-	"github.com/detent/cli/internal/persistence"
-	"github.com/detent/cli/internal/preflight"
-	"github.com/detent/cli/internal/tools"
-	"github.com/detent/cli/internal/tui"
 	"github.com/detent/cli/internal/workflow"
-	"golang.org/x/sync/errgroup"
 )
-
-// sendToTUI sends a message to the TUI program in a non-blocking manner.
-// This prevents the caller from blocking if the TUI is slow to process messages.
-// The send is executed in a separate goroutine to avoid backpressure on the act runner.
-func sendToTUI(program *tea.Program, msg tea.Msg) {
-	go program.Send(msg)
-}
 
 // CheckRunner orchestrates a complete check run lifecycle including:
 // - Workflow preparation (injection of continue-on-error and timeouts)
@@ -41,6 +21,12 @@ func sendToTUI(program *tea.Program, msg tea.Msg) {
 // - Error extraction and grouping
 // - Result persistence
 // - Resource cleanup
+//
+// CheckRunner is a thin orchestrator that delegates to focused components:
+// - WorkflowPreparer: handles workflow file injection and worktree setup
+// - ActExecutor: handles running the act process and capturing output
+// - ErrorProcessor: handles error extraction from output
+// - ResultPersister: handles database persistence
 //
 // The runner implements a clear separation between preparation (Prepare/PrepareWithTUI),
 // execution (Run/RunWithTUI), persistence (Persist), and cleanup (Cleanup) phases.
@@ -80,15 +66,6 @@ type CheckRunner struct {
 	result    *RunResult // Complete run result including act output, errors, and metadata
 }
 
-// tuiResult encapsulates the result of a TUI-based check run.
-type tuiResult struct {
-	result              *act.RunResult
-	extracted           []*internalerrors.ExtractedError
-	grouped             *internalerrors.GroupedErrors
-	groupedComprehensive *internalerrors.ComprehensiveErrorGroup
-	err                 error
-}
-
 // New creates a new CheckRunner with the given configuration.
 // The runner is not initialized until Prepare or PrepareWithTUI is called.
 func New(config *RunConfig) *CheckRunner {
@@ -107,156 +84,16 @@ func New(config *RunConfig) *CheckRunner {
 //
 // When verbose is true (non-TUI mode), prints status lines to stderr showing progress.
 func (r *CheckRunner) Prepare(ctx context.Context) error {
+	preparer := NewWorkflowPreparer(r.config)
 	verbose := !r.config.UseTUI
 
-	g, gctx := errgroup.WithContext(ctx)
-
-	g.Go(func() error {
-		return git.ValidateGitRepository(gctx, r.config.RepoRoot)
-	})
-
-	g.Go(func() error {
-		return actbin.EnsureInstalled(gctx, nil)
-	})
-
-	g.Go(func() error {
-		return docker.IsAvailable(gctx)
-	})
-
-	if err := g.Wait(); err != nil {
-		if verbose {
-			r.printStatus("Checking prerequisites", false)
-		}
+	result, err := preparer.Prepare(ctx, verbose)
+	if err != nil {
 		return err
 	}
-	if verbose {
-		r.printStatus("Checking prerequisites", true)
-	}
 
-	// Best-effort cleanup of orphaned worktrees from previous runs (SIGKILL recovery)
-	_, _ = git.CleanupOrphanedWorktrees(ctx, r.config.RepoRoot)
-
-	// Run validation checks in parallel (all are I/O operations)
-	g2, gctx2 := errgroup.WithContext(ctx)
-
-	g2.Go(func() error {
-		return git.ValidateCleanWorktree(gctx2, r.config.RepoRoot)
-	})
-
-	g2.Go(func() error {
-		return git.ValidateNoSubmodules(r.config.RepoRoot)
-	})
-
-	g2.Go(func() error {
-		return git.ValidateNoEscapingSymlinks(gctx2, r.config.RepoRoot)
-	})
-
-	if err := g2.Wait(); err != nil {
-		if verbose {
-			r.printStatus("Validating repository", false)
-		}
-		return err
-	}
-	if verbose {
-		r.printStatus("Validating repository", true)
-	}
-
-	type workflowResult struct {
-		tmpDir           string
-		cleanupWorkflows func()
-		err              error
-	}
-
-	type worktreeResult struct {
-		worktreeInfo    *git.WorktreeInfo
-		cleanupWorktree func()
-		err             error
-	}
-
-	workflowChan := make(chan workflowResult, 1)
-	worktreeChan := make(chan worktreeResult, 1)
-
-	// Prepare workflows in parallel
-	go func() {
-		tmpDir, cleanupWorkflows, err := workflow.PrepareWorkflows(r.config.WorkflowPath, r.config.WorkflowFile)
-		workflowChan <- workflowResult{
-			tmpDir:           tmpDir,
-			cleanupWorkflows: cleanupWorkflows,
-			err:              err,
-		}
-	}()
-
-	// Prepare worktree in parallel (ephemeral, cleaned up after use)
-	go func() {
-		worktreePath, pathErr := git.CreateEphemeralWorktreePath(r.config.RunID)
-		if pathErr != nil {
-			worktreeChan <- worktreeResult{err: pathErr}
-			return
-		}
-		worktreeInfo, cleanup, err := git.PrepareWorktree(ctx, r.config.RepoRoot, worktreePath)
-		worktreeChan <- worktreeResult{
-			worktreeInfo:    worktreeInfo,
-			cleanupWorktree: cleanup,
-			err:             err,
-		}
-	}()
-
-	// Collect results
-	workflowRes := <-workflowChan
-	worktreeRes := <-worktreeChan
-
-	// Handle errors with proper cleanup
-	if workflowRes.err != nil {
-		// Cleanup worktree if it succeeded but workflow failed
-		if worktreeRes.cleanupWorktree != nil {
-			worktreeRes.cleanupWorktree()
-		}
-		if verbose {
-			r.printStatus("Preparing workflows", false)
-		}
-		return fmt.Errorf("preparing workflows: %w", workflowRes.err)
-	}
-	if verbose {
-		r.printStatus("Preparing workflows", true)
-	}
-
-	if worktreeRes.err != nil {
-		// Cleanup workflow if it succeeded but worktree failed
-		if workflowRes.cleanupWorkflows != nil {
-			workflowRes.cleanupWorkflows()
-		}
-		if verbose {
-			r.printStatus("Creating workspace", false)
-		}
-		return fmt.Errorf("creating worktree: %w", worktreeRes.err)
-	}
-	if verbose {
-		r.printStatus("Creating workspace", true)
-	}
-
-	// Store results
-	r.tmpDir = workflowRes.tmpDir
-	r.cleanupWorkflows = workflowRes.cleanupWorkflows
-	r.worktreeInfo = worktreeRes.worktreeInfo
-	r.cleanupWorktree = worktreeRes.cleanupWorktree
-	// Note: Non-TUI prepare doesn't set stashInfo (interactive prompt only in TUI mode)
-
-	// Extract job info from workflows for TUI display
-	jobs, _ := workflow.ExtractJobInfoFromDir(r.config.WorkflowPath)
-	r.jobs = jobs
-
-	// Initialize debug logging
-	_ = debug.Init(r.config.RepoRoot)
-	for _, job := range jobs {
-		debug.Log("Registered: ID=%q Name=%q", job.ID, job.Name)
-	}
-
+	r.storePreparationResult(result)
 	return nil
-}
-
-// printStatus prints a status line to stderr for non-TUI mode.
-func (r *CheckRunner) printStatus(label string, success bool) {
-	_, _ = fmt.Fprintf(os.Stderr, "  %s... %s\n", label, tui.StatusIcon(success))
 }
 
 // PrepareWithTUI is like Prepare but sends progress updates to the TUI.
@@ -265,30 +102,25 @@ func (r *CheckRunner) printStatus(label string, success bool) {
 // This must be called before RunWithTUI. All resources are tracked for cleanup.
 // Returns error if preparation fails. On error, partial resources are cleaned up.
 func (r *CheckRunner) PrepareWithTUI(ctx context.Context) error {
-	// Run preflight checks with visual feedback
-	result, err := preflight.RunPreflightChecks(ctx, r.config.WorkflowPath, r.config.RepoRoot, r.config.RunID, r.config.WorkflowFile)
+	preparer := NewWorkflowPreparer(r.config)
+
+	result, err := preparer.PrepareWithTUI(ctx)
 	if err != nil {
 		return err
 	}
 
-	// Store preparation results
+	r.storePreparationResult(result)
+	return nil
+}
+
+// storePreparationResult stores the preparation result in the runner.
+func (r *CheckRunner) storePreparationResult(result *PrepareResult) {
 	r.tmpDir = result.TmpDir
 	r.worktreeInfo = result.WorktreeInfo
 	r.cleanupWorkflows = result.CleanupWorkflows
 	r.cleanupWorktree = result.CleanupWorktree
 	r.stashInfo = result.StashInfo
-
-	// Extract job info from workflows for TUI display
-	jobs, _ := workflow.ExtractJobInfoFromDir(r.config.WorkflowPath)
-	r.jobs = jobs
-
-	// Initialize debug logging
-	_ = debug.Init(r.config.RepoRoot)
-	for _, job := range jobs {
-		debug.Log("Registered: ID=%q Name=%q", job.ID, job.Name)
-	}
-
-	return nil
+	r.jobs = result.Jobs
 }
 
 // Run executes the workflow using act and extracts errors from the output.
@@ -302,35 +134,27 @@ func (r *CheckRunner) PrepareWithTUI(ctx context.Context) error {
 // Note: A non-zero exit code from act is not treated as an error - it's captured
 // in the result for analysis.
 func (r *CheckRunner) Run(ctx context.Context) error {
-	if err := git.ValidateWorktreeInitialized(r.worktreeInfo); err != nil {
-		return err
-	}
+	executor := NewActExecutor(r.config, r.tmpDir, r.worktreeInfo)
 
-	r.startTime = time.Now()
-
-	// Configure act execution (matching runWithoutTUI logic from cmd/check.go:476-490)
-	actConfig := r.buildActConfig(nil)
-
-	// Execute workflow using act
-	actResult, err := act.Run(ctx, actConfig)
+	execResult, err := executor.Execute(ctx)
 	if err != nil {
 		return err
 	}
 
-	// Extract and process errors (matching cmd/check.go:266-278)
-	extracted, grouped, groupedComprehensive := r.extractAndProcessErrors(actResult)
+	processor := NewErrorProcessor(r.config.RepoRoot)
+	processed := processor.Process(execResult.ActResult)
 
-	// Store result
+	r.startTime = execResult.StartTime
 	r.result = &RunResult{
-		ActResult:            actResult,
-		Extracted:            extracted,
-		Grouped:              grouped,
-		GroupedComprehensive: groupedComprehensive,
+		ActResult:            execResult.ActResult,
+		Extracted:            processed.Extracted,
+		Grouped:              processed.Grouped,
+		GroupedComprehensive: processed.GroupedComprehensive,
 		WorktreeInfo:         r.worktreeInfo,
 		RunID:                r.config.RunID,
-		StartTime:            r.startTime,
-		Duration:             actResult.Duration,
-		ExitCode:             actResult.ExitCode,
+		StartTime:            execResult.StartTime,
+		Duration:             execResult.Duration,
+		ExitCode:             execResult.ActResult.ExitCode,
 	}
 
 	return nil
@@ -348,178 +172,34 @@ func (r *CheckRunner) Run(ctx context.Context) error {
 // Note: A non-zero exit code from act is not treated as an error - it's captured
 // in the result and sent via DoneMsg.
 func (r *CheckRunner) RunWithTUI(ctx context.Context, logChan chan string, program *tea.Program) (bool, error) {
-	if err := git.ValidateWorktreeInitialized(r.worktreeInfo); err != nil {
-		return false, err
-	}
+	executor := NewActExecutor(r.config, r.tmpDir, r.worktreeInfo)
 
-	// NOTE: Keep context wrapper - needed for proper cancellation
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	r.startTime = time.Now()
-
-	actConfig := r.buildActConfig(logChan)
-
-	resultChan := make(chan tuiResult, 1)
-
-	var wg sync.WaitGroup
-	wg.Add(2)
-
-	r.startActRunnerGoroutine(ctx, actConfig, logChan, program, resultChan, &wg)
-	r.startLogProcessorGoroutine(ctx, logChan, program, &wg)
-
-	finalModel, err := program.Run()
+	execResult, wasCancelled, err := executor.ExecuteWithTUI(ctx, logChan, program)
 	if err != nil {
-		cancel()
-		wg.Wait()
 		return false, err
 	}
 
-	checkModel, ok := finalModel.(*tui.CheckModel)
-	var wasCancelled bool
-	var completionOutput string
-	if ok {
-		wasCancelled = checkModel.Cancelled
-		completionOutput = checkModel.GetCompletionOutput()
-	}
-
-	tuiRes := <-resultChan
-	if tuiRes.err != nil {
-		cancel()
-		wg.Wait()
-		return false, tuiRes.err
-	}
-
+	// Use pre-processed errors from executor (processed in goroutine before TUI exit)
+	r.startTime = execResult.StartTime
 	r.result = &RunResult{
-		ActResult:            tuiRes.result,
-		Extracted:            tuiRes.extracted,
-		Grouped:              tuiRes.grouped,
-		GroupedComprehensive: tuiRes.groupedComprehensive,
+		ActResult:            execResult.ActResult,
+		Extracted:            execResult.Extracted,
+		Grouped:              execResult.Grouped,
+		GroupedComprehensive: execResult.GroupedComprehensive,
 		WorktreeInfo:         r.worktreeInfo,
 		RunID:                r.config.RunID,
-		StartTime:            r.startTime,
-		Duration:             tuiRes.result.Duration,
+		StartTime:            execResult.StartTime,
+		Duration:             execResult.Duration,
 		Cancelled:            wasCancelled,
-		ExitCode:             tuiRes.result.ExitCode,
+		ExitCode:             execResult.ActResult.ExitCode,
 	}
 
-	// Wait for goroutines to complete before returning
-	wg.Wait()
-
 	// Print completion output after TUI exits (job statuses + error summary)
-	if completionOutput != "" {
-		fmt.Fprint(os.Stderr, completionOutput)
+	if execResult.CompletionOutput != "" {
+		fmt.Fprint(os.Stderr, execResult.CompletionOutput)
 	}
 
 	return wasCancelled, nil
-}
-
-// startActRunnerGoroutine starts a goroutine to run act and process results.
-func (r *CheckRunner) startActRunnerGoroutine(
-	ctx context.Context,
-	actConfig *act.RunConfig,
-	logChan chan string,
-	program *tea.Program,
-	resultChan chan tuiResult,
-	wg *sync.WaitGroup,
-) {
-	go func() {
-		defer wg.Done()
-		defer close(logChan)
-		defer func() {
-			if rec := recover(); rec != nil {
-				err := fmt.Errorf("act.Run panicked: %v", rec)
-				resultChan <- tuiResult{err: err}
-				sendToTUI(program, tui.ErrMsg(err))
-			}
-		}()
-
-		result, err := act.Run(ctx, actConfig)
-
-		if err != nil {
-			resultChan <- tuiResult{err: err}
-			sendToTUI(program, tui.ErrMsg(err))
-			return
-		}
-
-		extracted, grouped, groupedComprehensive := r.extractAndProcessErrors(result)
-		cancelled := errors.Is(ctx.Err(), context.Canceled)
-
-		program.Send(tui.DoneMsg{
-			Duration:  result.Duration,
-			ExitCode:  result.ExitCode,
-			Errors:    groupedComprehensive,
-			Cancelled: cancelled,
-		})
-
-		resultChan <- tuiResult{
-			result:               result,
-			extracted:            extracted,
-			grouped:              grouped,
-			groupedComprehensive: groupedComprehensive,
-		}
-	}()
-}
-
-// startLogProcessorGoroutine starts a goroutine to process log messages.
-// Uses a unified select to prevent goroutine leaks when context is cancelled
-// while blocked on channel receive.
-func (r *CheckRunner) startLogProcessorGoroutine(
-	ctx context.Context,
-	logChan chan string,
-	program *tea.Program,
-	wg *sync.WaitGroup,
-) {
-	parser := actparser.New()
-
-	go func() {
-		defer wg.Done()
-		for {
-			select {
-			case line, ok := <-logChan:
-				if !ok {
-					return
-				}
-				// Process line - context check is implicit in select
-				sendToTUI(program, tui.LogMsg(line))
-				if event, ok := parser.ParseLine(line); ok {
-					debug.Log("Event: Job=%q Action=%q Success=%v", event.JobName, event.Action, event.Success)
-					sendToTUI(program, tui.JobEventMsg{Event: event})
-				}
-			case <-ctx.Done():
-				// Drain remaining messages from channel to prevent sender blocking
-				for range logChan {
-				}
-				return
-			}
-		}
-	}()
-}
-
-// extractAndProcessErrors extracts errors from act output, applies severity, and groups.
-// Returns extracted errors and both simple (by-file) and comprehensive (by-category) groupings.
-//
-// Uses the new registry-based extractor with tool-specific parsers for Go and TypeScript,
-// falling back to the legacy extractor for patterns not yet migrated.
-func (r *CheckRunner) extractAndProcessErrors(actResult *act.RunResult) ([]*internalerrors.ExtractedError, *internalerrors.GroupedErrors, *internalerrors.ComprehensiveErrorGroup) {
-	var combinedOutput strings.Builder
-	combinedOutput.Grow(len(actResult.Stdout) + len(actResult.Stderr))
-	combinedOutput.WriteString(actResult.Stdout)
-	combinedOutput.WriteString(actResult.Stderr)
-
-	// Use the new registry-based extractor with tool-specific parsers
-	registry := tools.DefaultRegistry()
-	extractor := extract.NewExtractor(registry)
-	extracted := extractor.Extract(combinedOutput.String(), actparser.NewContextParser())
-
-	// Report any unknown patterns to Sentry for analysis
-	extract.ReportUnknownPatterns(extracted)
-
-	internalerrors.ApplySeverity(extracted)
-	grouped := internalerrors.GroupByFileWithBase(extracted, r.config.RepoRoot)
-	groupedComprehensive := internalerrors.GroupComprehensive(extracted, r.config.RepoRoot)
-
-	return extracted, grouped, groupedComprehensive
 }
 
 // Persist saves the check run results to the database.
@@ -535,43 +215,8 @@ func (r *CheckRunner) Persist() error {
 		return fmt.Errorf("no result to persist (Run/RunWithTUI must be called first)")
 	}
 
-	if r.worktreeInfo == nil {
-		return fmt.Errorf("no worktree info available (Prepare/PrepareWithTUI must be called first)")
-	}
-
-	// Extract workflow name from config.WorkflowPath
-	// If WorkflowPath is a file, use its base name; otherwise use "all"
-	workflowName := "all"
-	fileInfo, err := os.Stat(r.config.WorkflowPath)
-	if err == nil && !fileInfo.IsDir() {
-		workflowName = filepath.Base(r.config.WorkflowPath)
-	}
-
-	// Detect execution mode
-	execMode := git.DetectExecutionMode()
-
-	// Initialize persistence recorder
-	recorder, err := persistence.NewRecorder(
-		r.config.RepoRoot,
-		workflowName,
-		r.worktreeInfo.CommitSHA,
-		execMode,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to initialize persistence storage at %s/.detent: %w", r.config.RepoRoot, err)
-	}
-
-	// Record all findings in a single batch operation
-	if err := recorder.RecordFindings(r.result.Extracted); err != nil {
-		return fmt.Errorf("failed to record findings: %w", err)
-	}
-
-	// Finalize the run with exit code (this also closes the database connection)
-	if err := recorder.Finalize(r.result.ExitCode); err != nil {
-		return fmt.Errorf("failed to finalize persistence storage (run data may be incomplete): %w", err)
-	}
-
-	return nil
+	persister := NewResultPersister(r.config.RepoRoot, r.config.WorkflowPath, r.worktreeInfo)
+	return persister.Persist(r.result.Extracted, r.result.ExitCode)
 }
 
 // Cleanup releases all resources allocated during Prepare.
@@ -612,14 +257,20 @@ func (r *CheckRunner) GetJobs() []workflow.JobInfo {
 // When logChan is nil, StreamOutput is enabled (for non-TUI mode).
 // When logChan is provided, output is streamed to the channel (for TUI mode).
 //
-// This method assumes the worktree has been validated by the caller (Run/RunWithTUI).
+// This method is kept for backward compatibility with tests.
+// New code should use ActExecutor.buildActConfig instead.
 func (r *CheckRunner) buildActConfig(logChan chan string) *act.RunConfig {
-	return &act.RunConfig{
-		WorkflowPath: r.tmpDir,
-		Event:        r.config.Event,
-		Verbose:      false,
-		WorkDir:      r.worktreeInfo.Path,
-		StreamOutput: logChan == nil && r.config.StreamOutput,
-		LogChan:      logChan,
-	}
+	executor := NewActExecutor(r.config, r.tmpDir, r.worktreeInfo)
+	return executor.buildActConfig(logChan)
+}
+
+// extractAndProcessErrors extracts errors from act output, applies severity, and groups.
+// Returns extracted errors and both simple (by-file) and comprehensive (by-category) groupings.
+//
+// This method is kept for backward compatibility with tests.
+// New code should use ErrorProcessor.Process instead.
+func (r *CheckRunner) extractAndProcessErrors(actResult *act.RunResult) ([]*errors.ExtractedError, *errors.GroupedErrors, *errors.ComprehensiveErrorGroup) {
+	processor := NewErrorProcessor(r.config.RepoRoot)
+	processed := processor.Process(actResult)
+	return processed.Extracted, processed.Grouped, processed.GroupedComprehensive
 }

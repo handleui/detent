@@ -572,21 +572,17 @@ func validateSteps(jobID string, steps []*Step) ValidationErrors {
 
 		// Check for unsupported tools in run commands (detect all tools, not just first)
 		if step.Run != "" {
-			detectedTools := registry.DetectAllAndCheckSupport(step.Run)
+			result := registry.DetectTools(step.Run, tools.DetectionOptions{CheckSupport: true})
+			unsupportedTools := result.Unsupported()
 
-			// Filter to only unsupported tools
-			var unsupportedTools []tools.DetectedTool
-			for _, t := range detectedTools {
-				if !t.Supported {
-					unsupportedTools = append(unsupportedTools, t)
-					// Track for Sentry reporting
-					unsupportedToolsForSentry = append(unsupportedToolsForSentry, tools.UnsupportedToolInfo{
-						ToolID:      t.ID,
-						DisplayName: t.DisplayName,
-						StepName:    stepName,
-						JobID:       jobID,
-					})
-				}
+			// Track for Sentry reporting
+			for _, t := range unsupportedTools {
+				unsupportedToolsForSentry = append(unsupportedToolsForSentry, tools.UnsupportedToolInfo{
+					ToolID:      t.ID,
+					DisplayName: t.DisplayName,
+					StepName:    stepName,
+					JobID:       jobID,
+				})
 			}
 
 			// Generate warning for unsupported tools

@@ -103,13 +103,4 @@ var (
 		regexp.MustCompile(`(?i)potentially\s+fixable`), // Fixable hint
 		regexp.MustCompile(`(?i)--fix\s+option`),        // --fix suggestion
 	}
-
-	// ansiEscapePattern removes ANSI escape sequences for colored output.
-	ansiEscapePattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 )
-
-// StripANSI removes ANSI escape sequences from a string.
-// This is used to clean up colored ESLint output before parsing.
-func StripANSI(s string) string {
-	return ansiEscapePattern.ReplaceAllString(s, "")
-}

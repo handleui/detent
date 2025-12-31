@@ -562,10 +562,6 @@ func TestParser_ANSIStripping(t *testing.T) {
 	}
 }
 
-func TestParser_InterfaceCompliance(t *testing.T) {
-	var _ parser.ToolParser = (*Parser)(nil)
-}
-
 func TestParser_RealWorldSamples(t *testing.T) {
 	p := NewParser()
 	ctx := &parser.ParseContext{}

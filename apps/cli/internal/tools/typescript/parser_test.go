@@ -335,11 +335,6 @@ func TestParser_Reset(t *testing.T) {
 	p.Reset()
 }
 
-func TestParser_InterfaceCompliance(t *testing.T) {
-	// This test verifies the compile-time interface check works
-	var _ parser.ToolParser = (*Parser)(nil)
-}
-
 func TestParser_WorkflowContext(t *testing.T) {
 	p := NewParser()
 
@@ -953,7 +948,7 @@ func TestStripANSI(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := StripANSI(tt.input)
+			got := parser.StripANSI(tt.input)
 			if got != tt.expected {
 				t.Errorf("StripANSI(%q) = %q, want %q", tt.input, got, tt.expected)
 			}

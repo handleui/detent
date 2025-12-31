@@ -52,34 +52,34 @@ type RunConfig struct {
 // Returns an error if validation fails.
 func (c *RunConfig) Validate() error {
 	if c.RepoRoot == "" {
-		return fmt.Errorf("RepoRoot is required")
+		return fmt.Errorf("repoRoot is required")
 	}
 
 	if c.WorkflowPath == "" {
-		return fmt.Errorf("WorkflowPath is required")
+		return fmt.Errorf("workflowPath is required")
 	}
 
 	if c.RunID == "" {
-		return fmt.Errorf("RunID is required")
+		return fmt.Errorf("runID is required")
 	}
 	if !validRunIDPattern.MatchString(c.RunID) {
-		return fmt.Errorf("invalid RunID format: must be a 16-character hex string")
+		return fmt.Errorf("invalid runID format: must be a 16-character hex string")
 	}
 
 	// Validate WorkflowPath doesn't escape RepoRoot
 	absRepo, err := filepath.Abs(c.RepoRoot)
 	if err != nil {
-		return fmt.Errorf("resolving RepoRoot: %w", err)
+		return fmt.Errorf("resolving repoRoot: %w", err)
 	}
 
 	absWorkflow, err := filepath.Abs(c.WorkflowPath)
 	if err != nil {
-		return fmt.Errorf("resolving WorkflowPath: %w", err)
+		return fmt.Errorf("resolving workflowPath: %w", err)
 	}
 
 	relPath, err := filepath.Rel(absRepo, absWorkflow)
 	if err != nil || strings.HasPrefix(relPath, "..") {
-		return fmt.Errorf("WorkflowPath must be within RepoRoot")
+		return fmt.Errorf("workflowPath must be within repoRoot")
 	}
 
 	// Check if path exists and is not a symlink
@@ -88,7 +88,7 @@ func (c *RunConfig) Validate() error {
 		// Path doesn't exist yet - that's ok, PrepareWorkflows will handle it
 		// But we still validated it's within RepoRoot
 	} else if fileInfo.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("WorkflowPath cannot be a symlink")
+		return fmt.Errorf("workflowPath cannot be a symlink")
 	}
 
 	if c.Event == "" {

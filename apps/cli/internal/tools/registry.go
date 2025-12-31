@@ -28,7 +28,11 @@ type (
 type Registry struct {
 	parsers []ToolParser          // Sorted by priority (descending)
 	byID    map[string]ToolParser // Quick lookup by parser ID
+	byExt   map[string]ToolParser // Extension-based index for fast path
 	mu      sync.RWMutex          // Protects concurrent access
+
+	// Optimized noise detection - consolidated from all parsers
+	noiseChecker *noiseChecker
 }
 
 // NewRegistry creates a new parser registry
@@ -36,17 +40,40 @@ func NewRegistry() *Registry {
 	return &Registry{
 		parsers: make([]ToolParser, 0),
 		byID:    make(map[string]ToolParser),
+		byExt:   make(map[string]ToolParser),
 	}
+}
+
+// extensionToParserID maps file extensions to parser IDs for fast path lookup.
+// This enables O(1) parser selection when a line contains a file path with a known extension.
+var extensionToParserID = map[string]string{
+	".go":   "go",
+	".ts":   "typescript",
+	".tsx":  "typescript",
+	".js":   "eslint", // JS errors more likely from linter than tsc
+	".jsx":  "eslint",
+	".mjs":  "eslint",
+	".cjs":  "eslint",
+	".rs":   "rust",
+	".toml": "rust", // Cargo.toml errors
 }
 
 // Register adds a parser to the registry.
 // Parsers are automatically sorted by priority (highest first).
+// Also populates the extension-based index for fast path lookup.
 func (r *Registry) Register(p ToolParser) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	r.parsers = append(r.parsers, p)
 	r.byID[p.ID()] = p
+
+	// Populate extension index for this parser
+	for ext, parserID := range extensionToParserID {
+		if parserID == p.ID() {
+			r.byExt[ext] = p
+		}
+	}
 
 	// Sort by priority descending (highest priority first)
 	sort.SliceStable(r.parsers, func(i, j int) bool {
@@ -63,19 +90,30 @@ func (r *Registry) Get(id string) ToolParser {
 
 // FindParser returns the best matching parser for a line.
 // If the context has a known tool, that parser is used directly.
-// Otherwise, parsers are tried in priority order using confidence scoring.
+// Otherwise, tries extension-based lookup first, then falls back to
+// priority-ordered confidence scoring.
 func (r *Registry) FindParser(line string, ctx *ParseContext) ToolParser {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	// Fast path: if tool is known from step context, use that parser directly
+	// Fast path 1: if tool is known from step context, use that parser directly
 	if ctx != nil && ctx.Tool != "" {
 		if p, ok := r.byID[ctx.Tool]; ok {
 			return p
 		}
 	}
 
-	// Find parser with highest confidence score
+	// Fast path 2: try extension-based lookup for lines with file paths
+	if ext := extractFileExtension(line); ext != "" {
+		if p, ok := r.byExt[ext]; ok {
+			// Verify the parser actually wants this line (non-zero confidence)
+			if p.CanParse(line, ctx) > 0 {
+				return p
+			}
+		}
+	}
+
+	// Slow path: find parser with highest confidence score
 	var best ToolParser
 	var bestScore float64
 
@@ -90,18 +128,55 @@ func (r *Registry) FindParser(line string, ctx *ParseContext) ToolParser {
 	return best
 }
 
-// IsNoise checks if any parser considers this line as noise.
-// Returns true if any registered parser flags it as noise.
-func (r *Registry) IsNoise(line string) bool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+// extractFileExtension extracts a file extension from a line containing a file path.
+// Returns the extension (e.g., ".go", ".ts") or empty string if none found.
+// Looks for common error format patterns: file.ext:line:col, file.ext(line,col), etc.
+func extractFileExtension(line string) string {
+	// Common patterns for file paths in error messages:
+	// - path/file.go:10:5: message
+	// - path/file.ts(10,5): message
+	// - path/file.rs:10: message
+	// - /absolute/path/file.go:10:5: message
 
-	for _, p := range r.parsers {
-		if p.IsNoise(line) {
-			return true
+	// Find potential file path by looking for extension followed by : or (
+	// This is a simple heuristic that avoids regex for performance
+	for i := 0; i < len(line); i++ {
+		if line[i] == '.' {
+			// Found a dot, extract potential extension
+			extEnd := i + 1
+			for extEnd < len(line) && isExtChar(line[extEnd]) {
+				extEnd++
+			}
+			// Check if followed by : or ( (common in error formats)
+			if extEnd < len(line) && (line[extEnd] == ':' || line[extEnd] == '(') {
+				ext := strings.ToLower(line[i:extEnd])
+				if _, ok := extensionToParserID[ext]; ok {
+					return ext
+				}
+			}
 		}
 	}
-	return false
+	return ""
+}
+
+// isExtChar returns true if c is a valid file extension character
+func isExtChar(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+}
+
+// IsNoise checks if the line is noise using optimized consolidated patterns.
+// Returns true if the line matches any noise pattern from any registered parser.
+// Performance: O(1) prefix checks + O(patterns) regex checks vs O(parsers * patterns).
+func (r *Registry) IsNoise(line string) bool {
+	r.mu.RLock()
+	checker := r.noiseChecker
+	r.mu.RUnlock()
+
+	if checker == nil {
+		return false
+	}
+
+	return checker.IsNoise(line)
 }
 
 // ResetAll resets the state of all registered parsers.
@@ -146,6 +221,10 @@ func DefaultRegistry() *Registry {
 	// Priority 10: Generic fallback parser (last resort, flags unknown patterns for Sentry)
 	r.Register(generic.NewParser())
 
+	// Initialize optimized noise checker by collecting patterns from all registered parsers.
+	// This must be called AFTER all parsers are registered to collect their patterns.
+	r.noiseChecker = newNoiseCheckerFromParsers(r.parsers)
+
 	return r
 }
 
@@ -157,7 +236,8 @@ type ToolPattern struct {
 }
 
 // toolPatterns maps regex patterns to parser IDs for tool detection.
-// Patterns are tried in order; more specific patterns should come first.
+// Only patterns for tools with implemented parsers are included.
+// Add new patterns when implementing new parsers.
 var toolPatterns = []ToolPattern{
 	// Go tools
 	{regexp.MustCompile(`(?:^|\s|/)golangci-lint\s`), "go", "golangci-lint"},
@@ -173,86 +253,18 @@ var toolPatterns = []ToolPattern{
 	{regexp.MustCompile(`(?:^|\s)pnpm\s+.*tsc\b`), "typescript", "tsc"},
 	{regexp.MustCompile(`(?:^|\s)yarn\s+.*tsc\b`), "typescript", "tsc"},
 
-	// ESLint (supported)
+	// ESLint
 	{regexp.MustCompile(`(?:^|\s|/)eslint\b`), "eslint", "eslint"},
 	{regexp.MustCompile(`(?:^|\s)npx\s+eslint\b`), "eslint", "eslint"},
 	{regexp.MustCompile(`(?:^|\s)bunx?\s+eslint\b`), "eslint", "eslint"},
 	{regexp.MustCompile(`(?:^|\s)pnpm\s+.*eslint\b`), "eslint", "eslint"},
 	{regexp.MustCompile(`(?:^|\s)yarn\s+.*eslint\b`), "eslint", "eslint"},
 
-	// Biome (not yet supported)
-	{regexp.MustCompile(`(?:^|\s|/)biome\s+(check|lint|format|ci)\b`), "biome", "biome"},
-	{regexp.MustCompile(`(?:^|\s)npx\s+@biomejs/biome\b`), "biome", "biome"},
-	{regexp.MustCompile(`(?:^|\s)bunx?\s+biome\b`), "biome", "biome"},
-
-	// Prettier (not yet supported)
-	{regexp.MustCompile(`(?:^|\s|/)prettier\b`), "prettier", "prettier"},
-	{regexp.MustCompile(`(?:^|\s)npx\s+prettier\b`), "prettier", "prettier"},
-
-	// Python tools (not yet supported)
-	{regexp.MustCompile(`(?:^|\s|/)pytest\b`), "pytest", "pytest"},
-	{regexp.MustCompile(`(?:^|\s)python\s+-m\s+pytest\b`), "pytest", "pytest"},
-	{regexp.MustCompile(`(?:^|\s|/)mypy\b`), "mypy", "mypy"},
-	{regexp.MustCompile(`(?:^|\s)python\s+-m\s+mypy\b`), "mypy", "mypy"},
-	{regexp.MustCompile(`(?:^|\s|/)ruff\s+(check|format)?\b`), "ruff", "ruff"},
-	{regexp.MustCompile(`(?:^|\s|/)pylint\b`), "pylint", "pylint"},
-	{regexp.MustCompile(`(?:^|\s|/)flake8\b`), "flake8", "flake8"},
-	{regexp.MustCompile(`(?:^|\s|/)black\b`), "black", "black"},
-	{regexp.MustCompile(`(?:^|\s|/)pyright\b`), "pyright", "pyright"},
-	{regexp.MustCompile(`(?:^|\s)python\s+-m\s+unittest\b`), "unittest", "unittest"},
-
 	// Rust tools
 	{regexp.MustCompile(`(?:^|\s)cargo\s+(test|build|check|clippy|run|fmt)\b`), "rust", "cargo"},
 	{regexp.MustCompile(`(?:^|\s|/)rustc\b`), "rust", "rustc"},
 	{regexp.MustCompile(`(?:^|\s|/)clippy-driver\b`), "rust", "clippy"},
 	{regexp.MustCompile(`(?:^|\s|/)rustfmt\b`), "rust", "rustfmt"},
-
-	// JavaScript test runners (not yet supported)
-	{regexp.MustCompile(`(?:^|\s|/)jest\b`), "jest", "jest"},
-	{regexp.MustCompile(`(?:^|\s)npx\s+jest\b`), "jest", "jest"},
-	{regexp.MustCompile(`(?:^|\s|/)vitest\b`), "vitest", "vitest"},
-	{regexp.MustCompile(`(?:^|\s)npx\s+vitest\b`), "vitest", "vitest"},
-	{regexp.MustCompile(`(?:^|\s|/)mocha\b`), "mocha", "mocha"},
-	{regexp.MustCompile(`(?:^|\s)npx\s+mocha\b`), "mocha", "mocha"},
-	{regexp.MustCompile(`(?:^|\s|/)ava\b`), "ava", "ava"},
-	{regexp.MustCompile(`(?:^|\s|/)playwright\s+test\b`), "playwright", "playwright"},
-	{regexp.MustCompile(`(?:^|\s)npx\s+playwright\s+test\b`), "playwright", "playwright"},
-	{regexp.MustCompile(`(?:^|\s|/)cypress\s+run\b`), "cypress", "cypress"},
-
-	// Java/JVM tools (not yet supported)
-	{regexp.MustCompile(`(?:^|\s|/)mvn\s`), "maven", "maven"},
-	{regexp.MustCompile(`(?:^|\s|/)gradle\s`), "gradle", "gradle"},
-	{regexp.MustCompile(`(?:^|\s|/)gradlew\s`), "gradle", "gradle"},
-	{regexp.MustCompile(`(?:^|\s|/)javac\b`), "javac", "javac"},
-
-	// Ruby tools (not yet supported)
-	{regexp.MustCompile(`(?:^|\s|/)rubocop\b`), "rubocop", "rubocop"},
-	{regexp.MustCompile(`(?:^|\s|/)rspec\b`), "rspec", "rspec"},
-	{regexp.MustCompile(`(?:^|\s)bundle\s+exec\s+rspec\b`), "rspec", "rspec"},
-	{regexp.MustCompile(`(?:^|\s|/)minitest\b`), "minitest", "minitest"},
-
-	// PHP tools (not yet supported)
-	{regexp.MustCompile(`(?:^|\s|/)phpunit\b`), "phpunit", "phpunit"},
-	{regexp.MustCompile(`(?:^|\s|/)phpstan\b`), "phpstan", "phpstan"},
-	{regexp.MustCompile(`(?:^|\s|/)psalm\b`), "psalm", "psalm"},
-
-	// C/C++ tools (not yet supported)
-	{regexp.MustCompile(`(?:^|\s|/)gcc\b`), "gcc", "gcc"},
-	{regexp.MustCompile(`(?:^|\s|/)g\+\+\b`), "g++", "g++"},
-	{regexp.MustCompile(`(?:^|\s|/)clang\b`), "clang", "clang"},
-	{regexp.MustCompile(`(?:^|\s|/)clang\+\+\b`), "clang++", "clang++"},
-	{regexp.MustCompile(`(?:^|\s)cmake\s`), "cmake", "cmake"},
-	{regexp.MustCompile(`(?:^|\s)make\s`), "make", "make"},
-
-	// .NET tools (not yet supported)
-	{regexp.MustCompile(`(?:^|\s)dotnet\s+(build|test|run)\b`), "dotnet", "dotnet"},
-
-	// Swift tools (not yet supported)
-	{regexp.MustCompile(`(?:^|\s)swift\s+(build|test)\b`), "swift", "swift"},
-	{regexp.MustCompile(`(?:^|\s)xcodebuild\s`), "xcodebuild", "xcodebuild"},
-
-	// Terraform/Infrastructure (not yet supported)
-	{regexp.MustCompile(`(?:^|\s)terraform\s+(plan|apply|validate)\b`), "terraform", "terraform"},
 }
 
 // DetectedTool represents a tool detected from a run command.
@@ -262,39 +274,87 @@ type DetectedTool struct {
 	Supported   bool   // Whether we have a dedicated parser for this tool
 }
 
-// DetectToolFromRun analyzes a run command and returns the detected tool ID.
-// Returns empty string if no known tool is detected.
-// For detecting all tools in a command, use DetectAllToolsFromRun.
-func DetectToolFromRun(run string) string {
-	// Normalize: handle multi-line commands by checking each line
-	lines := strings.Split(run, "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		// Handle command chaining (&&, ||, ;)
-		commands := splitCommands(line)
-		for _, cmd := range commands {
-			cmd = strings.TrimSpace(cmd)
-			if cmd == "" {
-				continue
-			}
-			for _, tp := range toolPatterns {
-				if tp.Pattern.MatchString(cmd) {
-					return tp.ParserID
-				}
-			}
-		}
-	}
-	return ""
+// DetectionOptions configures tool detection behavior.
+type DetectionOptions struct {
+	// FirstOnly returns only the first detected tool (default: false, returns all)
+	FirstOnly bool
+	// CheckSupport populates the Supported field in results (default: false)
+	// Requires a Registry instance to check against
+	CheckSupport bool
 }
 
-// DetectAllToolsFromRun analyzes a run command and returns all detected tools.
-// This is useful for workflow validation to report all unsupported tools at once.
-func DetectAllToolsFromRun(run string) []DetectedTool {
+// DetectionResult contains the results of tool detection.
+type DetectionResult struct {
+	// Tools contains all detected tools (or just the first if FirstOnly was set)
+	Tools []DetectedTool
+}
+
+// First returns the first detected tool, or an empty DetectedTool if none found.
+func (r DetectionResult) First() DetectedTool {
+	if len(r.Tools) == 0 {
+		return DetectedTool{}
+	}
+	return r.Tools[0]
+}
+
+// FirstID returns the ID of the first detected tool, or empty string if none found.
+func (r DetectionResult) FirstID() string {
+	if len(r.Tools) == 0 {
+		return ""
+	}
+	return r.Tools[0].ID
+}
+
+// HasTools returns true if any tools were detected.
+func (r DetectionResult) HasTools() bool {
+	return len(r.Tools) > 0
+}
+
+// Unsupported returns only the unsupported tools from the result.
+func (r DetectionResult) Unsupported() []DetectedTool {
+	var result []DetectedTool
+	for _, t := range r.Tools {
+		if !t.Supported {
+			result = append(result, t)
+		}
+	}
+	return result
+}
+
+// AllSupported returns true if all detected tools are supported (or if no tools detected).
+func (r DetectionResult) AllSupported() bool {
+	for _, t := range r.Tools {
+		if !t.Supported {
+			return false
+		}
+	}
+	return true
+}
+
+// DetectTools analyzes a run command and returns detected tools with configurable options.
+// This is the primary tool detection method that consolidates all detection functionality.
+//
+// Usage examples:
+//
+//	// Detect all tools with support check
+//	result := registry.DetectTools(run, DetectionOptions{CheckSupport: true})
+//	for _, tool := range result.Tools { ... }
+//
+//	// Detect first tool only
+//	result := registry.DetectTools(run, DetectionOptions{FirstOnly: true})
+//	toolID := result.FirstID()
+//
+//	// Check for unsupported tools
+//	result := registry.DetectTools(run, DetectionOptions{CheckSupport: true})
+//	unsupported := result.Unsupported()
+func (r *Registry) DetectTools(run string, opts DetectionOptions) DetectionResult {
+	return detectToolsInternal(run, opts, r)
+}
+
+// detectToolsInternal is the core detection logic that can work with or without a registry.
+func detectToolsInternal(run string, opts DetectionOptions, registry *Registry) DetectionResult {
 	seen := make(map[string]bool)
-	var tools []DetectedTool
+	var detectedTools []DetectedTool
 
 	// Normalize: handle multi-line commands by checking each line
 	lines := strings.Split(run, "\n")
@@ -315,11 +375,24 @@ func DetectAllToolsFromRun(run string) []DetectedTool {
 					// Avoid duplicates
 					if !seen[tp.ParserID] {
 						seen[tp.ParserID] = true
-						tools = append(tools, DetectedTool{
+
+						tool := DetectedTool{
 							ID:          tp.ParserID,
 							DisplayName: tp.DisplayName,
-							Supported:   false, // Will be set by caller using registry
-						})
+							Supported:   false,
+						}
+
+						// Check support if registry is available and option is set
+						if opts.CheckSupport && registry != nil {
+							tool.Supported = registry.HasDedicatedParser(tp.ParserID)
+						}
+
+						detectedTools = append(detectedTools, tool)
+
+						// Early return if only first tool is needed
+						if opts.FirstOnly {
+							return DetectionResult{Tools: detectedTools}
+						}
 					}
 					break // Only match first pattern per command segment
 				}
@@ -327,7 +400,25 @@ func DetectAllToolsFromRun(run string) []DetectedTool {
 		}
 	}
 
-	return tools
+	return DetectionResult{Tools: detectedTools}
+}
+
+// DetectToolFromRun analyzes a run command and returns the detected tool ID.
+// Returns empty string if no known tool is detected.
+//
+// Deprecated: Use Registry.DetectTools with DetectionOptions{FirstOnly: true} instead.
+func DetectToolFromRun(run string) string {
+	result := detectToolsInternal(run, DetectionOptions{FirstOnly: true}, nil)
+	return result.FirstID()
+}
+
+// DetectAllToolsFromRun analyzes a run command and returns all detected tools.
+// This is useful for workflow validation to report all unsupported tools at once.
+//
+// Deprecated: Use Registry.DetectTools instead for full functionality including support checks.
+func DetectAllToolsFromRun(run string) []DetectedTool {
+	result := detectToolsInternal(run, DetectionOptions{}, nil)
+	return result.Tools
 }
 
 // splitCommands splits a command line by common shell operators.
@@ -427,22 +518,24 @@ func (r *Registry) SupportedToolIDs() []string {
 
 // DetectAndCheckSupport detects a tool from a run command and checks if it's supported.
 // Returns (toolID, isSupported). If no tool is detected, returns ("", true).
+//
+// Deprecated: Use Registry.DetectTools with DetectionOptions{FirstOnly: true, CheckSupport: true} instead.
 func (r *Registry) DetectAndCheckSupport(run string) (string, bool) {
-	toolID := DetectToolFromRun(run)
-	if toolID == "" {
+	result := r.DetectTools(run, DetectionOptions{FirstOnly: true, CheckSupport: true})
+	if !result.HasTools() {
 		return "", true // No tool detected, assume OK
 	}
-	return toolID, r.HasDedicatedParser(toolID)
+	first := result.First()
+	return first.ID, first.Supported
 }
 
 // DetectAllAndCheckSupport detects all tools from a run command and checks their support status.
 // Returns a slice of DetectedTool with the Supported field populated.
+//
+// Deprecated: Use Registry.DetectTools with DetectionOptions{CheckSupport: true} instead.
 func (r *Registry) DetectAllAndCheckSupport(run string) []DetectedTool {
-	tools := DetectAllToolsFromRun(run)
-	for i := range tools {
-		tools[i].Supported = r.HasDedicatedParser(tools[i].ID)
-	}
-	return tools
+	result := r.DetectTools(run, DetectionOptions{CheckSupport: true})
+	return result.Tools
 }
 
 // UnsupportedToolInfo contains information about an unsupported tool for error reporting.
@@ -525,4 +618,112 @@ func formatList(items []string) string {
 	default:
 		return strings.Join(items[:len(items)-1], ", ") + ", and " + items[len(items)-1]
 	}
+}
+
+// noiseChecker provides optimized noise detection using consolidated patterns.
+// Instead of calling IsNoise on every parser for every line, this consolidates
+// all noise patterns and applies fast checks before expensive regex operations.
+//
+// Performance optimization:
+//   - Fast prefix checks for common noise patterns (O(1) string operations)
+//   - Consolidated regex patterns checked once instead of per-parser
+//   - ANSI escape code stripping done once per line via parser.StripANSI
+//
+// The patterns are collected from all registered parsers that implement
+// the NoisePatternProvider interface, eliminating the need for duplicate
+// hardcoded patterns in the registry.
+type noiseChecker struct {
+	// fastPrefixes are common prefixes that indicate noise (checked first)
+	fastPrefixes []string
+
+	// fastContains are common substrings that indicate noise
+	fastContains []string
+
+	// regexPatterns are consolidated regex patterns from all parsers
+	regexPatterns []*regexp.Regexp
+}
+
+// newNoiseCheckerFromParsers creates an optimized noise checker by collecting
+// patterns from all registered parsers that implement NoisePatternProvider.
+// This eliminates the need for duplicate hardcoded patterns in the registry.
+func newNoiseCheckerFromParsers(parsers []ToolParser) *noiseChecker {
+	nc := &noiseChecker{}
+
+	// Use maps to deduplicate patterns
+	prefixSet := make(map[string]struct{})
+	containsSet := make(map[string]struct{})
+	regexSet := make(map[string]*regexp.Regexp)
+
+	// Collect patterns from all parsers that implement NoisePatternProvider
+	for _, p := range parsers {
+		if provider, ok := p.(parser.NoisePatternProvider); ok {
+			patterns := provider.NoisePatterns()
+
+			// Collect fast prefixes (lowercase for case-insensitive matching)
+			for _, prefix := range patterns.FastPrefixes {
+				lower := strings.ToLower(prefix)
+				if _, exists := prefixSet[lower]; !exists {
+					prefixSet[lower] = struct{}{}
+					nc.fastPrefixes = append(nc.fastPrefixes, lower)
+				}
+			}
+
+			// Collect fast contains (lowercase for case-insensitive matching)
+			for _, contains := range patterns.FastContains {
+				lower := strings.ToLower(contains)
+				if _, exists := containsSet[lower]; !exists {
+					containsSet[lower] = struct{}{}
+					nc.fastContains = append(nc.fastContains, lower)
+				}
+			}
+
+			// Collect regex patterns (deduplicate by string representation)
+			for _, re := range patterns.Regex {
+				patternStr := re.String()
+				if _, exists := regexSet[patternStr]; !exists {
+					regexSet[patternStr] = re
+					nc.regexPatterns = append(nc.regexPatterns, re)
+				}
+			}
+		}
+	}
+
+	return nc
+}
+
+// IsNoise checks if the line is noise using optimized consolidated checks.
+func (nc *noiseChecker) IsNoise(line string) bool {
+	// Strip ANSI codes once for all checks using canonical implementation
+	stripped := parser.StripANSI(line)
+
+	// Fast path: empty or whitespace-only lines are noise
+	trimmed := strings.TrimSpace(stripped)
+	if trimmed == "" {
+		return true
+	}
+
+	// Fast prefix checks (case-insensitive)
+	lowerTrimmed := strings.ToLower(trimmed)
+	for _, prefix := range nc.fastPrefixes {
+		if strings.HasPrefix(lowerTrimmed, prefix) {
+			return true
+		}
+	}
+
+	// Fast substring checks (case-insensitive)
+	lowerStripped := strings.ToLower(stripped)
+	for _, substr := range nc.fastContains {
+		if strings.Contains(lowerStripped, substr) {
+			return true
+		}
+	}
+
+	// Regex patterns (most expensive, checked last)
+	for _, pattern := range nc.regexPatterns {
+		if pattern.MatchString(stripped) {
+			return true
+		}
+	}
+
+	return false
 }

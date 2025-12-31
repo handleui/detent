@@ -280,7 +280,3 @@ func TestParser_Reset(t *testing.T) {
 	p := NewParser()
 	p.Reset() // Should not panic
 }
-
-func TestParser_ImplementsInterface(t *testing.T) {
-	var _ parser.ToolParser = (*Parser)(nil)
-}

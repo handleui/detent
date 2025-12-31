@@ -8,11 +8,20 @@ import (
 	"github.com/detent/cli/internal/tools/parser"
 )
 
+const (
+	parserID       = "generic"
+	parserPriority = 10
+)
+
 // Parser implements parser.ToolParser as a fallback for unrecognized error formats.
 // It matches lines containing common error indicators and flags them for Sentry reporting.
 //
 // IMPORTANT: This parser is VERY STRICT to avoid false positives in Sentry reports.
 // Only genuinely unrecognized error patterns should be flagged. When in doubt, skip it.
+//
+// Thread Safety: Parser is stateless and thread-safe. Multiple goroutines can safely
+// share a single Parser instance. This parser does not mutate ParseContext fields
+// (only reads WorkflowContext for cloning into extracted errors).
 type Parser struct{}
 
 // NewParser creates a new generic fallback parser instance.
@@ -20,15 +29,14 @@ func NewParser() *Parser {
 	return &Parser{}
 }
 
-// ID returns the unique identifier for this parser.
+// ID implements parser.ToolParser.
 func (p *Parser) ID() string {
-	return "generic"
+	return parserID
 }
 
-// Priority returns the parse order priority.
-// Generic parser has the lowest priority - only used when no other parser matches.
+// Priority implements parser.ToolParser.
 func (p *Parser) Priority() int {
-	return 10
+	return parserPriority
 }
 
 // Patterns for strict error detection.
@@ -65,7 +73,8 @@ var (
 	// These are common CI/CD output patterns that contain error keywords but aren't errors.
 	noisePatterns = []*regexp.Regexp{
 		// === CODE AND COMMENTS ===
-		regexp.MustCompile(`(?i)^\s*(#|//|--|/\*|\*)`), // Comments
+		// NOTE: Removed "--" (SQL comment) as it conflicts with Go test "--- FAIL:" output
+		regexp.MustCompile(`(?i)^\s*(#|//|/\*|\*)`), // Comments (excluding SQL --)
 		regexp.MustCompile(`(?i)error.*handler`),       // Error handler code
 		regexp.MustCompile(`(?i)on_?error`),            // Error callbacks
 		regexp.MustCompile(`(?i)error_?(code|type|msg|message|class|kind)`), // Error variables
@@ -175,12 +184,7 @@ var (
 	}
 )
 
-// CanParse returns a confidence score for whether this parser can handle the line.
-// Returns a low score to only match when no other parser applies.
-//
-// CRITICAL: This function must be VERY STRICT to avoid false positives.
-// The generic parser flags errors as UnknownPattern which triggers Sentry reporting.
-// Only genuinely unrecognized error patterns should pass through.
+// CanParse implements parser.ToolParser.
 func (p *Parser) CanParse(line string, _ *parser.ParseContext) float64 {
 	trimmed := strings.TrimSpace(line)
 
@@ -215,8 +219,7 @@ func (p *Parser) CanParse(line string, _ *parser.ParseContext) float64 {
 	return 0
 }
 
-// Parse extracts an error from the line.
-// Returns an error with UnknownPattern=true to flag it for Sentry reporting.
+// Parse implements parser.ToolParser.
 func (p *Parser) Parse(line string, ctx *parser.ParseContext) *errors.ExtractedError {
 	trimmed := strings.TrimSpace(line)
 	if len(trimmed) < 5 {
@@ -233,15 +236,12 @@ func (p *Parser) Parse(line string, ctx *parser.ParseContext) *errors.ExtractedE
 		UnknownPattern: true, // Flag for Sentry reporting
 	}
 
-	if ctx != nil && ctx.WorkflowContext != nil {
-		err.WorkflowContext = ctx.WorkflowContext.Clone()
-	}
+	ctx.ApplyWorkflowContext(err)
 
 	return err
 }
 
-// IsNoise returns true if the line is noise that should be skipped.
-// The generic parser filters common CI noise patterns that aren't tool-specific.
+// IsNoise implements parser.ToolParser.
 func (p *Parser) IsNoise(line string) bool {
 	for _, pattern := range noisePatterns {
 		if pattern.MatchString(line) {
@@ -251,23 +251,61 @@ func (p *Parser) IsNoise(line string) bool {
 	return false
 }
 
-// SupportsMultiLine returns false as the generic parser only handles single lines.
+// SupportsMultiLine implements parser.ToolParser.
 func (p *Parser) SupportsMultiLine() bool {
 	return false
 }
 
-// ContinueMultiLine is not used for the generic parser.
+// ContinueMultiLine implements parser.ToolParser.
 func (p *Parser) ContinueMultiLine(_ string, _ *parser.ParseContext) bool {
 	return false
 }
 
-// FinishMultiLine is not used for the generic parser.
+// FinishMultiLine implements parser.ToolParser.
 func (p *Parser) FinishMultiLine(_ *parser.ParseContext) *errors.ExtractedError {
 	return nil
 }
 
-// Reset clears any accumulated state (none for the generic parser).
+// Reset implements parser.ToolParser.
 func (p *Parser) Reset() {}
+
+// NoisePatterns returns the generic parser's noise detection patterns for registry optimization.
+// These patterns cover common CI/CD output that isn't specific to any tool.
+func (p *Parser) NoisePatterns() parser.NoisePatterns {
+	return parser.NoisePatterns{
+		FastPrefixes: []string{
+			// GitHub Actions workflow commands
+			"::debug::",    // GitHub Actions debug
+			"::notice::",   // GitHub Actions notice
+			"::warning::",  // GitHub Actions warning
+			"::error::",    // GitHub Actions error (annotations, handled separately)
+			"::group::",    // GitHub Actions group
+			"::endgroup::", // GitHub Actions endgroup
+			"##[",          // GitHub Actions annotation format
+		},
+		FastContains: []string{
+			// Success indicators
+			"all files pass",
+			"build succeeded",
+			"all tests passed",
+			"completed successfully",
+			// Cache indicators
+			"using cached",
+			"cache hit",
+			"cache restored",
+			"from cache",
+			// Already installed/downloaded
+			"already installed",
+			"already downloaded",
+			"successfully installed",
+			"successfully downloaded",
+		},
+		Regex: noisePatterns,
+	}
+}
 
 // Ensure Parser implements parser.ToolParser
 var _ parser.ToolParser = (*Parser)(nil)
+
+// Ensure Parser implements parser.NoisePatternProvider
+var _ parser.NoisePatternProvider = (*Parser)(nil)

@@ -69,7 +69,7 @@ func TestRunConfig_Validate(t *testing.T) {
 				Event:        "push",
 			},
 			wantErr: true,
-			errMsg:  "RepoRoot is required",
+			errMsg:  "repoRoot is required",
 		},
 		{
 			name: "missing WorkflowPath",
@@ -79,7 +79,7 @@ func TestRunConfig_Validate(t *testing.T) {
 				Event:    "push",
 			},
 			wantErr: true,
-			errMsg:  "WorkflowPath is required",
+			errMsg:  "workflowPath is required",
 		},
 		{
 			name: "missing RunID",
@@ -89,7 +89,7 @@ func TestRunConfig_Validate(t *testing.T) {
 				Event:        "push",
 			},
 			wantErr: true,
-			errMsg:  "RunID is required",
+			errMsg:  "runID is required",
 		},
 		{
 			name: "invalid RunID format - too short",
@@ -100,7 +100,7 @@ func TestRunConfig_Validate(t *testing.T) {
 				Event:        "push",
 			},
 			wantErr: true,
-			errMsg:  "invalid RunID format",
+			errMsg:  "invalid runID format",
 		},
 		{
 			name: "invalid RunID format - too long",
@@ -111,7 +111,7 @@ func TestRunConfig_Validate(t *testing.T) {
 				Event:        "push",
 			},
 			wantErr: true,
-			errMsg:  "invalid RunID format",
+			errMsg:  "invalid runID format",
 		},
 		{
 			name: "invalid RunID format - uppercase",
@@ -122,7 +122,7 @@ func TestRunConfig_Validate(t *testing.T) {
 				Event:        "push",
 			},
 			wantErr: true,
-			errMsg:  "invalid RunID format",
+			errMsg:  "invalid runID format",
 		},
 		{
 			name: "invalid RunID format - not hex",
@@ -133,7 +133,7 @@ func TestRunConfig_Validate(t *testing.T) {
 				Event:        "push",
 			},
 			wantErr: true,
-			errMsg:  "invalid RunID format",
+			errMsg:  "invalid runID format",
 		},
 		{
 			name: "path traversal with ..",
@@ -144,7 +144,7 @@ func TestRunConfig_Validate(t *testing.T) {
 				Event:        "push",
 			},
 			wantErr: true,
-			errMsg:  "WorkflowPath must be within RepoRoot",
+			errMsg:  "workflowPath must be within repoRoot",
 		},
 		{
 			name: "path traversal with relative path",
@@ -155,7 +155,7 @@ func TestRunConfig_Validate(t *testing.T) {
 				Event:        "push",
 			},
 			wantErr: true,
-			errMsg:  "WorkflowPath must be within RepoRoot",
+			errMsg:  "workflowPath must be within repoRoot",
 		},
 		{
 			name: "invalid event with special characters",
