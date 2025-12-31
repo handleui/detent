@@ -25,3 +25,20 @@ type Parser interface {
 	// Returns a JobEvent and true if the line contains a job event, nil and false otherwise.
 	ParseLine(line string) (*JobEvent, bool)
 }
+
+// LineContext contains CI platform-specific context extracted from a log line.
+type LineContext struct {
+	Job     string // Job name from CI output
+	Step    string // Step name (if parseable)
+	IsNoise bool   // True if line should be skipped (debug output)
+}
+
+// ContextParser extracts CI platform-specific context from log lines.
+// Different CI systems (act, GitHub Actions, GitLab) implement this interface
+// to parse their specific output formats and extract job/step context.
+type ContextParser interface {
+	// ParseLine extracts context from a CI log line.
+	// Returns the context, the cleaned line (with CI prefixes removed), and whether to skip.
+	// If skip is true, the line should be ignored (debug noise, metadata).
+	ParseLine(line string) (ctx *LineContext, cleanLine string, skip bool)
+}

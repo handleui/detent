@@ -492,7 +492,7 @@ func (r *CheckRunner) extractAndProcessErrors(actResult *act.RunResult) ([]*inte
 	combinedOutput.WriteString(actResult.Stderr)
 
 	extractor := internalerrors.NewExtractor()
-	extracted := extractor.Extract(combinedOutput.String())
+	extracted := extractor.ExtractWithContext(combinedOutput.String(), actparser.NewContextParser())
 	internalerrors.ApplySeverity(extracted)
 	grouped := internalerrors.GroupByFileWithBase(extracted, r.config.RepoRoot)
 

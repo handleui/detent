@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/detent/cli/internal/ci"
+	actctx "github.com/detent/cli/internal/ci/act"
 	"github.com/detent/cli/internal/messages"
 )
 
@@ -67,31 +69,35 @@ type errKey struct {
 	line    int
 }
 
-// Extract parses act output and extracts structured error information.
-// It uses pattern matching to identify errors from various tools (ESLint,
-// TypeScript, Python, Rust, etc.) and returns deduplicated errors with
-// file locations. Severity inference is done as a separate post-processing step.
-func (e *Extractor) Extract(output string) []*ExtractedError {
+// ExtractWithContext parses CI output using a context parser for line preprocessing.
+// This separates CI platform concerns (act, GitHub Actions, GitLab) from tool output parsing.
+// The context parser strips CI-specific prefixes and filters noise before tool pattern matching.
+func (e *Extractor) ExtractWithContext(output string, ctxParser ci.ContextParser) []*ExtractedError {
 	var extracted []*ExtractedError
 	seen := make(map[errKey]struct{}, 256)
 
 	scanner := bufio.NewScanner(strings.NewReader(output))
 	for scanner.Scan() {
 		line := scanner.Text()
-		ctx, cleanLine := parseActContext(line)
 
-		// Update workflow context if found
-		if ctx != nil {
-			e.currentWorkflowCtx = ctx
+		// Use the context parser to extract CI context and clean the line
+		ctx, cleanLine, skip := ctxParser.ParseLine(line)
+		if skip {
+			continue
+		}
+
+		// Convert CI context to workflow context
+		if ctx != nil && ctx.Job != "" {
+			e.currentWorkflowCtx = &WorkflowContext{
+				Job:  ctx.Job,
+				Step: ctx.Step,
+			}
 		}
 
 		if found := e.extractFromLine(cleanLine); found != nil {
-			// Attach workflow context to the error (clone to prevent stale pointer sharing)
 			found.WorkflowContext = e.currentWorkflowCtx.Clone()
 
-			// Check if we've exceeded max deduplication size to prevent unbounded map growth
 			if len(seen) >= maxDeduplicationSize {
-				// Accept duplicates beyond limit to prevent unbounded growth
 				extracted = append(extracted, found)
 				continue
 			}
@@ -104,7 +110,7 @@ func (e *Extractor) Extract(output string) []*ExtractedError {
 		}
 	}
 
-	// Finalize any pending stack trace at end of extraction
+	// Finalize any pending stack trace
 	if e.inStackTrace && e.stackTraceOwner != nil {
 		owner := e.stackTraceOwner
 		e.finalizeStackTrace()
@@ -112,9 +118,7 @@ func (e *Extractor) Extract(output string) []*ExtractedError {
 			owner.WorkflowContext = e.currentWorkflowCtx.Clone()
 		}
 
-		// Check if we've exceeded max deduplication size to prevent unbounded map growth
 		if len(seen) >= maxDeduplicationSize {
-			// Accept duplicates beyond limit to prevent unbounded growth
 			extracted = append(extracted, owner)
 		} else {
 			key := errKey{owner.Message, owner.File, owner.Line}
@@ -128,25 +132,15 @@ func (e *Extractor) Extract(output string) []*ExtractedError {
 	return extracted
 }
 
-// parseActContext extracts workflow context and returns both the context and the cleaned line
-func parseActContext(line string) (ctx *WorkflowContext, cleanedLine string) {
-	if match := actContextPattern.FindStringSubmatchIndex(line); match != nil {
-		ctx = &WorkflowContext{
-			Job: line[match[2]:match[3]], // Extract directly from indices
-		}
-		if match[1] < len(line) {
-			rest := line[match[1]:]
-			// Skip whitespace before pipe: "[CI/build]   | message" -> "message"
-			rest = strings.TrimLeft(rest, " \t")
-			if rest != "" && rest[0] == '|' {
-				rest = rest[1:]
-			}
-			cleanedLine = strings.TrimSpace(rest)
-			return
-		}
-	}
-	cleanedLine = line
-	return
+// Extract parses act output and extracts structured error information.
+// It uses pattern matching to identify errors from various tools (ESLint,
+// TypeScript, Python, Rust, etc.) and returns deduplicated errors with
+// file locations. Severity inference is done as a separate post-processing step.
+//
+// Deprecated: Use ExtractWithContext with a ci.ContextParser for better separation of concerns.
+func (e *Extractor) Extract(output string) []*ExtractedError {
+	// Use the act context parser for backward compatibility
+	return e.ExtractWithContext(output, actctx.NewContextParser())
 }
 
 // parseLineCol parses line and column numbers from regex match groups.
@@ -278,11 +272,9 @@ func (e *Extractor) extractMetadata(line string) *ExtractedError {
 }
 
 func (e *Extractor) extractFromLine(line string) *ExtractedError {
-	// Skip act debug noise - these contain Go struct dumps with <nil> values
-	// that aren't actual errors (e.g., "Job.Strategy: <nil>", "level=debug msg=...")
-	if isActDebugNoise(line) {
-		return nil
-	}
+	// Note: Debug noise filtering (e.g., act's Go struct dumps with <nil> values)
+	// is now handled in the CI context parser layer (e.g., ci/act.ContextParser).
+	// This method assumes the line has already been preprocessed.
 
 	// Check if we're continuing a stack trace
 	if e.isStackTraceContinuation(line) {

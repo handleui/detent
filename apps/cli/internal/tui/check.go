@@ -126,11 +126,23 @@ func (m *CheckModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Cancelled = msg.Cancelled
 		hasErrors := m.errors != nil && m.errors.Total > 0
 		m.tracker.MarkAllRunningComplete(hasErrors)
-		return m, tea.Quit
+
+		// Print completion output using tea.Println so it persists above the TUI
+		// area and won't be cleared when the program exits
+		completionOutput := m.renderCompletionView()
+		lines := strings.Split(completionOutput, "\n")
+		cmds := make([]tea.Cmd, 0, len(lines)+1)
+		for _, line := range lines {
+			cmds = append(cmds, tea.Println(line))
+		}
+		cmds = append(cmds, tea.Quit)
+		return m, tea.Batch(cmds...)
 
 	case ErrMsg:
 		m.err = msg
-		return m, tea.Quit
+		// Print error using tea.Println for persistence
+		errOutput := ErrorStyle.Render(fmt.Sprintf("✗ Error: %s", msg.Error()))
+		return m, tea.Sequence(tea.Println(errOutput), tea.Quit)
 
 	case LogMsg:
 		// Fall through to shimmer update
@@ -154,7 +166,8 @@ func (m *CheckModel) View() string {
 	}
 
 	if m.done {
-		return m.renderCompletionView()
+		// Output was already printed using tea.Println for persistence
+		return ""
 	}
 
 	return m.renderStepList()
