@@ -22,15 +22,19 @@ var (
 // This filters out Go struct dumps and debug messages that contain <nil> values,
 // which aren't actual errors but internal act state dumps.
 func isActDebugNoise(line string) bool {
-	trimmed := strings.TrimSpace(line)
-	if trimmed == "<nil>" {
+	// Fast path: exact match without trimming
+	if line == "<nil>" {
 		return true
 	}
-
+	// Only trim if potentially matching (contains <nil>)
+	if strings.Contains(line, "<nil>") {
+		if strings.TrimSpace(line) == "<nil>" {
+			return true
+		}
+	}
 	if actDebugStructPattern.MatchString(line) {
 		return true
 	}
-
 	return false
 }
 

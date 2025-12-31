@@ -1,6 +1,9 @@
 package errors
 
-import "testing"
+import (
+	"runtime"
+	"testing"
+)
 
 func TestGroupedErrors_HasErrors(t *testing.T) {
 	tests := []struct {
@@ -80,5 +83,85 @@ func TestGroupedErrors_HasErrors_Performance(t *testing.T) {
 	// This should be O(1) - just checking the hasErrors flag
 	if !grouped.HasErrors() {
 		t.Error("HasErrors() should return true when errors exist")
+	}
+}
+
+func TestMakeRelative(t *testing.T) {
+	// Use OS-appropriate separators for tests
+	tests := []struct {
+		name     string
+		path     string
+		basePath string
+		expected string
+	}{
+		{
+			name:     "path traversal false positive - similar prefix",
+			path:     "/home/user-data/file.txt",
+			basePath: "/home/user",
+			expected: "/home/user-data/file.txt",
+		},
+		{
+			name:     "valid subpath",
+			path:     "/home/user/file.txt",
+			basePath: "/home/user",
+			expected: "file.txt",
+		},
+		{
+			name:     "completely different path",
+			path:     "/other/path",
+			basePath: "/home/user",
+			expected: "/other/path",
+		},
+		{
+			name:     "nested subpath",
+			path:     "/home/user/sub/dir/file.txt",
+			basePath: "/home/user",
+			expected: "sub/dir/file.txt",
+		},
+		{
+			name:     "same path",
+			path:     "/home/user",
+			basePath: "/home/user",
+			expected: ".",
+		},
+		{
+			name:     "basePath with trailing slash",
+			path:     "/home/user/file.txt",
+			basePath: "/home/user/",
+			expected: "file.txt",
+		},
+		{
+			name:     "empty basePath",
+			path:     "/home/user/file.txt",
+			basePath: "",
+			expected: "/home/user/file.txt",
+		},
+		{
+			name:     "relative path input",
+			path:     "relative/path.txt",
+			basePath: "/home/user",
+			expected: "relative/path.txt",
+		},
+		{
+			name:     "parent directory escape",
+			path:     "/home/other/file.txt",
+			basePath: "/home/user",
+			expected: "/home/other/file.txt",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Skip on Windows due to path format differences
+			if runtime.GOOS == "windows" {
+				t.Skip("Skipping Unix path tests on Windows")
+			}
+
+			result := makeRelative(tt.path, tt.basePath)
+			if result != tt.expected {
+				t.Errorf("makeRelative(%q, %q) = %q, want %q",
+					tt.path, tt.basePath, result, tt.expected)
+			}
+		})
 	}
 }

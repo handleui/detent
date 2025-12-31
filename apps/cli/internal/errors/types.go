@@ -125,26 +125,25 @@ func (g *GroupedErrors) Flatten() []*ExtractedError {
 	return result
 }
 
-// makeRelative converts an absolute path to relative if it starts with basePath
+// makeRelative converts an absolute path to relative if it's under basePath.
+// Uses filepath.Rel for correct path boundary handling (avoids false positives
+// like "/home/user-data" matching "/home/user" prefix).
 func makeRelative(path, basePath string) string {
 	if basePath == "" || !filepath.IsAbs(path) {
 		return path
 	}
 
-	// Clean both paths
-	path = filepath.Clean(path)
-	basePath = filepath.Clean(basePath)
-
-	// If path starts with basePath, make it relative
-	if strings.HasPrefix(path, basePath) {
-		rel := strings.TrimPrefix(path, basePath)
-		rel = strings.TrimPrefix(rel, string(filepath.Separator))
-		if rel != "" {
-			return rel
-		}
+	rel, err := filepath.Rel(basePath, path)
+	if err != nil {
+		return path
 	}
 
-	return path
+	// If the relative path escapes basePath (starts with ".."), use original
+	if strings.HasPrefix(rel, "..") {
+		return path
+	}
+
+	return rel
 }
 
 // ErrorStats provides statistics for AI prompt generation
@@ -165,32 +164,6 @@ type ComprehensiveErrorGroup struct {
 	NoFile     []*ExtractedError                   `json:"no_file"`
 	Total      int                                 `json:"total"`
 	Stats      ErrorStats                          `json:"stats"`
-}
-
-// GroupByCategory organizes errors by their category
-func GroupByCategory(errs []*ExtractedError) map[ErrorCategory][]*ExtractedError {
-	grouped := make(map[ErrorCategory][]*ExtractedError)
-	for _, err := range errs {
-		category := err.Category
-		if category == "" {
-			category = CategoryUnknown
-		}
-		grouped[category] = append(grouped[category], err)
-	}
-	return grouped
-}
-
-// GroupByWorkflow organizes errors by workflow context
-func GroupByWorkflow(errs []*ExtractedError) map[string][]*ExtractedError {
-	grouped := make(map[string][]*ExtractedError)
-	for _, err := range errs {
-		key := "no-workflow"
-		if err.WorkflowContext != nil && err.WorkflowContext.Job != "" {
-			key = err.WorkflowContext.Job
-		}
-		grouped[key] = append(grouped[key], err)
-	}
-	return grouped
 }
 
 // GroupComprehensive creates comprehensive grouping with all strategies and statistics.

@@ -2,6 +2,8 @@ package errors
 
 import (
 	"testing"
+
+	"github.com/detent/cli/internal/ci/act"
 )
 
 // TestExtractorIntegration verifies that the refactored extractor produces
@@ -194,7 +196,7 @@ ValueError: invalid literal for int() with base 10: 'abc'`,
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			extractor := NewExtractor()
-			result := extractor.Extract(tt.input)
+			result := extractor.ExtractWithContext(tt.input, act.NewContextParser())
 			// Apply severity inference as post-processing (mimics cmd/check.go behavior)
 			for _, err := range result {
 				err.Severity = InferSeverity(err)
@@ -243,7 +245,7 @@ main.go:10:5: undefined: foo
 main.go:10:5: undefined: foo`
 
 	extractor := NewExtractor()
-	result := extractor.Extract(input)
+	result := extractor.ExtractWithContext(input, act.NewContextParser())
 
 	if len(result) != 1 {
 		t.Fatalf("Expected 1 error after deduplication, got %d", len(result))
@@ -259,7 +261,7 @@ func TestExtractorWorkflowContext(t *testing.T) {
 	input := `[CI/build] | main.go:10:5: undefined: foo`
 
 	extractor := NewExtractor()
-	result := extractor.Extract(input)
+	result := extractor.ExtractWithContext(input, act.NewContextParser())
 
 	if len(result) != 1 {
 		t.Fatalf("Expected 1 error, got %d", len(result))
@@ -282,7 +284,7 @@ func TestExtractorMultilinePython(t *testing.T) {
 ValueError: invalid literal for int() with base 10: 'abc'`
 
 	extractor := NewExtractor()
-	result := extractor.Extract(input)
+	result := extractor.ExtractWithContext(input, act.NewContextParser())
 
 	if len(result) != 1 {
 		t.Fatalf("Expected 1 error, got %d", len(result))
@@ -308,7 +310,7 @@ func TestExtractorMultilineRust(t *testing.T) {
    |     ^^^ expected i32, found &str`
 
 	extractor := NewExtractor()
-	result := extractor.Extract(input)
+	result := extractor.ExtractWithContext(input, act.NewContextParser())
 
 	if len(result) != 1 {
 		t.Fatalf("Expected 1 error, got %d", len(result))
@@ -342,7 +344,7 @@ error: actual error message
 src/main.go:10:5: undefined: foo`
 
 	extractor := NewExtractor()
-	result := extractor.Extract(input)
+	result := extractor.ExtractWithContext(input, act.NewContextParser())
 	ApplySeverity(result)
 
 	// Should only extract the real errors, not the <nil> debug noise

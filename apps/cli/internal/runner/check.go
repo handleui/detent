@@ -373,8 +373,10 @@ func (r *CheckRunner) RunWithTUI(ctx context.Context, logChan chan string, progr
 
 	checkModel, ok := finalModel.(*tui.CheckModel)
 	var wasCancelled bool
+	var completionOutput string
 	if ok {
 		wasCancelled = checkModel.Cancelled
+		completionOutput = checkModel.GetCompletionOutput()
 	}
 
 	tuiRes := <-resultChan
@@ -398,6 +400,11 @@ func (r *CheckRunner) RunWithTUI(ctx context.Context, logChan chan string, progr
 
 	// Wait for goroutines to complete before returning
 	wg.Wait()
+
+	// Print completion output after TUI exits (job statuses + error summary)
+	if completionOutput != "" {
+		fmt.Fprint(os.Stderr, completionOutput)
+	}
 
 	return wasCancelled, nil
 }

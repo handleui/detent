@@ -1,6 +1,10 @@
 package errors
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/detent/cli/internal/ci/act"
+)
 
 // TestInferSeverity verifies that severity is correctly inferred based on category.
 func TestInferSeverity(t *testing.T) {
@@ -157,7 +161,7 @@ func TestInferSeverityIntegration(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			extractor := NewExtractor()
-			result := extractor.Extract(tt.input)
+			result := extractor.ExtractWithContext(tt.input, act.NewContextParser())
 			// Apply severity inference as post-processing (mimics cmd/check.go behavior)
 			for _, err := range result {
 				err.Severity = InferSeverity(err)

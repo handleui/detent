@@ -7,13 +7,13 @@ import (
 	"strings"
 
 	"github.com/detent/cli/internal/ci"
-	actctx "github.com/detent/cli/internal/ci/act"
 	"github.com/detent/cli/internal/messages"
 )
 
 const (
 	maxStackTraceLines   = 5000  // Maximum stack trace lines to prevent memory exhaustion
 	maxDeduplicationSize = 10000 // Maximum deduplicated errors to prevent unbounded map growth
+	maxLineLength        = 65536 // 64KB per line - prevents ReDoS on extremely long lines
 
 	// SeverityError is the interned constant for "error" severity level
 	SeverityError = "error"
@@ -79,6 +79,9 @@ func (e *Extractor) ExtractWithContext(output string, ctxParser ci.ContextParser
 	scanner := bufio.NewScanner(strings.NewReader(output))
 	for scanner.Scan() {
 		line := scanner.Text()
+		if len(line) > maxLineLength {
+			continue // Skip extremely long lines to prevent ReDoS
+		}
 
 		// Use the context parser to extract CI context and clean the line
 		ctx, cleanLine, skip := ctxParser.ParseLine(line)
@@ -130,17 +133,6 @@ func (e *Extractor) ExtractWithContext(output string, ctxParser ci.ContextParser
 	}
 
 	return extracted
-}
-
-// Extract parses act output and extracts structured error information.
-// It uses pattern matching to identify errors from various tools (ESLint,
-// TypeScript, Python, Rust, etc.) and returns deduplicated errors with
-// file locations. Severity inference is done as a separate post-processing step.
-//
-// Deprecated: Use ExtractWithContext with a ci.ContextParser for better separation of concerns.
-func (e *Extractor) Extract(output string) []*ExtractedError {
-	// Use the act context parser for backward compatibility
-	return e.ExtractWithContext(output, actctx.NewContextParser())
 }
 
 // parseLineCol parses line and column numbers from regex match groups.

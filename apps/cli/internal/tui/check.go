@@ -126,23 +126,11 @@ func (m *CheckModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Cancelled = msg.Cancelled
 		hasErrors := m.errors != nil && m.errors.Total > 0
 		m.tracker.MarkAllRunningComplete(hasErrors)
-
-		// Print completion output using tea.Println so it persists above the TUI
-		// area and won't be cleared when the program exits
-		completionOutput := m.renderCompletionView()
-		lines := strings.Split(completionOutput, "\n")
-		cmds := make([]tea.Cmd, 0, len(lines)+1)
-		for _, line := range lines {
-			cmds = append(cmds, tea.Println(line))
-		}
-		cmds = append(cmds, tea.Quit)
-		return m, tea.Batch(cmds...)
+		return m, tea.Quit
 
 	case ErrMsg:
 		m.err = msg
-		// Print error using tea.Println for persistence
-		errOutput := ErrorStyle.Render(fmt.Sprintf("✗ Error: %s", msg.Error()))
-		return m, tea.Sequence(tea.Println(errOutput), tea.Quit)
+		return m, tea.Quit
 
 	case LogMsg:
 		// Fall through to shimmer update
@@ -159,14 +147,19 @@ func (m *CheckModel) GetDebugLogs() []string {
 	return m.debugLogs
 }
 
-// View renders the current model state as a string
-func (m *CheckModel) View() string {
+// GetCompletionOutput returns the completion output to be printed after TUI exits
+func (m *CheckModel) GetCompletionOutput() string {
 	if m.err != nil {
 		return ErrorStyle.Render(fmt.Sprintf("✗ Error: %s\n", m.err.Error()))
 	}
+	return m.renderCompletionView()
+}
 
-	if m.done {
-		// Output was already printed using tea.Println for persistence
+// View renders the current model state as a string
+func (m *CheckModel) View() string {
+	if m.err != nil || m.done {
+		// Return empty to clear the TUI area - completion output is printed
+		// after the TUI exits by the calling code
 		return ""
 	}
 
