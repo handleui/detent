@@ -14,15 +14,51 @@ const (
 
 // JobEvent represents a job lifecycle event parsed from CI output.
 type JobEvent struct {
-	JobName string // Display name of the job
+	JobID   string // Job ID (key in workflow jobs map)
 	Action  string // "start", "finish", or "skip"
 	Success bool   // Only relevant when Action="finish"
 }
 
-// ManifestEvent contains the list of all job IDs in a workflow.
-// Emitted once at the start of workflow execution for reliable job tracking.
+// StepStatus represents the status of a workflow step.
+type StepStatus string
+
+// StepStatus values representing the possible states of a tracked step.
+const (
+	StepPending   StepStatus = "pending"
+	StepRunning   StepStatus = "running"
+	StepSuccess   StepStatus = "success"
+	StepFailed    StepStatus = "failed"
+	StepSkipped   StepStatus = "skipped"
+	StepCancelled StepStatus = "cancelled"
+)
+
+// StepEvent represents a step lifecycle event parsed from CI output.
+type StepEvent struct {
+	JobID    string // Job ID this step belongs to
+	StepIdx  int    // Step index (0-based)
+	StepName string // Step display name
+}
+
+// ManifestJob contains information about a single job in the manifest.
+type ManifestJob struct {
+	ID    string   `json:"id"`              // Job ID (key in jobs map)
+	Name  string   `json:"name"`            // Display name
+	Steps []string `json:"steps,omitempty"` // Step names in order (empty for uses: jobs)
+	Needs []string `json:"needs,omitempty"` // Job IDs this job depends on
+	Uses  string   `json:"uses,omitempty"`  // Reusable workflow reference (if present, no steps)
+}
+
+// ManifestInfo contains the full manifest for a workflow run.
+// This is the v2 manifest format that includes step information.
+type ManifestInfo struct {
+	Version int           `json:"v"`    // Manifest version (2 for this format)
+	Jobs    []ManifestJob `json:"jobs"` // All jobs in topological order
+}
+
+// ManifestEvent is emitted when a manifest is parsed from CI output.
+// This initializes the TUI with all job and step information.
 type ManifestEvent struct {
-	JobIDs []string // All job IDs in the workflow (sorted alphabetically)
+	Manifest *ManifestInfo
 }
 
 // Parser defines the interface for parsing CI output into job events.

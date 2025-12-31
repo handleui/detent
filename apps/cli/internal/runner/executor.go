@@ -9,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/detent/cli/internal/act"
+	"github.com/detent/cli/internal/ci"
 	actparser "github.com/detent/cli/internal/ci/act"
 	"github.com/detent/cli/internal/debug"
 	internalerrors "github.com/detent/cli/internal/errors"
@@ -205,9 +206,22 @@ func (e *ActExecutor) startLogProcessorGoroutine(
 					return
 				}
 				sendToTUI(program, tui.LogMsg(line))
-				if event, ok := parser.ParseLine(line); ok {
-					debug.Log("Event: Job=%q Action=%q Success=%v", event.JobName, event.Action, event.Success)
-					sendToTUI(program, tui.JobEventMsg{Event: event})
+				event, ok := parser.ParseLine(line)
+				if !ok {
+					continue
+				}
+
+				// Route different event types to appropriate TUI messages
+				switch ev := event.(type) {
+				case *ci.ManifestEvent:
+					debug.Log("Manifest received: %d jobs", len(ev.Manifest.Jobs))
+					sendToTUI(program, tui.ManifestMsg{Manifest: ev.Manifest})
+				case *ci.JobEvent:
+					debug.Log("Job Event: ID=%q Action=%q Success=%v", ev.JobID, ev.Action, ev.Success)
+					sendToTUI(program, tui.JobEventMsg{Event: ev})
+				case *ci.StepEvent:
+					debug.Log("Step Event: Job=%q Step=%d Name=%q", ev.JobID, ev.StepIdx, ev.StepName)
+					sendToTUI(program, tui.StepEventMsg{Event: ev})
 				}
 			case <-ctx.Done():
 				for range logChan {

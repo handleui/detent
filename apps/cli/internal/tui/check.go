@@ -22,6 +22,17 @@ type JobEventMsg struct {
 	Event *ci.JobEvent
 }
 
+// StepEventMsg wraps a ci.StepEvent for Bubble Tea message passing.
+type StepEventMsg struct {
+	Event *ci.StepEvent
+}
+
+// ManifestMsg wraps a ci.ManifestEvent for Bubble Tea message passing.
+// This initializes the TUI with all job and step information.
+type ManifestMsg struct {
+	Manifest *ci.ManifestInfo
+}
+
 // DoneMsg signals completion
 type DoneMsg struct {
 	Duration  time.Duration
@@ -47,19 +58,34 @@ type CheckModel struct {
 	cancelFunc func()
 	quitting   bool
 	debugLogs  []string
+	waiting    bool // True before manifest is received
 }
 
-// NewCheckModel creates a new TUI model for the check command
+// NewCheckModel creates a new TUI model for the check command.
+// TUI starts in waiting state until manifest is received.
 func NewCheckModel(cancelFunc func()) CheckModel {
-	return NewCheckModelWithJobs(cancelFunc, nil)
+	// Initialize shimmer with waiting message
+	// Base color is grey (#585858) so shimmer wave can lighten to white
+	shim := shimmer.New("Waiting for workflow...", "#585858")
+	shim = shim.SetLoading(true)
+
+	return CheckModel{
+		shimmer:    shim,
+		tracker:    nil, // Will be initialized from manifest
+		startTime:  time.Now(),
+		cancelFunc: cancelFunc,
+		quitting:   false,
+		debugLogs:  []string{},
+		waiting:    true,
+	}
 }
 
-// NewCheckModelWithJobs creates a new TUI model with pre-populated job names
+// NewCheckModelWithJobs creates a new TUI model with pre-populated job names.
+// This is the legacy constructor for backward compatibility.
 func NewCheckModelWithJobs(cancelFunc func(), jobs []workflow.JobInfo) CheckModel {
 	tracker := NewJobTracker(jobs)
 
-	// Initialize shimmer with test text to verify it works
-	// Base color is grey (#585858) so shimmer wave can lighten to white
+	// Initialize shimmer
 	shim := shimmer.New("Initializing...", "#585858")
 	shim = shim.SetLoading(true)
 
@@ -70,6 +96,7 @@ func NewCheckModelWithJobs(cancelFunc func(), jobs []workflow.JobInfo) CheckMode
 		cancelFunc: cancelFunc,
 		quitting:   false,
 		debugLogs:  []string{},
+		waiting:    len(jobs) == 0, // Wait if no jobs provided
 	}
 
 	// Debug: log registered jobs
@@ -101,18 +128,39 @@ func (m *CheckModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 
+	case ManifestMsg:
+		if msg.Manifest != nil {
+			m.debugLogs = append(m.debugLogs, fmt.Sprintf("Manifest received: %d jobs", len(msg.Manifest.Jobs)))
+			m.tracker = NewJobTrackerFromManifest(msg.Manifest)
+			m.waiting = false
+
+			// Update shimmer with first job name
+			if len(m.tracker.GetJobs()) > 0 {
+				firstJob := m.tracker.GetJobs()[0]
+				m.shimmer = m.shimmer.SetText(firstJob.Name).SetLoading(true)
+			}
+		}
+		// Fall through to shimmer update
+
 	case JobEventMsg:
 		if msg.Event != nil {
-			m.debugLogs = append(m.debugLogs, fmt.Sprintf("Event: Job=%q Action=%q Success=%v", msg.Event.JobName, msg.Event.Action, msg.Event.Success))
-			changed := m.tracker.ProcessEvent(msg.Event)
-			if changed {
-				// Update shimmer for first running job
-				for _, job := range m.tracker.GetJobs() {
-					if job.Status == ci.JobRunning {
-						m.shimmer = m.shimmer.SetText(job.Name).SetLoading(true)
-						// Continue to shimmer update below
-						break
-					}
+			m.debugLogs = append(m.debugLogs, fmt.Sprintf("Job Event: ID=%q Action=%q Success=%v", msg.Event.JobID, msg.Event.Action, msg.Event.Success))
+			if m.tracker != nil {
+				changed := m.tracker.ProcessEvent(msg.Event)
+				if changed {
+					m.updateShimmerForCurrentStep()
+				}
+			}
+		}
+		// Fall through to shimmer update
+
+	case StepEventMsg:
+		if msg.Event != nil {
+			m.debugLogs = append(m.debugLogs, fmt.Sprintf("Step Event: Job=%q Step=%d Name=%q", msg.Event.JobID, msg.Event.StepIdx, msg.Event.StepName))
+			if m.tracker != nil {
+				changed := m.tracker.ProcessStepEvent(msg.Event)
+				if changed {
+					m.updateShimmerForCurrentStep()
 				}
 			}
 		}
@@ -125,7 +173,9 @@ func (m *CheckModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.errors = msg.Errors
 		m.Cancelled = msg.Cancelled
 		hasErrors := m.errors != nil && m.errors.Total > 0
-		m.tracker.MarkAllRunningComplete(hasErrors)
+		if m.tracker != nil {
+			m.tracker.MarkAllRunningComplete(hasErrors)
+		}
 		return m, tea.Quit
 
 	case ErrMsg:
@@ -140,6 +190,26 @@ func (m *CheckModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.shimmer, cmd = m.shimmer.Update(msg)
 	return m, cmd
+}
+
+// updateShimmerForCurrentStep updates shimmer text to show current running step
+func (m *CheckModel) updateShimmerForCurrentStep() {
+	if m.tracker == nil {
+		return
+	}
+
+	for _, job := range m.tracker.GetJobs() {
+		if job.Status == ci.JobRunning {
+			// Find current step name
+			if job.CurrentStep >= 0 && job.CurrentStep < len(job.Steps) {
+				stepName := job.Steps[job.CurrentStep].Name
+				m.shimmer = m.shimmer.SetText(stepName).SetLoading(true)
+			} else {
+				m.shimmer = m.shimmer.SetText(job.Name).SetLoading(true)
+			}
+			return
+		}
+	}
 }
 
 // GetDebugLogs returns debug logs for troubleshooting
@@ -163,10 +233,33 @@ func (m *CheckModel) View() string {
 		return ""
 	}
 
+	if m.waiting || m.tracker == nil {
+		return m.renderWaitingView()
+	}
+
 	return m.renderStepList()
 }
 
-// renderStepList renders the step list with shimmer on current step
+// renderWaitingView renders the waiting state before manifest is received
+func (m *CheckModel) renderWaitingView() string {
+	var b strings.Builder
+
+	elapsed := int(time.Since(m.startTime).Seconds())
+	header := fmt.Sprintf("$ act · %ds", elapsed)
+	b.WriteString(SecondaryStyle.Render(header) + "\n\n")
+	b.WriteString("  " + m.shimmer.View() + "\n")
+
+	// Show helpful context during startup
+	b.WriteString("\n")
+	b.WriteString(MutedStyle.Render("  Preparing Docker containers...") + "\n")
+	if elapsed > 5 {
+		b.WriteString(MutedStyle.Render("  This may take a moment on first run.") + "\n")
+	}
+
+	return b.String()
+}
+
+// renderStepList renders the job and step list with shimmer on current step
 func (m *CheckModel) renderStepList() string {
 	var b strings.Builder
 
@@ -175,25 +268,33 @@ func (m *CheckModel) renderStepList() string {
 	b.WriteString(SecondaryStyle.Render(header) + "\n\n")
 
 	jobs := m.tracker.GetJobs()
-	var firstRunning *TrackedJob
-	for _, job := range jobs {
-		if job.Status == ci.JobRunning && firstRunning == nil {
-			firstRunning = job
-		}
-	}
 
 	for _, job := range jobs {
-		line := m.renderJob(job, firstRunning)
-		b.WriteString("  " + line + "\n")
+		// Render job line
+		jobLine := m.renderJob(job)
+		b.WriteString("  " + jobLine + "\n")
+
+		// Render steps for running or completed jobs (expanded view)
+		if (job.Status == ci.JobRunning || job.Status == ci.JobSuccess || job.Status == ci.JobFailed) && len(job.Steps) > 0 && !job.IsReusable {
+			for _, step := range job.Steps {
+				stepLine := m.renderStep(job, step)
+				b.WriteString("    " + stepLine + "\n")
+			}
+		}
 	}
 
 	return b.String()
 }
 
 // renderJob renders a single job line
-func (m *CheckModel) renderJob(job, firstRunning *TrackedJob) string {
+func (m *CheckModel) renderJob(job *TrackedJob) string {
 	var icon string
 	var text string
+
+	// Special handling for reusable workflows
+	if job.IsReusable {
+		return m.renderReusableJob(job)
+	}
 
 	switch job.Status {
 	case ci.JobPending:
@@ -202,12 +303,8 @@ func (m *CheckModel) renderJob(job, firstRunning *TrackedJob) string {
 
 	case ci.JobRunning:
 		icon = SecondaryStyle.Render("·")
-		if firstRunning != nil && job.ID == firstRunning.ID {
-			text = m.shimmer.View()
-		} else {
-			// Other running jobs show lighter grey (secondary) to distinguish from pending (muted)
-			text = SecondaryStyle.Render(job.Name)
-		}
+		// Show job name (steps shown below)
+		text = SecondaryStyle.Render(job.Name)
 
 	case ci.JobSuccess:
 		icon = SuccessStyle.Render("✓")
@@ -225,6 +322,76 @@ func (m *CheckModel) renderJob(job, firstRunning *TrackedJob) string {
 	return fmt.Sprintf("%s %s", icon, text)
 }
 
+// renderReusableJob renders a job that uses a reusable workflow
+func (m *CheckModel) renderReusableJob(job *TrackedJob) string {
+	var icon string
+	var text string
+
+	switch job.Status {
+	case ci.JobPending:
+		icon = MutedStyle.Render("⟲")
+		text = MutedStyle.Render(job.Name + " (reusable)")
+
+	case ci.JobRunning:
+		icon = SecondaryStyle.Render("⟲")
+		text = SecondaryStyle.Render(job.Name + " (reusable)")
+
+	case ci.JobSuccess:
+		icon = SuccessStyle.Render("⟲")
+		text = PrimaryStyle.Render(job.Name + " (reusable)")
+
+	case ci.JobFailed:
+		icon = ErrorStyle.Render("⟲")
+		text = PrimaryStyle.Render(job.Name + " (reusable)")
+
+	case ci.JobSkipped:
+		icon = SecondaryStyle.Render("⟲")
+		text = SecondaryStyle.Render(job.Name + " (reusable)")
+	}
+
+	return fmt.Sprintf("%s %s", icon, text)
+}
+
+// renderStep renders a single step line
+func (m *CheckModel) renderStep(job *TrackedJob, step *TrackedStep) string {
+	var icon string
+	var text string
+
+	isCurrentStep := job.Status == ci.JobRunning && job.CurrentStep == step.Index
+
+	switch step.Status {
+	case ci.StepPending:
+		icon = MutedStyle.Render("·")
+		text = MutedStyle.Render(step.Name)
+
+	case ci.StepRunning:
+		icon = SecondaryStyle.Render("·")
+		if isCurrentStep {
+			text = m.shimmer.View()
+		} else {
+			text = SecondaryStyle.Render(step.Name)
+		}
+
+	case ci.StepSuccess:
+		icon = SuccessStyle.Render("✓")
+		text = PrimaryStyle.Render(step.Name)
+
+	case ci.StepFailed:
+		icon = ErrorStyle.Render("✗")
+		text = PrimaryStyle.Render(step.Name)
+
+	case ci.StepSkipped:
+		icon = SecondaryStyle.Render("⏭")
+		text = SecondaryStyle.Render(step.Name)
+
+	case ci.StepCancelled:
+		icon = MutedStyle.Render("·")
+		text = MutedStyle.Render(step.Name)
+	}
+
+	return fmt.Sprintf("%s %s", icon, text)
+}
+
 // renderCompletionView renders the final completion summary with error report
 func (m *CheckModel) renderCompletionView() string {
 	var b strings.Builder
@@ -233,9 +400,19 @@ func (m *CheckModel) renderCompletionView() string {
 	header := fmt.Sprintf("$ act · %s", m.duration.Round(time.Second))
 	b.WriteString(SecondaryStyle.Render(header) + "\n\n")
 
-	for _, job := range m.tracker.GetJobs() {
-		line := m.renderJob(job, nil)
-		b.WriteString("  " + line + "\n")
+	if m.tracker != nil {
+		for _, job := range m.tracker.GetJobs() {
+			line := m.renderJob(job)
+			b.WriteString("  " + line + "\n")
+
+			// Show all steps for all jobs in completion view (not just failed)
+			if len(job.Steps) > 0 && !job.IsReusable {
+				for _, step := range job.Steps {
+					stepLine := m.renderStep(job, step)
+					b.WriteString("    " + stepLine + "\n")
+				}
+			}
+		}
 	}
 	b.WriteString("\n")
 

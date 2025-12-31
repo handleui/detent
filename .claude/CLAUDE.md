@@ -2,7 +2,8 @@
 
 ## Commands
 
-- Build: `bun run build` (builds all packages via Turborepo - always use this, never go build directly)
+- Build: `bun run build` (builds all packages via Turborepo - ALWAYS use this, NEVER use go build directly)
+- Run CLI: `detent` (shell alias - ALWAYS use this, NEVER use ./dist/dt or other paths)
 - Lint: `bun run lint` | Fix: `bun run fix`
 - Type check: `bun run check-types` | Dev: `bun run dev`
 - Go lint: `cd apps/cli && golangci-lint run ./...`

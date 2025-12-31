@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/detent/cli/internal/ci"
 	"github.com/goccy/go-yaml"
 	"golang.org/x/sync/errgroup"
 )
@@ -76,9 +78,200 @@ func InjectTimeouts(wf *Workflow) {
 	}
 }
 
+// BuildManifest creates a v2 manifest from a workflow containing full job and step information.
+// The manifest includes job IDs, display names, step names, dependencies, and reusable workflow references.
+// Jobs are returned in topological order (respecting dependencies).
+func BuildManifest(wf *Workflow) *ci.ManifestInfo {
+	if wf == nil || wf.Jobs == nil {
+		return &ci.ManifestInfo{Version: 2, Jobs: []ci.ManifestJob{}}
+	}
+
+	// Build job info map for topological sorting
+	jobInfoMap := make(map[string]*ci.ManifestJob)
+	for jobID, job := range wf.Jobs {
+		if job == nil || !isValidJobID(jobID) {
+			continue
+		}
+
+		mj := &ci.ManifestJob{
+			ID:   jobID,
+			Name: job.Name,
+		}
+		if mj.Name == "" {
+			mj.Name = jobID
+		}
+
+		// Handle reusable workflows
+		if job.Uses != "" {
+			mj.Uses = job.Uses
+		} else {
+			// Extract step names
+			for _, step := range job.Steps {
+				stepName := getStepDisplayName(step)
+				mj.Steps = append(mj.Steps, stepName)
+			}
+		}
+
+		// Parse dependencies
+		mj.Needs = parseJobNeeds(job.Needs)
+
+		jobInfoMap[jobID] = mj
+	}
+
+	// Topological sort for consistent ordering
+	sortedJobs := topologicalSortManifest(jobInfoMap)
+
+	return &ci.ManifestInfo{
+		Version: 2,
+		Jobs:    sortedJobs,
+	}
+}
+
+// getStepDisplayName returns a human-readable name for a step.
+// Tries: step.Name, step.ID, action name from step.Uses, truncated run command.
+func getStepDisplayName(step *Step) string {
+	if step == nil {
+		return "Unknown step"
+	}
+	if step.Name != "" {
+		return step.Name
+	}
+	if step.ID != "" {
+		return step.ID
+	}
+	if step.Uses != "" {
+		// Extract action name from "owner/repo@ref" or "owner/repo/path@ref"
+		parts := strings.Split(step.Uses, "@")
+		if len(parts) > 0 {
+			actionPath := parts[0]
+			segments := strings.Split(actionPath, "/")
+			if len(segments) >= 2 {
+				return segments[len(segments)-1] // Last segment is action name
+			}
+			return actionPath
+		}
+		return step.Uses
+	}
+	if step.Run != "" {
+		// Truncate long run commands
+		run := strings.TrimSpace(step.Run)
+		run = strings.Split(run, "\n")[0] // First line only
+		if len(run) > 40 {
+			return run[:37] + "..."
+		}
+		return run
+	}
+	return "Step"
+}
+
+// parseJobNeeds extracts job dependencies from the needs field.
+// Handles both string and []string formats.
+func parseJobNeeds(needs any) []string {
+	if needs == nil {
+		return nil
+	}
+
+	switch v := needs.(type) {
+	case string:
+		if v != "" {
+			return []string{v}
+		}
+	case []any:
+		result := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok && s != "" {
+				result = append(result, s)
+			}
+		}
+		return result
+	case []string:
+		return v
+	}
+	return nil
+}
+
+// topologicalSortManifest sorts jobs by dependencies (jobs with fewer deps first).
+func topologicalSortManifest(jobInfoMap map[string]*ci.ManifestJob) []ci.ManifestJob {
+	// Build in-degree map
+	inDegree := make(map[string]int)
+	for id := range jobInfoMap {
+		inDegree[id] = 0
+	}
+	for _, job := range jobInfoMap {
+		for _, need := range job.Needs {
+			if _, exists := jobInfoMap[need]; exists {
+				inDegree[job.ID]++
+			}
+		}
+	}
+
+	// Kahn's algorithm with stable sorting
+	var result []ci.ManifestJob
+	var queue []string
+
+	// Start with jobs that have no dependencies
+	for id, degree := range inDegree {
+		if degree == 0 {
+			queue = append(queue, id)
+		}
+	}
+	sort.Strings(queue) // Stable order
+
+	for len(queue) > 0 {
+		// Pop first item
+		current := queue[0]
+		queue = queue[1:]
+
+		if job, exists := jobInfoMap[current]; exists {
+			result = append(result, *job)
+		}
+
+		// Find jobs that depend on current
+		var nextBatch []string
+		for id, job := range jobInfoMap {
+			for _, need := range job.Needs {
+				if need == current {
+					inDegree[id]--
+					if inDegree[id] == 0 {
+						nextBatch = append(nextBatch, id)
+					}
+					break
+				}
+			}
+		}
+		sort.Strings(nextBatch)
+		queue = append(queue, nextBatch...)
+	}
+
+	// Add any remaining jobs (cycles or missing deps)
+	if len(result) < len(jobInfoMap) {
+		var remaining []string
+		added := make(map[string]bool)
+		for _, job := range result {
+			added[job.ID] = true
+		}
+		for id := range jobInfoMap {
+			if !added[id] {
+				remaining = append(remaining, id)
+			}
+		}
+		sort.Strings(remaining)
+		for _, id := range remaining {
+			if job, exists := jobInfoMap[id]; exists {
+				result = append(result, *job)
+			}
+		}
+	}
+
+	return result
+}
+
 // InjectJobMarkers injects lifecycle marker steps into each job for reliable job tracking.
-// Each job gets a start step (first) and end step (last, with always()) that emit markers.
-// The start step includes a manifest of all job IDs for self-contained log parsing.
+// This uses the v2 manifest format with full step information.
+// Each job gets:
+// - A manifest step (first job only, contains all job/step info as JSON)
+// - Step-start markers before each user step
+// - A job-end marker with always() condition
 // Jobs using reusable workflows (uses:) are skipped as they have no steps to inject.
 // Jobs with invalid IDs (not matching GitHub Actions spec) are skipped for security.
 func InjectJobMarkers(wf *Workflow) {
@@ -86,16 +279,24 @@ func InjectJobMarkers(wf *Workflow) {
 		return
 	}
 
-	// Collect valid job IDs for manifest (sorted for deterministic output)
-	// Invalid job IDs are excluded to prevent shell injection
-	var validJobIDs []string
-	for jobID := range wf.Jobs {
-		if isValidJobID(jobID) {
-			validJobIDs = append(validJobIDs, jobID)
+	// Build the v2 manifest
+	manifest := BuildManifest(wf)
+	manifestJSON, err := json.Marshal(manifest)
+	if err != nil {
+		// Fallback to empty manifest on error
+		manifestJSON = []byte(`{"v":2,"jobs":[]}`)
+	}
+
+	// Find the first job alphabetically to inject manifest
+	var firstJobID string
+	for jobID, job := range wf.Jobs {
+		if job == nil || job.Uses != "" || !isValidJobID(jobID) {
+			continue
+		}
+		if firstJobID == "" || jobID < firstJobID {
+			firstJobID = jobID
 		}
 	}
-	sort.Strings(validJobIDs)
-	manifest := strings.Join(validJobIDs, ",")
 
 	for jobID, job := range wf.Jobs {
 		if job == nil {
@@ -113,23 +314,50 @@ func InjectJobMarkers(wf *Workflow) {
 			continue
 		}
 
-		// Prepend start marker step (includes manifest for self-contained logs)
-		startStep := &Step{
-			Name: "detent: job start",
-			Run:  fmt.Sprintf("echo \"::detent::manifest::%s\" && echo \"::detent::job-start::%s\"", manifest, jobID),
+		var newSteps []*Step
+
+		// Add manifest step to first job only
+		if jobID == firstJobID {
+			manifestStep := &Step{
+				Name: "detent: manifest",
+				Run:  fmt.Sprintf("echo '::detent::manifest::v2::%s'", escapeForShell(string(manifestJSON))),
+			}
+			newSteps = append(newSteps, manifestStep)
 		}
 
-		// Append end marker step with always() to capture success/failure/cancelled
+		// Add job-start marker
+		jobStartStep := &Step{
+			Name: "detent: job start",
+			Run:  fmt.Sprintf("echo '::detent::job-start::%s'", jobID),
+		}
+		newSteps = append(newSteps, jobStartStep)
+
+		// Add step markers before each original step
+		for i, step := range job.Steps {
+			stepName := getStepDisplayName(step)
+			markerStep := &Step{
+				Name: fmt.Sprintf("detent: step %d", i),
+				Run:  fmt.Sprintf("echo '::detent::step-start::%s::%d::%s'", jobID, i, escapeForShell(stepName)),
+			}
+			newSteps = append(newSteps, markerStep, step)
+		}
+
+		// Add job end marker with always() to capture success/failure/cancelled
 		endStep := &Step{
 			Name: "detent: job end",
 			If:   "always()",
-			Run:  fmt.Sprintf("echo \"::detent::job-end::%s::${{ job.status }}\"", jobID),
+			Run:  fmt.Sprintf("echo '::detent::job-end::%s::${{ job.status }}'", jobID),
 		}
+		newSteps = append(newSteps, endStep)
 
-		// Prepend start, append end
-		job.Steps = append([]*Step{startStep}, job.Steps...)
-		job.Steps = append(job.Steps, endStep)
+		job.Steps = newSteps
 	}
+}
+
+// escapeForShell escapes a string for safe use in single-quoted shell strings.
+// Single quotes are replaced with '\'' (end quote, escaped quote, start quote).
+func escapeForShell(s string) string {
+	return strings.ReplaceAll(s, "'", "'\\''")
 }
 
 // isValidJobID checks if a job ID matches GitHub Actions requirements.
