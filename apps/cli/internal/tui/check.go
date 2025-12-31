@@ -311,6 +311,10 @@ func (m *CheckModel) renderJobCompact(job *TrackedJob) string {
 	case ci.JobSkipped:
 		icon = SecondaryStyle.Render("⏭")
 		text = SecondaryStyle.Render(job.Name)
+
+	case ci.JobSkippedSecurity:
+		icon = SecondaryStyle.Render("🔒")
+		text = SecondaryStyle.Render(job.Name)
 	}
 
 	return fmt.Sprintf("%s %s", icon, text)
@@ -347,6 +351,10 @@ func (m *CheckModel) renderJob(job *TrackedJob) string {
 	case ci.JobSkipped:
 		icon = SecondaryStyle.Render("⏭")
 		text = SecondaryStyle.Render(job.Name)
+
+	case ci.JobSkippedSecurity:
+		icon = SecondaryStyle.Render("🔒")
+		text = SecondaryStyle.Render(job.Name)
 	}
 
 	return fmt.Sprintf("%s %s", icon, text)
@@ -376,6 +384,10 @@ func (m *CheckModel) renderReusableJob(job *TrackedJob) string {
 
 	case ci.JobSkipped:
 		icon = SecondaryStyle.Render("⟲")
+		text = SecondaryStyle.Render(job.Name + " (reusable)")
+
+	case ci.JobSkippedSecurity:
+		icon = SecondaryStyle.Render("🔒")
 		text = SecondaryStyle.Render(job.Name + " (reusable)")
 	}
 

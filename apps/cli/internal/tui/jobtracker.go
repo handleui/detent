@@ -20,6 +20,7 @@ type TrackedJob struct {
 	Name        string
 	Status      ci.JobStatus
 	IsReusable  bool           // True for jobs with uses: (reusable workflows)
+	IsSensitive bool           // True for jobs that may publish, release, or deploy
 	Steps       []*TrackedStep // Steps in this job (empty for reusable)
 	CurrentStep int            // Index of currently running step (-1 if not started)
 }
@@ -74,6 +75,7 @@ func NewJobTrackerFromManifest(manifest *ci.ManifestInfo) *JobTracker {
 			Name:        mj.Name,
 			Status:      ci.JobPending,
 			IsReusable:  mj.Uses != "",
+			IsSensitive: mj.Sensitive,
 			CurrentStep: -1,
 		}
 
@@ -135,7 +137,12 @@ func (t *JobTracker) ProcessEvent(event *ci.JobEvent) bool {
 			for _, step := range job.Steps {
 				step.Status = ci.StepSkipped
 			}
-			job.Status = ci.JobSkipped
+			// Use JobSkippedSecurity for sensitive jobs to show lock icon
+			if job.IsSensitive {
+				job.Status = ci.JobSkippedSecurity
+			} else {
+				job.Status = ci.JobSkipped
+			}
 			return true
 		}
 	}
@@ -227,10 +234,15 @@ func (t *JobTracker) MarkAllRunningComplete(hasErrors bool) {
 			for _, step := range job.Steps {
 				step.Status = ci.StepCancelled
 			}
-			// Pending jobs that never started should be marked as failed
-			// (they didn't run, which is a failure condition)
-			job.Status = ci.JobFailed
-		case ci.JobSuccess, ci.JobFailed, ci.JobSkipped:
+			// Sensitive jobs that never started should be marked as security-skipped
+			// (they were intentionally not run to prevent accidental releases)
+			// Other pending jobs are marked as failed (they didn't run, which is a failure condition)
+			if job.IsSensitive {
+				job.Status = ci.JobSkippedSecurity
+			} else {
+				job.Status = ci.JobFailed
+			}
+		case ci.JobSuccess, ci.JobFailed, ci.JobSkipped, ci.JobSkippedSecurity:
 			// Already complete or skipped, no change needed
 		}
 	}

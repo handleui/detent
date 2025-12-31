@@ -148,7 +148,7 @@ func (p *WorkflowPreparer) prepareWorkflowsAndWorktree(ctx context.Context, verb
 	worktreeChan := make(chan worktreeResult, 1)
 
 	go func() {
-		tmpDir, cleanupWorkflows, err := workflow.PrepareWorkflows(p.config.WorkflowPath, p.config.WorkflowFile)
+		tmpDir, cleanupWorkflows, err := workflow.PrepareWorkflows(p.config.WorkflowPath, p.config.WorkflowFile, nil)
 		workflowChan <- workflowResult{
 			tmpDir:           tmpDir,
 			cleanupWorkflows: cleanupWorkflows,

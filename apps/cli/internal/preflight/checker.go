@@ -84,7 +84,7 @@ func RunPreflightChecks(ctx context.Context, workflowPath, repoRoot, runID, work
 		}
 
 		program.Send(tui.PreflightUpdateMsg("Preparing workflows"))
-		tmpDir, cleanupWorkflows, err = workflow.PrepareWorkflows(workflowPath, workflowFile)
+		tmpDir, cleanupWorkflows, err = workflow.PrepareWorkflows(workflowPath, workflowFile, nil)
 		if err != nil {
 			sendError(fmt.Errorf("preparing workflows: %w", err))
 			return
