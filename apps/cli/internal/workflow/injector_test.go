@@ -344,6 +344,294 @@ func TestInjectTimeouts(t *testing.T) {
 	}
 }
 
+// TestInjectJobMarkers tests injecting job lifecycle markers
+func TestInjectJobMarkers(t *testing.T) {
+	tests := []struct {
+		name     string
+		workflow *Workflow
+		validate func(*testing.T, *Workflow)
+	}{
+		{
+			name: "inject markers to single job",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"build": {
+						RunsOn: "ubuntu-latest",
+						Steps:  []*Step{{Run: "echo test"}},
+					},
+				},
+			},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				job := wf.Jobs["build"]
+				if len(job.Steps) != 3 { // start marker + original step + end marker
+					t.Errorf("Expected 3 steps, got %d", len(job.Steps))
+					return
+				}
+
+				// Check start marker
+				startStep := job.Steps[0]
+				if startStep.Name != "detent: job start" {
+					t.Errorf("First step name = %q, want %q", startStep.Name, "detent: job start")
+				}
+				if !strings.Contains(startStep.Run, "::detent::manifest::") {
+					t.Error("Start step should contain manifest marker")
+				}
+				if !strings.Contains(startStep.Run, "::detent::job-start::build") {
+					t.Error("Start step should contain job-start marker")
+				}
+
+				// Check original step is preserved
+				if job.Steps[1].Run != "echo test" {
+					t.Errorf("Middle step should be original, got %q", job.Steps[1].Run)
+				}
+
+				// Check end marker
+				endStep := job.Steps[2]
+				if endStep.Name != "detent: job end" {
+					t.Errorf("Last step name = %q, want %q", endStep.Name, "detent: job end")
+				}
+				if endStep.If != "always()" {
+					t.Errorf("End step should have if: always(), got %q", endStep.If)
+				}
+				if !strings.Contains(endStep.Run, "::detent::job-end::build::${{ job.status }}") {
+					t.Errorf("End step should contain job-end marker, got %q", endStep.Run)
+				}
+			},
+		},
+		{
+			name: "inject markers to multiple jobs with sorted manifest",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"zebra": {
+						RunsOn: "ubuntu-latest",
+						Steps:  []*Step{{Run: "echo zebra"}},
+					},
+					"alpha": {
+						RunsOn: "ubuntu-latest",
+						Steps:  []*Step{{Run: "echo alpha"}},
+					},
+					"beta": {
+						RunsOn: "ubuntu-latest",
+						Steps:  []*Step{{Run: "echo beta"}},
+					},
+				},
+			},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				// All jobs should have the same sorted manifest
+				expectedManifest := "::detent::manifest::alpha,beta,zebra"
+
+				for jobID, job := range wf.Jobs {
+					if len(job.Steps) != 3 {
+						t.Errorf("Job %s: expected 3 steps, got %d", jobID, len(job.Steps))
+						continue
+					}
+
+					startStep := job.Steps[0]
+					if !strings.Contains(startStep.Run, expectedManifest) {
+						t.Errorf("Job %s: manifest should be sorted, got %q", jobID, startStep.Run)
+					}
+
+					// Each job should have its own job-start marker
+					expectedStart := "::detent::job-start::" + jobID
+					if !strings.Contains(startStep.Run, expectedStart) {
+						t.Errorf("Job %s: start marker should contain job ID, got %q", jobID, startStep.Run)
+					}
+				}
+			},
+		},
+		{
+			name: "skip reusable workflow jobs",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"regular": {
+						RunsOn: "ubuntu-latest",
+						Steps:  []*Step{{Run: "echo test"}},
+					},
+					"reusable": {
+						Uses: "./.github/workflows/other.yml",
+					},
+				},
+			},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				// Regular job should have markers
+				regularJob := wf.Jobs["regular"]
+				if len(regularJob.Steps) != 3 {
+					t.Errorf("Regular job: expected 3 steps, got %d", len(regularJob.Steps))
+				}
+
+				// Reusable job should be unchanged (no Steps)
+				reusableJob := wf.Jobs["reusable"]
+				if reusableJob.Steps != nil {
+					t.Error("Reusable job should not have steps added")
+				}
+
+				// Manifest should include both jobs
+				startStep := regularJob.Steps[0]
+				if !strings.Contains(startStep.Run, "regular") {
+					t.Error("Manifest should include regular job")
+				}
+				if !strings.Contains(startStep.Run, "reusable") {
+					t.Error("Manifest should include reusable job")
+				}
+			},
+		},
+		{
+			name: "preserve empty steps array",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"empty": {
+						RunsOn: "ubuntu-latest",
+						Steps:  []*Step{},
+					},
+				},
+			},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				job := wf.Jobs["empty"]
+				// Should add start and end markers even with empty steps
+				if len(job.Steps) != 2 {
+					t.Errorf("Expected 2 steps (markers only), got %d", len(job.Steps))
+				}
+			},
+		},
+		{
+			name:     "nil workflow",
+			workflow: nil,
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				// Should not panic
+			},
+		},
+		{
+			name: "workflow with nil jobs map",
+			workflow: &Workflow{
+				Name: "Test",
+				Jobs: nil,
+			},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				// Should not panic
+			},
+		},
+		{
+			name: "workflow with nil job",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"valid": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "echo"}}},
+					"nil":   nil,
+				},
+			},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				// Should not panic
+				validJob := wf.Jobs["valid"]
+				if len(validJob.Steps) != 3 {
+					t.Errorf("Valid job should have markers, got %d steps", len(validJob.Steps))
+				}
+			},
+		},
+		{
+			name: "skip invalid job IDs - shell injection attempts",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"valid_job": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "echo valid"}}},
+					"exploit`whoami`": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "echo bad"}}},
+					"$(rm -rf /)": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "echo bad"}}},
+					"test;ls": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "echo bad"}}},
+				},
+			},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				// Valid job should have markers
+				validJob := wf.Jobs["valid_job"]
+				if len(validJob.Steps) != 3 {
+					t.Errorf("valid_job should have markers, got %d steps", len(validJob.Steps))
+				}
+
+				// Invalid jobs should NOT have markers (original step count preserved)
+				for _, invalidID := range []string{"exploit`whoami`", "$(rm -rf /)", "test;ls"} {
+					job := wf.Jobs[invalidID]
+					if len(job.Steps) != 1 {
+						t.Errorf("Job %q should NOT have markers (security), got %d steps", invalidID, len(job.Steps))
+					}
+				}
+
+				// Manifest should only include valid job
+				startStep := validJob.Steps[0]
+				if !strings.Contains(startStep.Run, "valid_job") {
+					t.Error("Manifest should include valid_job")
+				}
+				if strings.Contains(startStep.Run, "exploit") || strings.Contains(startStep.Run, "rm") {
+					t.Error("Manifest should NOT include invalid job IDs")
+				}
+			},
+		},
+		{
+			name: "job ID with spaces rejected",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"valid": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "echo"}}},
+					"job with spaces": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "echo"}}},
+				},
+			},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				// Job with spaces should not get markers
+				spacesJob := wf.Jobs["job with spaces"]
+				if len(spacesJob.Steps) != 1 {
+					t.Errorf("Job with spaces should NOT have markers, got %d steps", len(spacesJob.Steps))
+				}
+			},
+		},
+		{
+			name: "job ID starting with number rejected",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"valid_job": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "echo"}}},
+					"123invalid": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "echo"}}},
+				},
+			},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				// Job starting with number should not get markers
+				numJob := wf.Jobs["123invalid"]
+				if len(numJob.Steps) != 1 {
+					t.Errorf("Job starting with number should NOT have markers, got %d steps", len(numJob.Steps))
+				}
+			},
+		},
+		{
+			name: "valid job IDs with hyphens and underscores",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"build-test": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "echo"}}},
+					"_private": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "echo"}}},
+					"Test_Job-123": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "echo"}}},
+				},
+			},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				// All these should be valid and get markers
+				for jobID, job := range wf.Jobs {
+					if len(job.Steps) != 3 {
+						t.Errorf("Job %q should have markers, got %d steps", jobID, len(job.Steps))
+					}
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			InjectJobMarkers(tt.workflow)
+			tt.validate(t, tt.workflow)
+		})
+	}
+}
+
 // TestPrepareWorkflows tests the full workflow preparation pipeline
 func TestPrepareWorkflows(t *testing.T) {
 	tests := []struct {
@@ -398,7 +686,7 @@ jobs:
 				if len(files) != 2 {
 					t.Errorf("Expected 2 files in temp directory, got %d", len(files))
 				}
-				// Verify continue-on-error and timeouts are injected
+				// Verify continue-on-error, timeouts, and job markers are injected
 				for _, file := range files {
 					path := filepath.Join(tmpDir, file.Name())
 					wf, err := ParseWorkflowFile(path)
@@ -412,6 +700,19 @@ jobs:
 						}
 						if job.TimeoutMinutes == nil {
 							t.Errorf("Job %s should have timeout injected", jobName)
+						}
+						// Verify job markers are injected (first and last steps)
+						if len(job.Steps) < 2 {
+							t.Errorf("Job %s should have at least 2 steps (markers)", jobName)
+							continue
+						}
+						firstStep := job.Steps[0]
+						if firstStep.Name != "detent: job start" {
+							t.Errorf("Job %s: first step should be job start marker", jobName)
+						}
+						lastStep := job.Steps[len(job.Steps)-1]
+						if lastStep.Name != "detent: job end" {
+							t.Errorf("Job %s: last step should be job end marker", jobName)
 						}
 					}
 				}
@@ -1003,13 +1304,14 @@ jobs:
 	}
 
 	// Validate injections
+	// Note: step counts include +2 for job marker steps (start + end)
 	tests := []struct {
 		jobName            string
 		wantContinueOnErr  bool
 		wantJobTimeout     bool
 		originalTimeout    any
 		stepCount          int
-		stepWithTimeout    int
+		stepWithTimeout    int  // index in original steps (before markers added)
 		stepOriginalTimeout any
 	}{
 		{
@@ -1017,22 +1319,22 @@ jobs:
 			wantContinueOnErr: true,
 			wantJobTimeout:    true,
 			originalTimeout:   45, // Should be preserved
-			stepCount:         3,
+			stepCount:         5,  // 3 original + 2 markers
 		},
 		{
 			jobName:            "test",
 			wantContinueOnErr:  true,
 			wantJobTimeout:     true,
 			originalTimeout:    defaultJobTimeoutMinutes, // Should be injected
-			stepCount:          2,
-			stepWithTimeout:    1,
+			stepCount:          4,  // 2 original + 2 markers
+			stepWithTimeout:    2,  // index 2 (after start marker) is the "Test" step with timeout
 			stepOriginalTimeout: 20, // Should be preserved
 		},
 		{
 			jobName:           "lint",
 			wantContinueOnErr: true, // Already true, should remain
 			wantJobTimeout:    true,
-			stepCount:         2,
+			stepCount:         4, // 2 original + 2 markers
 		},
 	}
 

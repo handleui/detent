@@ -19,6 +19,12 @@ type JobEvent struct {
 	Success bool   // Only relevant when Action="finish"
 }
 
+// ManifestEvent contains the list of all job IDs in a workflow.
+// Emitted once at the start of workflow execution for reliable job tracking.
+type ManifestEvent struct {
+	JobIDs []string // All job IDs in the workflow (sorted alphabetically)
+}
+
 // Parser defines the interface for parsing CI output into job events.
 // Different CI systems (act, GitHub Actions) implement this interface.
 type Parser interface {
