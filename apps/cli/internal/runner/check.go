@@ -58,7 +58,6 @@ type CheckRunner struct {
 	worktreeInfo     *git.WorktreeInfo    // Worktree metadata including path and commit info
 	cleanupWorkflows func()               // Cleanup function for workflow temp directory
 	cleanupWorktree  func()               // Cleanup function for worktree
-	stashInfo        *git.StashInfo       // Tracks if changes were stashed during preflight
 	jobs             []workflow.JobInfo   // Job information extracted from workflows
 
 	// Execution state - set during Run phase
@@ -76,7 +75,6 @@ func New(config *RunConfig) *CheckRunner {
 
 // Prepare sets up the execution environment including:
 // - Parallel preflight validation (git repository, act availability, docker availability)
-// - Validation that worktree is clean (no uncommitted changes)
 // - Parallel preparation (workflow files and worktree creation)
 //
 // This must be called before Run. All resources are tracked for cleanup.
@@ -119,7 +117,6 @@ func (r *CheckRunner) storePreparationResult(result *PrepareResult) {
 	r.worktreeInfo = result.WorktreeInfo
 	r.cleanupWorkflows = result.CleanupWorkflows
 	r.cleanupWorktree = result.CleanupWorktree
-	r.stashInfo = result.StashInfo
 	r.jobs = result.Jobs
 }
 
@@ -233,9 +230,6 @@ func (r *CheckRunner) Cleanup() {
 	if r.cleanupWorktree != nil {
 		r.cleanupWorktree()
 	}
-
-	// Restore stashed changes if we stashed them during preflight
-	git.RestoreStashIfNeeded(r.config.RepoRoot, r.stashInfo)
 }
 
 // GetResult returns the complete result of the check run.

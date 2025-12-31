@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -201,7 +202,90 @@ func PrepareWorktree(ctx context.Context, repoRoot, worktreeDir string) (*Worktr
 		}
 	}
 
+	// Sync any uncommitted changes from the source repo to the worktree
+	if err := SyncDirtyFiles(ctx, repoRoot, worktreeDir); err != nil {
+		cleanup()
+		return nil, nil, fmt.Errorf("syncing dirty files: %w", err)
+	}
+
 	return worktreeInfo, cleanup, nil
+}
+
+// SyncDirtyFiles copies uncommitted changes from the source repo to the worktree.
+// This allows running checks on dirty worktrees by syncing modified/added files.
+// Deleted files are skipped (they shouldn't exist in the worktree).
+func SyncDirtyFiles(ctx context.Context, repoRoot, worktreeDir string) error {
+	files, err := GetDirtyFilesList(ctx, repoRoot)
+	if err != nil || len(files) == 0 {
+		return err
+	}
+
+	for _, entry := range files {
+		if len(entry) < 3 {
+			continue // Skip malformed entries
+		}
+
+		status := entry[:2]
+		filePath := strings.TrimSpace(entry[3:])
+
+		// Skip deleted files - they shouldn't exist in worktree
+		if status[0] == 'D' || status[1] == 'D' {
+			continue
+		}
+
+		// Skip renamed files' old paths (R = renamed, shows as "R  old -> new")
+		if strings.Contains(filePath, " -> ") {
+			// For renames, we only care about the new path
+			parts := strings.Split(filePath, " -> ")
+			if len(parts) == 2 {
+				filePath = strings.TrimSpace(parts[1])
+			}
+		}
+
+		src := filepath.Join(repoRoot, filePath)
+		dst := filepath.Join(worktreeDir, filePath)
+
+		if err := copyFile(src, dst); err != nil {
+			// Non-fatal: file might not exist (deleted after status check)
+			continue
+		}
+	}
+
+	return nil
+}
+
+// copyFile copies a file from src to dst, creating parent directories as needed.
+// Used to sync uncommitted changes from source repo to worktree.
+func copyFile(src, dst string) error {
+	// #nosec G304 - src is from git status output, paths within user's repo
+	srcFile, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = srcFile.Close() }()
+
+	// Get source file info for permissions
+	srcInfo, err := srcFile.Stat()
+	if err != nil {
+		return err
+	}
+
+	// Create destination directory with restrictive permissions
+	dstDir := filepath.Dir(dst)
+	if mkdirErr := os.MkdirAll(dstDir, 0o700); mkdirErr != nil {
+		return mkdirErr
+	}
+
+	// #nosec G304 - dst is worktree path, constructed from known safe paths
+	dstFile, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, srcInfo.Mode())
+	if err != nil {
+		return err
+	}
+	defer func() { _ = dstFile.Close() }()
+
+	// Copy contents
+	_, err = io.Copy(dstFile, srcFile)
+	return err
 }
 
 // isExistingWorktree checks if a valid git worktree exists at the given path

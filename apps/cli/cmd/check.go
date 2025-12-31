@@ -10,7 +10,6 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/detent/cli/internal/cache"
 	"github.com/detent/cli/internal/git"
 	"github.com/detent/cli/internal/output"
 	"github.com/detent/cli/internal/runner"
@@ -34,7 +33,6 @@ var (
 	// Command-specific flags
 	outputFormat string
 	event        string
-	forceRun     bool
 )
 
 var checkCmd = &cobra.Command{
@@ -77,7 +75,6 @@ Results are persisted to .detent/ for future analysis and comparison.`,
 func init() {
 	checkCmd.Flags().StringVarP(&outputFormat, "output", "o", "text", "output format (text, json, json-detailed)")
 	checkCmd.Flags().StringVarP(&event, "event", "e", "push", "GitHub event type (push, pull_request, etc.)")
-	checkCmd.Flags().BoolVarP(&forceRun, "force", "f", false, "force fresh run, ignoring cached results")
 }
 
 // buildRunConfig validates flags, resolves paths, generates UUID, and builds a RunConfig.
@@ -263,15 +260,6 @@ func runCheck(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Check cache for prior run (skip if --force)
-	if !forceRun {
-		result, cacheErr := cache.Check(cfg.RepoRoot, outputFormat)
-		if result.Hit {
-			return cacheErr // Return error if cached run had errors, nil otherwise
-		}
-		// If cache check fails or no hit, continue with fresh run
-	}
-
 	// Create context with timeout
 	ctx, cancel := context.WithTimeout(cmd.Context(), runner.ActTimeout)
 	defer cancel()
@@ -289,13 +277,6 @@ func runCheck(cmd *cobra.Command, args []string) error {
 	}
 	if err != nil {
 		sentry.CaptureError(err)
-		// Enhance dirty worktree error with instructions for AI agents
-		if cfg.IsAgentMode && errors.Is(err, git.ErrWorktreeDirty) {
-			return fmt.Errorf("%w\n\nTell the user to commit or stash their changes before running detent:\n"+
-				"  git add . && git commit -m \"WIP\"\n"+
-				"  # or\n"+
-				"  git stash", err)
-		}
 		return err
 	}
 
@@ -361,8 +342,8 @@ func runCheckWithTUI(ctx context.Context, r *runner.CheckRunner) (bool, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// Setup TUI program with pre-populated jobs from workflow files
-	model := tui.NewCheckModelWithJobs(cancel, r.GetJobs())
+	// Setup TUI program - starts in waiting state until manifest arrives from workflow
+	model := tui.NewCheckModel(cancel)
 	program := tea.NewProgram(
 		&model,
 		tea.WithContext(ctx),

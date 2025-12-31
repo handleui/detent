@@ -127,6 +127,76 @@ func BuildManifest(wf *Workflow) *ci.ManifestInfo {
 	}
 }
 
+// BuildCombinedManifest builds a single manifest from multiple workflows.
+// This ensures all jobs from all workflow files are included in one manifest,
+// which is injected once for consistent TUI display.
+func BuildCombinedManifest(workflows map[string]*Workflow) *ci.ManifestInfo {
+	if len(workflows) == 0 {
+		return &ci.ManifestInfo{Version: 2, Jobs: []ci.ManifestJob{}}
+	}
+
+	// Sort workflow paths for deterministic ordering
+	paths := make([]string, 0, len(workflows))
+	for p := range workflows {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+
+	// Collect all jobs from all workflows
+	allJobsMap := make(map[string]*ci.ManifestJob)
+	for _, path := range paths {
+		wf := workflows[path]
+		wfManifest := BuildManifest(wf)
+		for i := range wfManifest.Jobs {
+			job := &wfManifest.Jobs[i]
+			allJobsMap[job.ID] = job
+		}
+	}
+
+	// Topological sort for consistent ordering
+	sortedJobs := topologicalSortManifest(allJobsMap)
+
+	return &ci.ManifestInfo{
+		Version: 2,
+		Jobs:    sortedJobs,
+	}
+}
+
+// findFirstJobAcrossWorkflows finds the first valid job ID and its workflow path
+// across all workflows (alphabetically by workflow path, then job ID).
+func findFirstJobAcrossWorkflows(workflows map[string]*Workflow) (workflowPath, jobID string) {
+	// Sort workflow paths
+	paths := make([]string, 0, len(workflows))
+	for p := range workflows {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+
+	for _, path := range paths {
+		wf := workflows[path]
+		if wf == nil || wf.Jobs == nil {
+			continue
+		}
+
+		// Find first valid job in this workflow
+		var firstInWf string
+		for jID, job := range wf.Jobs {
+			if job == nil || job.Uses != "" || !isValidJobID(jID) {
+				continue
+			}
+			if firstInWf == "" || jID < firstInWf {
+				firstInWf = jID
+			}
+		}
+
+		if firstInWf != "" {
+			return path, firstInWf
+		}
+	}
+
+	return "", ""
+}
+
 // getStepDisplayName returns a human-readable name for a step.
 // Tries: step.Name, step.ID, action name from step.Uses, truncated run command.
 func getStepDisplayName(step *Step) string {
@@ -274,16 +344,17 @@ func topologicalSortManifest(jobInfoMap map[string]*ci.ManifestJob) []ci.Manifes
 // - A job-end marker with always() condition
 // Jobs using reusable workflows (uses:) are skipped as they have no steps to inject.
 // Jobs with invalid IDs (not matching GitHub Actions spec) are skipped for security.
+//
+// Note: For multi-workflow scenarios, use InjectJobMarkersWithManifest to share a combined manifest.
 func InjectJobMarkers(wf *Workflow) {
 	if wf == nil || wf.Jobs == nil {
 		return
 	}
 
-	// Build the v2 manifest
+	// Build the v2 manifest for this single workflow
 	manifest := BuildManifest(wf)
 	manifestJSON, err := json.Marshal(manifest)
 	if err != nil {
-		// Fallback to empty manifest on error
 		manifestJSON = []byte(`{"v":2,"jobs":[]}`)
 	}
 
@@ -298,6 +369,24 @@ func InjectJobMarkers(wf *Workflow) {
 		}
 	}
 
+	injectJobMarkersInternal(wf, manifestJSON, firstJobID)
+}
+
+// InjectJobMarkersWithManifest injects lifecycle markers using an externally-provided manifest.
+// Use this when processing multiple workflows to ensure all jobs appear in a single manifest.
+// Parameters:
+//   - wf: The workflow to inject markers into
+//   - manifestJSON: Pre-built manifest JSON (nil to skip manifest injection for this workflow)
+//   - manifestJobID: The job ID that should receive the manifest step (empty string to skip)
+func InjectJobMarkersWithManifest(wf *Workflow, manifestJSON []byte, manifestJobID string) {
+	if wf == nil || wf.Jobs == nil {
+		return
+	}
+	injectJobMarkersInternal(wf, manifestJSON, manifestJobID)
+}
+
+// injectJobMarkersInternal is the shared implementation for marker injection.
+func injectJobMarkersInternal(wf *Workflow, manifestJSON []byte, manifestJobID string) {
 	for jobID, job := range wf.Jobs {
 		if job == nil {
 			continue
@@ -309,15 +398,14 @@ func InjectJobMarkers(wf *Workflow) {
 		}
 
 		// Skip jobs with invalid IDs to prevent shell injection
-		// These jobs will fall back to emoji-based tracking
 		if !isValidJobID(jobID) {
 			continue
 		}
 
 		var newSteps []*Step
 
-		// Add manifest step to first job only
-		if jobID == firstJobID {
+		// Add manifest step only to the designated job
+		if manifestJSON != nil && jobID == manifestJobID {
 			manifestStep := &Step{
 				Name: "detent: manifest",
 				Run:  fmt.Sprintf("echo '::detent::manifest::v2::%s'", escapeForShell(string(manifestJSON))),
@@ -464,6 +552,17 @@ func PrepareWorkflows(srcDir, specificWorkflow string) (tmpDir string, cleanup f
 
 	cleanup = func() { _ = os.RemoveAll(tmpDir) }
 
+	// Build combined manifest from ALL workflows before processing
+	// This ensures the TUI sees all jobs from all workflow files in a single manifest
+	combinedManifest := BuildCombinedManifest(parsedWorkflows)
+	combinedManifestJSON, err := json.Marshal(combinedManifest)
+	if err != nil {
+		combinedManifestJSON = []byte(`{"v":2,"jobs":[]}`)
+	}
+
+	// Find which workflow and job should receive the manifest
+	manifestWfPath, manifestJobID := findFirstJobAcrossWorkflows(parsedWorkflows)
+
 	// Process workflows in parallel using errgroup
 	// Each workflow is independent, so parallel processing is safe
 	var g errgroup.Group
@@ -478,9 +577,17 @@ func PrepareWorkflows(srcDir, specificWorkflow string) (tmpDir string, cleanup f
 		wf := wf         // Capture loop variable for goroutine
 		g.Go(func() error {
 			// Apply modifications
-			// Order matters: markers first, then timeouts (so marker steps get timeouts too)
+			// Order matters: continue-on-error first, then markers, then timeouts
 			InjectContinueOnError(wf)
-			InjectJobMarkers(wf)
+
+			// Inject markers with combined manifest (only first workflow gets manifest step)
+			if wfPath == manifestWfPath {
+				InjectJobMarkersWithManifest(wf, combinedManifestJSON, manifestJobID)
+			} else {
+				// Other workflows get markers but no manifest
+				InjectJobMarkersWithManifest(wf, nil, "")
+			}
+
 			InjectTimeouts(wf)
 
 			// Marshal to YAML

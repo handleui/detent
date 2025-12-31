@@ -1434,3 +1434,249 @@ jobs:
 		})
 	}
 }
+
+// TestBuildCombinedManifest tests building a combined manifest from multiple workflows.
+func TestBuildCombinedManifest(t *testing.T) {
+	tests := []struct {
+		name      string
+		workflows map[string]*Workflow
+		wantJobs  []string // Expected job IDs in order
+	}{
+		{
+			name:      "empty workflows",
+			workflows: map[string]*Workflow{},
+			wantJobs:  []string{},
+		},
+		{
+			name: "single workflow",
+			workflows: map[string]*Workflow{
+				"/path/to/ci.yml": {
+					Jobs: map[string]*Job{
+						"lint": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "npm run lint"}}},
+						"test": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "npm test"}}},
+					},
+				},
+			},
+			wantJobs: []string{"lint", "test"},
+		},
+		{
+			name: "multiple workflows - jobs combined",
+			workflows: map[string]*Workflow{
+				"/path/to/ci.yml": {
+					Jobs: map[string]*Job{
+						"lint": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "npm run lint"}}},
+						"test": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "npm test"}}},
+					},
+				},
+				"/path/to/release.yml": {
+					Jobs: map[string]*Job{
+						"release": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "npm publish"}}},
+					},
+				},
+			},
+			wantJobs: []string{"lint", "release", "test"}, // Alphabetically sorted
+		},
+		{
+			name: "reusable workflow jobs included",
+			workflows: map[string]*Workflow{
+				"/path/to/ci.yml": {
+					Jobs: map[string]*Job{
+						"build": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "go build"}}},
+						"deploy": {Uses: "org/repo/.github/workflows/deploy.yml@main"},
+					},
+				},
+			},
+			wantJobs: []string{"build", "deploy"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manifest := BuildCombinedManifest(tt.workflows)
+
+			if manifest.Version != 2 {
+				t.Errorf("Version = %d, want 2", manifest.Version)
+			}
+
+			if len(manifest.Jobs) != len(tt.wantJobs) {
+				t.Errorf("Job count = %d, want %d", len(manifest.Jobs), len(tt.wantJobs))
+				return
+			}
+
+			gotIDs := make([]string, len(manifest.Jobs))
+			for i, job := range manifest.Jobs {
+				gotIDs[i] = job.ID
+			}
+
+			for i, wantID := range tt.wantJobs {
+				if gotIDs[i] != wantID {
+					t.Errorf("Job[%d].ID = %q, want %q", i, gotIDs[i], wantID)
+				}
+			}
+		})
+	}
+}
+
+// TestFindFirstJobAcrossWorkflows tests finding the first job across multiple workflows.
+func TestFindFirstJobAcrossWorkflows(t *testing.T) {
+	tests := []struct {
+		name         string
+		workflows    map[string]*Workflow
+		wantPath     string
+		wantJobID    string
+	}{
+		{
+			name:      "empty workflows",
+			workflows: map[string]*Workflow{},
+			wantPath:  "",
+			wantJobID: "",
+		},
+		{
+			name: "single workflow with jobs",
+			workflows: map[string]*Workflow{
+				"/path/to/ci.yml": {
+					Jobs: map[string]*Job{
+						"test": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "test"}}},
+						"lint": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "lint"}}},
+					},
+				},
+			},
+			wantPath:  "/path/to/ci.yml",
+			wantJobID: "lint", // Alphabetically first
+		},
+		{
+			name: "multiple workflows - first workflow path wins",
+			workflows: map[string]*Workflow{
+				"/path/to/ci.yml": {
+					Jobs: map[string]*Job{
+						"test": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "test"}}},
+					},
+				},
+				"/path/to/release.yml": {
+					Jobs: map[string]*Job{
+						"build": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "build"}}},
+					},
+				},
+			},
+			wantPath:  "/path/to/ci.yml", // Alphabetically first path
+			wantJobID: "test",
+		},
+		{
+			name: "skip reusable workflow jobs",
+			workflows: map[string]*Workflow{
+				"/path/to/ci.yml": {
+					Jobs: map[string]*Job{
+						"deploy": {Uses: "org/repo/.github/workflows/deploy.yml@main"},
+						"build":  {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "build"}}},
+					},
+				},
+			},
+			wantPath:  "/path/to/ci.yml",
+			wantJobID: "build", // deploy skipped because it's a reusable workflow
+		},
+		{
+			name: "workflow with only reusable jobs skipped",
+			workflows: map[string]*Workflow{
+				"/path/to/deploy.yml": {
+					Jobs: map[string]*Job{
+						"deploy": {Uses: "org/repo/.github/workflows/deploy.yml@main"},
+					},
+				},
+				"/path/to/test.yml": {
+					Jobs: map[string]*Job{
+						"test": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "test"}}},
+					},
+				},
+			},
+			wantPath:  "/path/to/test.yml",
+			wantJobID: "test",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotPath, gotJobID := findFirstJobAcrossWorkflows(tt.workflows)
+
+			if gotPath != tt.wantPath {
+				t.Errorf("workflowPath = %q, want %q", gotPath, tt.wantPath)
+			}
+			if gotJobID != tt.wantJobID {
+				t.Errorf("jobID = %q, want %q", gotJobID, tt.wantJobID)
+			}
+		})
+	}
+}
+
+// TestInjectJobMarkersWithManifest tests injecting markers with an external manifest.
+func TestInjectJobMarkersWithManifest(t *testing.T) {
+	t.Run("inject manifest to designated job only", func(t *testing.T) {
+		wf := &Workflow{
+			Jobs: map[string]*Job{
+				"build": {RunsOn: "ubuntu-latest", Steps: []*Step{{Name: "Build", Run: "go build"}}},
+				"test":  {RunsOn: "ubuntu-latest", Steps: []*Step{{Name: "Test", Run: "go test"}}},
+			},
+		}
+
+		manifestJSON := []byte(`{"v":2,"jobs":[{"id":"build"},{"id":"test"}]}`)
+
+		// Inject with build as manifest job
+		InjectJobMarkersWithManifest(wf, manifestJSON, "build")
+
+		// Build job should have manifest step
+		buildSteps := wf.Jobs["build"].Steps
+		hasManifest := false
+		for _, step := range buildSteps {
+			if step.Name == "detent: manifest" {
+				hasManifest = true
+				break
+			}
+		}
+		if !hasManifest {
+			t.Error("build job should have manifest step")
+		}
+
+		// Test job should NOT have manifest step
+		testSteps := wf.Jobs["test"].Steps
+		for _, step := range testSteps {
+			if step.Name == "detent: manifest" {
+				t.Error("test job should NOT have manifest step")
+			}
+		}
+	})
+
+	t.Run("nil manifest skips manifest injection", func(t *testing.T) {
+		wf := &Workflow{
+			Jobs: map[string]*Job{
+				"build": {RunsOn: "ubuntu-latest", Steps: []*Step{{Name: "Build", Run: "go build"}}},
+			},
+		}
+
+		// Inject with nil manifest
+		InjectJobMarkersWithManifest(wf, nil, "")
+
+		// Build job should NOT have manifest step
+		for _, step := range wf.Jobs["build"].Steps {
+			if step.Name == "detent: manifest" {
+				t.Error("build job should NOT have manifest step when manifestJSON is nil")
+			}
+		}
+
+		// But should have job-start and job-end markers
+		hasJobStart := false
+		hasJobEnd := false
+		for _, step := range wf.Jobs["build"].Steps {
+			if step.Name == "detent: job start" {
+				hasJobStart = true
+			}
+			if step.Name == "detent: job end" {
+				hasJobEnd = true
+			}
+		}
+		if !hasJobStart {
+			t.Error("build job should have job-start marker")
+		}
+		if !hasJobEnd {
+			t.Error("build job should have job-end marker")
+		}
+	})
+}

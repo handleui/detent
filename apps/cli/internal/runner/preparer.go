@@ -19,7 +19,6 @@ type PrepareResult struct {
 	WorktreeInfo     *git.WorktreeInfo
 	CleanupWorkflows func()
 	CleanupWorktree  func()
-	StashInfo        *git.StashInfo
 	Jobs             []workflow.JobInfo
 }
 
@@ -70,7 +69,6 @@ func (p *WorkflowPreparer) PrepareWithTUI(ctx context.Context) (*PrepareResult, 
 		WorktreeInfo:     result.WorktreeInfo,
 		CleanupWorkflows: result.CleanupWorkflows,
 		CleanupWorktree:  result.CleanupWorktree,
-		StashInfo:        result.StashInfo,
 		Jobs:             jobs,
 	}, nil
 }
@@ -107,13 +105,9 @@ func (p *WorkflowPreparer) runPreflightChecks(ctx context.Context, verbose bool)
 	return nil
 }
 
-// runValidationChecks runs parallel validation for worktree state.
+// runValidationChecks runs parallel validation for repository state.
 func (p *WorkflowPreparer) runValidationChecks(ctx context.Context, verbose bool) error {
 	g, gctx := errgroup.WithContext(ctx)
-
-	g.Go(func() error {
-		return git.ValidateCleanWorktree(gctx, p.config.RepoRoot)
-	})
 
 	g.Go(func() error {
 		return git.ValidateNoSubmodules(p.config.RepoRoot)

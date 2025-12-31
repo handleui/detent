@@ -20,7 +20,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var testAPI bool
+var (
+	testAPI      bool
+	healForceRun bool
+)
 
 var healCmd = &cobra.Command{
 	Use:   "heal",
@@ -48,7 +51,7 @@ so heal can reuse existing worktrees created by check.`,
 }
 
 func init() {
-	healCmd.Flags().BoolVarP(&forceRun, "force", "f", false, "force fresh check run")
+	healCmd.Flags().BoolVarP(&healForceRun, "force", "f", false, "force fresh check run")
 	healCmd.Flags().BoolVar(&testAPI, "test", false, "test Claude API connection")
 }
 
@@ -96,7 +99,7 @@ func runHeal(cmd *cobra.Command, args []string) error {
 	}
 
 	// If no cached errors or force flag, run check first
-	if len(errRecords) == 0 || forceRun {
+	if len(errRecords) == 0 || healForceRun {
 		fmt.Fprintf(os.Stderr, "Running check to identify errors...\n")
 		if checkErr := runCheck(cmd, args); checkErr != nil {
 			// Check returns ErrFoundErrors when errors are found - that's expected for heal.

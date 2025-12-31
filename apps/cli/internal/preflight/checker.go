@@ -24,7 +24,6 @@ type Result struct {
 	WorktreeInfo     *git.WorktreeInfo
 	CleanupWorkflows func()
 	CleanupWorktree  func()
-	StashInfo        *git.StashInfo
 	RepoRoot         string
 }
 
@@ -35,69 +34,6 @@ func (r *Result) Cleanup() {
 	}
 	if r.CleanupWorktree != nil {
 		r.CleanupWorktree()
-	}
-	repoRoot := r.RepoRoot
-	if repoRoot == "" {
-		repoRoot = "."
-	}
-	git.RestoreStashIfNeeded(repoRoot, r.StashInfo)
-}
-
-// EnsureCleanWorktree validates that the worktree is clean, or prompts the user
-// to clean it interactively. Returns StashInfo if changes were stashed.
-func EnsureCleanWorktree(ctx context.Context, repoRoot string, program *tea.Program) (*git.StashInfo, error) {
-	files, err := git.GetDirtyFilesList(ctx, repoRoot)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(files) == 0 {
-		return nil, nil
-	}
-
-	// Quit preflight TUI to show prompt
-	if program != nil {
-		program.Send(tui.PreflightDoneMsg{Err: nil})
-		program.Wait()
-	}
-
-	// Launch interactive prompt
-	model := tui.NewCleanWorktreePromptModel(files)
-	promptProgram := tea.NewProgram(model)
-	finalModel, err := promptProgram.Run()
-	if err != nil {
-		return nil, fmt.Errorf("interactive prompt failed: %w", err)
-	}
-
-	promptModel, ok := finalModel.(*tui.CleanWorktreePromptModel)
-	if !ok {
-		return nil, fmt.Errorf("unexpected model type")
-	}
-
-	result := promptModel.GetResult()
-	if result == nil || result.Cancelled {
-		return nil, ErrCancelled
-	}
-
-	switch result.Action {
-	case tui.ActionCommit:
-		if err := git.CommitAllChanges(ctx, repoRoot, result.CommitMessage); err != nil {
-			return nil, fmt.Errorf("failed to commit changes: %w", err)
-		}
-		return nil, nil
-
-	case tui.ActionStash:
-		stashInfo, err := git.StashChanges(ctx, repoRoot)
-		if err != nil {
-			return nil, fmt.Errorf("failed to stash changes: %w", err)
-		}
-		return stashInfo, nil
-
-	case tui.ActionCancel:
-		return nil, ErrCancelled
-
-	default:
-		return nil, fmt.Errorf("unknown action: %v", result.Action)
 	}
 }
 
@@ -116,7 +52,6 @@ func RunPreflightChecks(ctx context.Context, workflowPath, repoRoot, runID, work
 
 	// Run checks in background goroutine
 	go func() {
-		var stashInfo *git.StashInfo
 		var tmpDir string
 		var cleanupWorkflows func()
 		var worktreeInfo *git.WorktreeInfo
@@ -129,13 +64,7 @@ func RunPreflightChecks(ctx context.Context, workflowPath, repoRoot, runID, work
 
 		// Check 1: Validate repository
 		program.Send(tui.PreflightUpdateMsg("Validating repository"))
-		var err error
-		stashInfo, err = EnsureCleanWorktree(ctx, repoRoot, program)
-		if err != nil {
-			sendError(err)
-			return
-		}
-		err = git.ValidateNoEscapingSymlinks(ctx, repoRoot)
+		err := git.ValidateNoEscapingSymlinks(ctx, repoRoot)
 		if err != nil {
 			sendError(fmt.Errorf("symlink security: %w", err))
 			return
@@ -190,7 +119,6 @@ func RunPreflightChecks(ctx context.Context, workflowPath, repoRoot, runID, work
 				WorktreeInfo:     worktreeInfo,
 				CleanupWorkflows: cleanupWorkflows,
 				CleanupWorktree:  cleanupWorktree,
-				StashInfo:        stashInfo,
 				RepoRoot:         repoRoot,
 			},
 		}

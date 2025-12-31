@@ -14,9 +14,6 @@ import (
 // ErrWorktreeNotInitialized is returned when operations are attempted before worktree creation
 var ErrWorktreeNotInitialized = fmt.Errorf("worktree not initialized - Prepare() must be called before Run()")
 
-// ErrWorktreeDirty is returned when the worktree has uncommitted or untracked changes
-var ErrWorktreeDirty = fmt.Errorf("worktree has uncommitted changes - please commit before running")
-
 // ErrNotGitRepository is returned when a path is not a git repository
 var ErrNotGitRepository = fmt.Errorf("not a git repository")
 
@@ -68,23 +65,6 @@ func executeGitStatus(ctx context.Context, repoRoot string) (string, error) {
 		return "", fmt.Errorf("failed to check git status: %w", err)
 	}
 	return strings.TrimSpace(string(output)), nil
-}
-
-// ValidateCleanWorktree checks if the worktree has any uncommitted or untracked changes.
-// Returns ErrWorktreeDirty if the worktree is not clean.
-// This requires all files to be committed before running checks, ensuring the checked
-// state exactly matches what will be pushed to the remote.
-func ValidateCleanWorktree(ctx context.Context, repoRoot string) error {
-	status, err := executeGitStatus(ctx, repoRoot)
-	if err != nil {
-		return err
-	}
-
-	if status != "" {
-		return fmt.Errorf("%w:\n%s", ErrWorktreeDirty, status)
-	}
-
-	return nil
 }
 
 // ValidateNoEscapingSymlinks walks the repository and checks that no symlinks
