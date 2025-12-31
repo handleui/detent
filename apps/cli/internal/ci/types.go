@@ -9,12 +9,13 @@ const (
 	JobRunning JobStatus = "running"
 	JobSuccess JobStatus = "success"
 	JobFailed  JobStatus = "failed"
+	JobSkipped JobStatus = "skipped"
 )
 
 // JobEvent represents a job lifecycle event parsed from CI output.
 type JobEvent struct {
 	JobName string // Display name of the job
-	Action  string // "start" or "finish"
+	Action  string // "start", "finish", or "skip"
 	Success bool   // Only relevant when Action="finish"
 }
 

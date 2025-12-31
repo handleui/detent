@@ -23,6 +23,10 @@ const (
 
 // Extractor processes act output and extracts structured errors.
 //
+// NOTE: This is the legacy extractor. Go and TypeScript errors are now handled by
+// tool-specific parsers in internal/tools/. This extractor handles remaining patterns
+// (Python, Rust, ESLint, Node.js, Docker, metadata) that haven't been migrated yet.
+//
 // THREAD-SAFETY: This type is NOT thread-safe. Each Extractor instance maintains
 // internal state that tracks multi-line error formats (Python tracebacks, Rust errors,
 // stack traces) across successive calls to Extract(). This stateful design assumes
@@ -213,18 +217,13 @@ func (e *Extractor) isStackTraceContinuation(line string) bool {
 		return true
 	}
 
-	// Go: stack frames or file:line references
-	if goStackFramePattern.MatchString(line) {
-		return true
-	}
-
 	// Node.js: at Function(...) lines
 	if nodeAtPattern.MatchString(line) {
 		return true
 	}
 
-	// Test output: indented continuation
-	if testOutputPattern.MatchString(line) {
+	// Go: goroutine header or stack frame lines (for panic traces)
+	if goGoroutinePattern.MatchString(line) {
 		return true
 	}
 
@@ -267,6 +266,9 @@ func (e *Extractor) extractFromLine(line string) *ExtractedError {
 	// Note: Debug noise filtering (e.g., act's Go struct dumps with <nil> values)
 	// is now handled in the CI context parser layer (e.g., ci/act.ContextParser).
 	// This method assumes the line has already been preprocessed.
+	//
+	// NOTE: Go and TypeScript errors are now handled by tool-specific parsers in
+	// internal/tools/. This method handles remaining patterns not yet migrated.
 
 	// Check if we're continuing a stack trace
 	if e.isStackTraceContinuation(line) {
@@ -298,26 +300,6 @@ func (e *Extractor) extractFromLine(line string) *ExtractedError {
 		return nil
 	}
 
-	// Check for Go panic start
-	if goPanicPattern.MatchString(line) {
-		e.finalizeStackTrace() // Finalize any previous trace
-		panicErr := &ExtractedError{
-			Message:  strings.TrimPrefix(line, "panic: "),
-			Category: CategoryRuntime,
-			Source:   SourceGo,
-			Raw:      line,
-		}
-		e.startStackTrace(panicErr)
-		e.addStackTraceLine(line)
-		return nil // Don't return yet, accumulate the stack
-	}
-
-	// Check for Go goroutine (part of panic stack trace)
-	if goGoroutinePattern.MatchString(line) {
-		e.addStackTraceLine(line)
-		return nil
-	}
-
 	// Check if this is a standalone file path line (for multi-line error formats)
 	if match := filePathPattern.FindStringSubmatch(line); match != nil {
 		e.lastFile = match[1]
@@ -335,10 +317,32 @@ func (e *Extractor) extractFromLine(line string) *ExtractedError {
 		}
 	}
 
+	// Go panic: start accumulating stack trace
+	if match := goPanicPattern.FindStringSubmatch(line); match != nil {
+		e.finalizeStackTrace() // Finalize any previous trace
+		panicErr := &ExtractedError{
+			Message:  "panic: " + match[1],
+			Category: CategoryRuntime,
+			Source:   SourceGo,
+			Raw:      line,
+		}
+		e.startStackTrace(panicErr)
+		e.addStackTraceLine(line)
+		return nil // Don't return yet, accumulate the stack
+	}
+
+	// Go goroutine (part of panic stack trace)
+	if goGoroutinePattern.MatchString(line) {
+		if e.inStackTrace {
+			e.addStackTraceLine(line)
+			return nil
+		}
+	}
+
+	// Go compiler/linter error: file.go:123:45: message
 	if match := goErrorPattern.FindStringSubmatch(line); match != nil {
 		lineNum, colNum, err := parseLineCol(match[2], match[3])
 		if err != nil {
-			// Log error but continue extraction with 0 values
 			lineNum, colNum = 0, 0
 		}
 		return &ExtractedError{
@@ -352,22 +356,36 @@ func (e *Extractor) extractFromLine(line string) *ExtractedError {
 		}
 	}
 
+	// TypeScript compiler error: file.ts(line,col): error TSxxxx: message
 	if match := tsErrorPattern.FindStringSubmatch(line); match != nil {
 		lineNum, colNum, err := parseLineCol(match[2], match[3])
 		if err != nil {
-			// Log error but continue extraction with 0 values
 			lineNum, colNum = 0, 0
 		}
 		return &ExtractedError{
-			Message:  strings.TrimSpace(match[5]), // Group 5 is message (group 4 is TS code)
+			Message:  strings.TrimSpace(match[5]),
 			File:     match[1],
 			Line:     lineNum,
 			Column:   colNum,
-			RuleID:   match[4],            // "TS2749", "TS1234", etc. (may be empty)
+			RuleID:   match[4], // TS error code
 			Category: CategoryTypeCheck,
 			Source:   SourceTypeScript,
 			Raw:      line,
 		}
+	}
+
+	// Go test failure: --- FAIL: TestName
+	if match := goTestFailPattern.FindStringSubmatch(line); match != nil {
+		e.finalizeStackTrace() // Finalize any previous stack trace
+		testErr := &ExtractedError{
+			Message:  "Test failed: " + match[1],
+			Category: CategoryTest,
+			Source:   SourceGoTest,
+			Raw:      line,
+		}
+		e.startStackTrace(testErr)
+		e.addStackTraceLine(line)
+		return nil // Don't return yet, accumulate test output
 	}
 
 	// Python traceback: first check if this line has the exception message
@@ -450,20 +468,6 @@ func (e *Extractor) extractFromLine(line string) *ExtractedError {
 			Source:   SourceRust,
 			Raw:      line,
 		}
-	}
-
-	if match := goTestFailPattern.FindStringSubmatch(line); match != nil {
-		e.finalizeStackTrace() // Finalize any previous stack trace
-		testErr := &ExtractedError{
-			Message:  "Test failed: " + match[1],
-			Category: CategoryTest,
-			Source:   SourceGoTest,
-			Raw:      line,
-		}
-		// Start accumulating test output as stack trace
-		e.startStackTrace(testErr)
-		e.addStackTraceLine(line)
-		return nil // Don't return yet, accumulate test output
 	}
 
 	if match := nodeStackPattern.FindStringSubmatch(line); match != nil {

@@ -18,8 +18,11 @@ type RunResult struct {
 	// Extracted contains all extracted errors from act output (flat list)
 	Extracted []*errors.ExtractedError
 
-	// Grouped contains errors organized by file for efficient reporting
+	// Grouped contains errors organized by file for efficient reporting (used for JSON output)
 	Grouped *errors.GroupedErrors
+
+	// GroupedComprehensive contains errors organized by category and file for text output
+	GroupedComprehensive *errors.ComprehensiveErrorGroup
 
 	// WorktreeInfo contains metadata about the git worktree used for execution
 	WorktreeInfo *git.WorktreeInfo
@@ -41,12 +44,12 @@ type RunResult struct {
 }
 
 // HasErrors returns true if the run result contains any errors (not warnings).
-// Uses O(1) check from GroupedErrors.
+// Uses O(1) check from ComprehensiveErrorGroup stats.
 func (r *RunResult) HasErrors() bool {
-	if r.Grouped == nil {
+	if r.GroupedComprehensive == nil {
 		return false
 	}
-	return r.Grouped.HasErrors()
+	return r.GroupedComprehensive.Stats.ErrorCount > 0
 }
 
 // Success returns true if the workflow execution succeeded without errors.

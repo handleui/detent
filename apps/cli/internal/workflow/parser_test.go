@@ -523,6 +523,86 @@ func TestDiscoverWorkflows_ErrorWrapping(t *testing.T) {
 	}
 }
 
+// TestExtractJobInfo_TopologicalSort tests that jobs are sorted by dependencies
+func TestExtractJobInfo_TopologicalSort(t *testing.T) {
+	tests := []struct {
+		name     string
+		workflow *Workflow
+		wantIDs  []string
+	}{
+		{
+			name: "linear dependency chain",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"deploy":  {Name: "Deploy", Needs: "test"},
+					"test":    {Name: "Test", Needs: "build"},
+					"build":   {Name: "Build"},
+					"cleanup": {Name: "Cleanup", Needs: "deploy"},
+				},
+			},
+			wantIDs: []string{"build", "test", "deploy", "cleanup"},
+		},
+		{
+			name: "parallel jobs then sequential",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"release": {Name: "Release", Needs: []any{"lint", "test"}},
+					"lint":    {Name: "Lint"},
+					"test":    {Name: "Test"},
+				},
+			},
+			wantIDs: []string{"lint", "test", "release"},
+		},
+		{
+			name: "no dependencies - alphabetical",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"zebra": {Name: "Zebra"},
+					"alpha": {Name: "Alpha"},
+					"beta":  {Name: "Beta"},
+				},
+			},
+			wantIDs: []string{"alpha", "beta", "zebra"},
+		},
+		{
+			name: "mixed dependencies",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"cli-lint":  {Name: "[CLI] Lint"},
+					"cli-test":  {Name: "[CLI] Test"},
+					"web-lint":  {Name: "[Web] Lint"},
+					"web-test":  {Name: "[Web] Test"},
+					"release":   {Name: "Release", Needs: []any{"cli-test", "web-test"}},
+					"cli-build": {Name: "[CLI] Build", Needs: "cli-lint"},
+				},
+			},
+			// Jobs with no deps first (alphabetically), then their dependents
+			wantIDs: []string{"cli-lint", "cli-test", "web-lint", "web-test", "cli-build", "release"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			jobs := ExtractJobInfo(tt.workflow)
+
+			if len(jobs) != len(tt.wantIDs) {
+				t.Fatalf("got %d jobs, want %d", len(jobs), len(tt.wantIDs))
+			}
+
+			for i, wantID := range tt.wantIDs {
+				if jobs[i].ID != wantID {
+					var gotIDs []string
+					for _, j := range jobs {
+						gotIDs = append(gotIDs, j.ID)
+					}
+					t.Errorf("job order mismatch at index %d:\n  got:  %v\n  want: %v", i, gotIDs, tt.wantIDs)
+					break
+				}
+			}
+		})
+	}
+}
+
 // TestDiscoverWorkflows_CaseInsensitiveExtensions tests extension handling
 func TestDiscoverWorkflows_CaseInsensitiveExtensions(t *testing.T) {
 	dir := t.TempDir()

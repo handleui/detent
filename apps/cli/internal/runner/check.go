@@ -17,9 +17,11 @@ import (
 	"github.com/detent/cli/internal/debug"
 	"github.com/detent/cli/internal/docker"
 	internalerrors "github.com/detent/cli/internal/errors"
+	"github.com/detent/cli/internal/extract"
 	"github.com/detent/cli/internal/git"
 	"github.com/detent/cli/internal/persistence"
 	"github.com/detent/cli/internal/preflight"
+	"github.com/detent/cli/internal/tools"
 	"github.com/detent/cli/internal/tui"
 	"github.com/detent/cli/internal/workflow"
 	"golang.org/x/sync/errgroup"
@@ -80,10 +82,11 @@ type CheckRunner struct {
 
 // tuiResult encapsulates the result of a TUI-based check run.
 type tuiResult struct {
-	result    *act.RunResult
-	extracted []*internalerrors.ExtractedError
-	grouped   *internalerrors.GroupedErrors
-	err       error
+	result              *act.RunResult
+	extracted           []*internalerrors.ExtractedError
+	grouped             *internalerrors.GroupedErrors
+	groupedComprehensive *internalerrors.ComprehensiveErrorGroup
+	err                 error
 }
 
 // New creates a new CheckRunner with the given configuration.
@@ -315,18 +318,19 @@ func (r *CheckRunner) Run(ctx context.Context) error {
 	}
 
 	// Extract and process errors (matching cmd/check.go:266-278)
-	extracted, grouped := r.extractAndProcessErrors(actResult)
+	extracted, grouped, groupedComprehensive := r.extractAndProcessErrors(actResult)
 
 	// Store result
 	r.result = &RunResult{
-		ActResult:    actResult,
-		Extracted:    extracted,
-		Grouped:      grouped,
-		WorktreeInfo: r.worktreeInfo,
-		RunID:        r.config.RunID,
-		StartTime:    r.startTime,
-		Duration:     actResult.Duration,
-		ExitCode:     actResult.ExitCode,
+		ActResult:            actResult,
+		Extracted:            extracted,
+		Grouped:              grouped,
+		GroupedComprehensive: groupedComprehensive,
+		WorktreeInfo:         r.worktreeInfo,
+		RunID:                r.config.RunID,
+		StartTime:            r.startTime,
+		Duration:             actResult.Duration,
+		ExitCode:             actResult.ExitCode,
 	}
 
 	return nil
@@ -387,15 +391,16 @@ func (r *CheckRunner) RunWithTUI(ctx context.Context, logChan chan string, progr
 	}
 
 	r.result = &RunResult{
-		ActResult:    tuiRes.result,
-		Extracted:    tuiRes.extracted,
-		Grouped:      tuiRes.grouped,
-		WorktreeInfo: r.worktreeInfo,
-		RunID:        r.config.RunID,
-		StartTime:    r.startTime,
-		Duration:     tuiRes.result.Duration,
-		Cancelled:    wasCancelled,
-		ExitCode:     tuiRes.result.ExitCode,
+		ActResult:            tuiRes.result,
+		Extracted:            tuiRes.extracted,
+		Grouped:              tuiRes.grouped,
+		GroupedComprehensive: tuiRes.groupedComprehensive,
+		WorktreeInfo:         r.worktreeInfo,
+		RunID:                r.config.RunID,
+		StartTime:            r.startTime,
+		Duration:             tuiRes.result.Duration,
+		Cancelled:            wasCancelled,
+		ExitCode:             tuiRes.result.ExitCode,
 	}
 
 	// Wait for goroutines to complete before returning
@@ -437,20 +442,21 @@ func (r *CheckRunner) startActRunnerGoroutine(
 			return
 		}
 
-		extracted, grouped := r.extractAndProcessErrors(result)
+		extracted, grouped, groupedComprehensive := r.extractAndProcessErrors(result)
 		cancelled := errors.Is(ctx.Err(), context.Canceled)
 
 		program.Send(tui.DoneMsg{
 			Duration:  result.Duration,
 			ExitCode:  result.ExitCode,
-			Errors:    grouped,
+			Errors:    groupedComprehensive,
 			Cancelled: cancelled,
 		})
 
 		resultChan <- tuiResult{
-			result:    result,
-			extracted: extracted,
-			grouped:   grouped,
+			result:               result,
+			extracted:            extracted,
+			grouped:              grouped,
+			groupedComprehensive: groupedComprehensive,
 		}
 	}()
 }
@@ -490,20 +496,30 @@ func (r *CheckRunner) startLogProcessorGoroutine(
 	}()
 }
 
-// extractAndProcessErrors extracts errors from act output, applies severity, and groups by file.
-// Matching logic from cmd/check.go:266-278
-func (r *CheckRunner) extractAndProcessErrors(actResult *act.RunResult) ([]*internalerrors.ExtractedError, *internalerrors.GroupedErrors) {
+// extractAndProcessErrors extracts errors from act output, applies severity, and groups.
+// Returns extracted errors and both simple (by-file) and comprehensive (by-category) groupings.
+//
+// Uses the new registry-based extractor with tool-specific parsers for Go and TypeScript,
+// falling back to the legacy extractor for patterns not yet migrated.
+func (r *CheckRunner) extractAndProcessErrors(actResult *act.RunResult) ([]*internalerrors.ExtractedError, *internalerrors.GroupedErrors, *internalerrors.ComprehensiveErrorGroup) {
 	var combinedOutput strings.Builder
 	combinedOutput.Grow(len(actResult.Stdout) + len(actResult.Stderr))
 	combinedOutput.WriteString(actResult.Stdout)
 	combinedOutput.WriteString(actResult.Stderr)
 
-	extractor := internalerrors.NewExtractor()
-	extracted := extractor.ExtractWithContext(combinedOutput.String(), actparser.NewContextParser())
+	// Use the new registry-based extractor with tool-specific parsers
+	registry := tools.DefaultRegistry()
+	extractor := extract.NewExtractor(registry)
+	extracted := extractor.Extract(combinedOutput.String(), actparser.NewContextParser())
+
+	// Report any unknown patterns to Sentry for analysis
+	extract.ReportUnknownPatterns(extracted)
+
 	internalerrors.ApplySeverity(extracted)
 	grouped := internalerrors.GroupByFileWithBase(extracted, r.config.RepoRoot)
+	groupedComprehensive := internalerrors.GroupComprehensive(extracted, r.config.RepoRoot)
 
-	return extracted, grouped
+	return extracted, grouped, groupedComprehensive
 }
 
 // Persist saves the check run results to the database.

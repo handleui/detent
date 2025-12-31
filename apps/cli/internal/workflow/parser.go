@@ -120,21 +120,16 @@ func DiscoverWorkflows(dir string) ([]string, error) {
 
 // ExtractJobInfo extracts job information from a workflow for TUI display.
 // Returns a slice of JobInfo with ID and display name for each job.
-// Jobs are sorted alphabetically by ID for deterministic ordering.
+// Jobs are sorted topologically by needs dependencies, with alphabetical ordering
+// as a tiebreaker for jobs at the same dependency level.
 func ExtractJobInfo(wf *Workflow) []JobInfo {
 	if wf == nil || wf.Jobs == nil {
 		return nil
 	}
 
-	ids := make([]string, 0, len(wf.Jobs))
-	for id := range wf.Jobs {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-
-	jobs := make([]JobInfo, 0, len(wf.Jobs))
-	for _, id := range ids {
-		job := wf.Jobs[id]
+	// First pass: build job info map and parse needs
+	jobInfoMap := make(map[string]JobInfo)
+	for id, job := range wf.Jobs {
 		if job == nil {
 			continue
 		}
@@ -159,14 +154,95 @@ func ExtractJobInfo(wf *Workflow) []JobInfo {
 			}
 		}
 
-		jobs = append(jobs, JobInfo{
+		jobInfoMap[id] = JobInfo{
 			ID:    id,
 			Name:  name,
 			Needs: needs,
-		})
+		}
 	}
 
-	return jobs
+	// Topological sort using Kahn's algorithm
+	return topologicalSort(jobInfoMap)
+}
+
+// topologicalSort performs a topological sort of jobs based on their needs dependencies.
+// Jobs with no dependencies come first, followed by jobs that depend on them.
+// Within each level, jobs are sorted alphabetically for deterministic ordering.
+func topologicalSort(jobInfoMap map[string]JobInfo) []JobInfo {
+	if len(jobInfoMap) == 0 {
+		return nil
+	}
+
+	// Calculate in-degree (number of dependencies) for each job
+	inDegree := make(map[string]int)
+	for id := range jobInfoMap {
+		inDegree[id] = 0
+	}
+
+	// Build adjacency list and count in-degrees
+	// dependents[a] contains all jobs that depend on a
+	dependents := make(map[string][]string)
+	for id, job := range jobInfoMap {
+		for _, dep := range job.Needs {
+			// Only count dependencies that exist in the workflow
+			if _, exists := jobInfoMap[dep]; exists {
+				inDegree[id]++
+				dependents[dep] = append(dependents[dep], id)
+			}
+		}
+	}
+
+	// Start with jobs that have no dependencies
+	var queue []string
+	for id, degree := range inDegree {
+		if degree == 0 {
+			queue = append(queue, id)
+		}
+	}
+	// Sort for deterministic ordering
+	sort.Strings(queue)
+
+	var result []JobInfo
+	for len(queue) > 0 {
+		// Process all jobs at current level
+		current := queue[0]
+		queue = queue[1:]
+
+		result = append(result, jobInfoMap[current])
+
+		// Find all dependents and reduce their in-degree
+		var nextLevel []string
+		for _, dependent := range dependents[current] {
+			inDegree[dependent]--
+			if inDegree[dependent] == 0 {
+				nextLevel = append(nextLevel, dependent)
+			}
+		}
+
+		// Sort next level for deterministic ordering and add to queue
+		sort.Strings(nextLevel)
+		queue = append(queue, nextLevel...)
+	}
+
+	// Handle cycles or missing dependencies - add remaining jobs alphabetically
+	if len(result) < len(jobInfoMap) {
+		var remaining []string
+		addedSet := make(map[string]bool)
+		for _, job := range result {
+			addedSet[job.ID] = true
+		}
+		for id := range jobInfoMap {
+			if !addedSet[id] {
+				remaining = append(remaining, id)
+			}
+		}
+		sort.Strings(remaining)
+		for _, id := range remaining {
+			result = append(result, jobInfoMap[id])
+		}
+	}
+
+	return result
 }
 
 // ExtractJobInfoFromDir discovers and parses all workflows in a directory,

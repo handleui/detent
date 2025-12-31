@@ -18,6 +18,7 @@ func New() *Parser {
 // Only matches job-level signals:
 //   - 🚀 = job start
 //   - 🏁 = job finish (success or failure)
+//   - ⏭️ = job skipped (due to unmet needs or condition)
 //
 // Step-level signals (✅❌⭐) are ignored as they fire multiple times per job.
 func (p *Parser) ParseLine(line string) (*ci.JobEvent, bool) {
@@ -29,8 +30,9 @@ func (p *Parser) ParseLine(line string) (*ci.JobEvent, bool) {
 	// Only match job-level emojis
 	hasStart := strings.Contains(line, "🚀")
 	hasFinish := strings.Contains(line, "🏁")
+	hasSkip := strings.Contains(line, "⏭️")
 
-	if !hasStart && !hasFinish {
+	if !hasStart && !hasFinish && !hasSkip {
 		return nil, false
 	}
 
@@ -40,7 +42,7 @@ func (p *Parser) ParseLine(line string) (*ci.JobEvent, bool) {
 	for i := 1; i < len(line); i++ {
 		if line[i] == ']' {
 			rest := strings.TrimSpace(line[i+1:])
-			if rest != "" && (strings.HasPrefix(rest, "🚀") || strings.HasPrefix(rest, "🏁")) {
+			if rest != "" && (strings.HasPrefix(rest, "🚀") || strings.HasPrefix(rest, "🏁") || strings.HasPrefix(rest, "⏭️")) {
 				closeBracket = i
 				break
 			}
@@ -73,6 +75,8 @@ func (p *Parser) ParseLine(line string) (*ci.JobEvent, bool) {
 		// Detect success/failure from the message
 		// "🏁  Job succeeded" or "🏁  Job failed"
 		event.Success = strings.Contains(rest, "succeeded")
+	case strings.HasPrefix(rest, "⏭️"):
+		event.Action = "skip"
 	default:
 		return nil, false
 	}

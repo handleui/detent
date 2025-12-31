@@ -6,23 +6,32 @@ import (
 
 // Regex patterns for extracting errors from act output.
 // Patterns use lazy quantifiers (.+?) where possible to prevent ReDoS.
+//
+// NOTE: Go and TypeScript patterns are duplicated in tool-specific parsers:
+//   - Go patterns: internal/tools/golang/patterns.go
+//   - TypeScript patterns: internal/tools/typescript/patterns.go
+//
+// These duplicates are kept here for the legacy extractor until full migration is complete.
 var (
+	// goErrorPattern matches Go compiler and linter errors: file.go:123:45: message
+	goErrorPattern = regexp.MustCompile(`^([^\s:]+\.go):(\d+):(\d+):\s*(.+?)\s*$`)
+
+	// goTestFailPattern matches test failure markers: --- FAIL: TestName (0.00s)
+	goTestFailPattern = regexp.MustCompile(`^---\s+FAIL:\s+(\S+)`)
+
+	// goPanicPattern matches the start of a panic: panic: message
+	goPanicPattern = regexp.MustCompile(`^panic:\s*(.+)$`)
+
+	// goGoroutinePattern matches goroutine headers in stack traces
+	goGoroutinePattern = regexp.MustCompile(`^goroutine\s+\d+\s+\[`)
+
+	// tsErrorPattern matches TypeScript compiler errors: file.ts(line,col): error TSxxxx: message
+	// Uses [^\s(]+ for file path to prevent ReDoS (no spaces or parens in path)
+	tsErrorPattern = regexp.MustCompile(`^([^\s(]+\.tsx?)\((\d+),(\d+)\):\s*(?:error\s+(TS\d+):\s*)?(.+?)\s*$`)
+
 	// Generic error pattern: "Error: ..." or "error: ..."
 	// Uses lazy quantifier to prevent catastrophic backtracking
 	errorPattern = regexp.MustCompile(`(?i)error:\s*(.+?)$`)
-
-	// Go compiler/test error pattern: file.go:123:45: message
-	// Optimized: captures leading/trailing whitespace to eliminate post-processing TrimSpace
-	goErrorPattern = regexp.MustCompile(`^([^\s:]+\.go):(\d+):(\d+):\s*(.+?)\s*$`)
-
-	// TypeScript error pattern: file.ts(10,5): error TS1234: message
-	// Group 1: file path
-	// Group 2: line number
-	// Group 3: column number
-	// Group 4: TS error code (e.g., "TS2749") - optional
-	// Group 5: message
-	// Optimized: captures leading/trailing whitespace to eliminate post-processing TrimSpace
-	tsErrorPattern = regexp.MustCompile(`^([^\s:]+\.tsx?)\((\d+),(\d+)\):\s*(?:error\s+(TS\d+):\s*)?(.+?)\s*$`)
 
 	// Python traceback pattern: File "file.py", line 10
 	pythonErrorPattern = regexp.MustCompile(`^\s*File\s+"([^"]+)",\s+line\s+(\d+)`)
@@ -39,9 +48,6 @@ var (
 	// Group 1: error code (e.g., "E0123")
 	// Group 2: error message
 	rustErrorMessagePattern = regexp.MustCompile(`^error\[([A-Z0-9]+)\]:\s*(.+)$`)
-
-	// Go test failure pattern: --- FAIL: TestName
-	goTestFailPattern = regexp.MustCompile(`^---\s+FAIL:\s+(\S+)`)
 
 	// Node.js stack trace pattern: at Function (file.js:10:5)
 	// Uses lazy quantifier for the function part
@@ -68,7 +74,7 @@ var (
 	jobFailedPattern = regexp.MustCompile(`(?i)(?:job|workflow)\s+['"]?([^'"]+)['"]?\s+failed`)
 
 	// File path pattern: matches standalone file paths (for ESLint multi-line format)
-	filePathPattern = regexp.MustCompile(`^([^\s:]+\.(ts|tsx|js|jsx|go|py|rs|java|c|cpp|h|hpp))$`)
+	filePathPattern = regexp.MustCompile(`^([^\s:]+\.(ts|tsx|js|jsx|py|rs|java|c|cpp|h|hpp))$`)
 
 	// Docker error patterns: infrastructure failures
 	// Matches: "No such container: abc123", "Cannot connect to the Docker daemon", etc.
@@ -82,18 +88,6 @@ var (
 	// Python traceback line pattern (captures file/line info and code snippet)
 	pythonTraceLinePattern = regexp.MustCompile(`^\s+File\s+"[^"]+",\s+line\s+\d+`)
 
-	// Go panic pattern
-	goPanicPattern = regexp.MustCompile(`^panic:`)
-
-	// Go goroutine pattern (indicates start of stack frames)
-	goGoroutinePattern = regexp.MustCompile(`^goroutine \d+ \[`)
-
-	// Go stack frame pattern (function call in stack trace)
-	goStackFramePattern = regexp.MustCompile(`^\S+\([^)]*\)$|^\s+\S+:\d+`)
-
 	// Node.js "at" stack trace pattern (looser match for accumulation)
 	nodeAtPattern = regexp.MustCompile(`^\s+at\s+`)
-
-	// Test output continuation pattern (lines after test failure)
-	testOutputPattern = regexp.MustCompile(`^\s{4,}`) // Indented test output lines
 )

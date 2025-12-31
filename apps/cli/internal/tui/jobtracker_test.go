@@ -194,3 +194,70 @@ func TestJobTracker_PendingJobsMarkedFailed(t *testing.T) {
 		t.Errorf("C should be failed (never started), got %s", tracker.jobByName["C"].Status)
 	}
 }
+
+func TestJobTracker_SkippedJob(t *testing.T) {
+	jobs := []workflow.JobInfo{
+		{ID: "lint", Name: "Lint"},
+		{ID: "test", Name: "Test", Needs: []string{"lint"}},
+		{ID: "deploy", Name: "Deploy", Needs: []string{"test"}},
+	}
+
+	tracker := NewJobTracker(jobs)
+
+	// Lint starts and fails
+	tracker.ProcessEvent(&ci.JobEvent{JobName: "Lint", Action: "start"})
+	tracker.ProcessEvent(&ci.JobEvent{JobName: "Lint", Action: "finish", Success: false})
+
+	// Test is skipped because lint failed
+	changed := tracker.ProcessEvent(&ci.JobEvent{JobName: "Test", Action: "skip"})
+	if !changed {
+		t.Error("ProcessEvent should return true for skip")
+	}
+	if tracker.jobByName["Test"].Status != ci.JobSkipped {
+		t.Errorf("Test should be skipped, got %s", tracker.jobByName["Test"].Status)
+	}
+
+	// Deploy is also skipped
+	tracker.ProcessEvent(&ci.JobEvent{JobName: "Deploy", Action: "skip"})
+	if tracker.jobByName["Deploy"].Status != ci.JobSkipped {
+		t.Errorf("Deploy should be skipped, got %s", tracker.jobByName["Deploy"].Status)
+	}
+}
+
+func TestJobTracker_SkippedJobsNotMarkedFailed(t *testing.T) {
+	jobs := []workflow.JobInfo{
+		{ID: "a", Name: "A"},
+		{ID: "b", Name: "B"},
+		{ID: "c", Name: "C"},
+	}
+
+	tracker := NewJobTracker(jobs)
+
+	// A completes successfully
+	tracker.ProcessEvent(&ci.JobEvent{JobName: "A", Action: "start"})
+	tracker.ProcessEvent(&ci.JobEvent{JobName: "A", Action: "finish", Success: true})
+
+	// B is skipped (e.g., conditional job)
+	tracker.ProcessEvent(&ci.JobEvent{JobName: "B", Action: "skip"})
+
+	// C is running
+	tracker.ProcessEvent(&ci.JobEvent{JobName: "C", Action: "start"})
+
+	// Mark all complete with errors
+	tracker.MarkAllRunningComplete(true)
+
+	// A should stay success
+	if tracker.jobByName["A"].Status != ci.JobSuccess {
+		t.Errorf("A should be success, got %s", tracker.jobByName["A"].Status)
+	}
+
+	// B should stay skipped (not changed to failed)
+	if tracker.jobByName["B"].Status != ci.JobSkipped {
+		t.Errorf("B should remain skipped, got %s", tracker.jobByName["B"].Status)
+	}
+
+	// C was running, should be marked failed
+	if tracker.jobByName["C"].Status != ci.JobFailed {
+		t.Errorf("C should be failed, got %s", tracker.jobByName["C"].Status)
+	}
+}

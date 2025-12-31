@@ -30,6 +30,7 @@ const (
 	SourceDocker     = "docker"
 	SourceNodeJS     = "nodejs"
 	SourceMetadata   = "metadata"
+	SourceGeneric    = "generic" // Fallback for unrecognized error formats
 )
 
 // WorkflowContext captures GitHub Actions workflow execution context
@@ -64,6 +65,7 @@ type ExtractedError struct {
 	Category        ErrorCategory    `json:"category,omitempty"`         // lint, type-check, test, etc.
 	WorkflowContext *WorkflowContext `json:"workflow_context,omitempty"` // Job/step info
 	Source          string           `json:"source,omitempty"`           // "eslint", "typescript", "go", etc.
+	UnknownPattern  bool             `json:"unknown_pattern,omitempty"`  // True if matched by generic fallback parser (for Sentry reporting)
 }
 
 // GroupedErrors groups errors by file path for organized output

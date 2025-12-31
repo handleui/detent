@@ -26,7 +26,7 @@ type JobEventMsg struct {
 type DoneMsg struct {
 	Duration  time.Duration
 	ExitCode  int
-	Errors    *errors.GroupedErrors
+	Errors    *errors.ComprehensiveErrorGroup
 	Cancelled bool
 }
 
@@ -42,7 +42,7 @@ type CheckModel struct {
 	duration   time.Duration
 	exitCode   int
 	startTime  time.Time
-	errors     *errors.GroupedErrors
+	errors     *errors.ComprehensiveErrorGroup
 	Cancelled  bool
 	cancelFunc func()
 	quitting   bool
@@ -216,6 +216,10 @@ func (m *CheckModel) renderJob(job, firstRunning *TrackedJob) string {
 	case ci.JobFailed:
 		icon = ErrorStyle.Render("✗")
 		text = PrimaryStyle.Render(job.Name)
+
+	case ci.JobSkipped:
+		icon = SecondaryStyle.Render("⏭")
+		text = SecondaryStyle.Render(job.Name)
 	}
 
 	return fmt.Sprintf("%s %s", icon, text)

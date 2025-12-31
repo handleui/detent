@@ -487,7 +487,7 @@ func TestCheckRunner_extractAndProcessErrors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			extracted, grouped := runner.extractAndProcessErrors(tt.actResult)
+			extracted, grouped, groupedComprehensive := runner.extractAndProcessErrors(tt.actResult)
 
 			if len(extracted) != tt.wantExtractedLen {
 				t.Errorf("extracted length = %d, want %d", len(extracted), tt.wantExtractedLen)
@@ -497,9 +497,19 @@ func TestCheckRunner_extractAndProcessErrors(t *testing.T) {
 				t.Fatal("grouped should not be nil")
 			}
 
+			if groupedComprehensive == nil {
+				t.Fatal("groupedComprehensive should not be nil")
+			}
+
 			hasErrors := grouped.HasErrors()
 			if hasErrors != tt.wantErrorCount {
 				t.Errorf("has errors = %v, want %v", hasErrors, tt.wantErrorCount)
+			}
+
+			// Verify comprehensive grouping also has same error count
+			hasErrorsComp := groupedComprehensive.Stats.ErrorCount > 0
+			if hasErrorsComp != tt.wantErrorCount {
+				t.Errorf("comprehensive has errors = %v, want %v", hasErrorsComp, tt.wantErrorCount)
 			}
 		})
 	}

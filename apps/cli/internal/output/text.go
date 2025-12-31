@@ -23,17 +23,40 @@ const (
 // dividerWidth is the standard width for section dividers
 const dividerWidth = 60
 
+// categoryOrder defines the display order for error categories
+var categoryOrder = []errors.ErrorCategory{
+	errors.CategoryLint,
+	errors.CategoryTypeCheck,
+	errors.CategoryTest,
+	errors.CategoryCompile,
+	errors.CategoryRuntime,
+	errors.CategoryMetadata,
+	errors.CategoryUnknown,
+}
+
+// categoryNames maps error categories to human-readable section headers
+var categoryNames = map[errors.ErrorCategory]string{
+	errors.CategoryLint:      "Lint Issues",
+	errors.CategoryTypeCheck: "Type Errors",
+	errors.CategoryTest:      "Test Failures",
+	errors.CategoryCompile:   "Build Errors",
+	errors.CategoryRuntime:   "Runtime Errors",
+	errors.CategoryMetadata:  "Metadata Issues",
+	errors.CategoryUnknown:   "Other Issues",
+}
+
 // divider returns a horizontal line of the specified width
 func divider(width int) string {
 	return strings.Repeat("─", width)
 }
 
 // FormatText formats error groups as human-readable text output.
-// It displays errors grouped by file with colored severity indicators
+// It displays errors grouped by category (Lint, TypeCheck, Test, etc.)
+// with file grouping within each category, colored severity indicators,
 // and summary statistics at the end.
-func FormatText(w io.Writer, grouped *errors.GroupedErrors) {
-	// Count errors and warnings
-	errorCount, warningCount := countSeverities(grouped)
+func FormatText(w io.Writer, grouped *errors.ComprehensiveErrorGroup) {
+	errorCount := grouped.Stats.ErrorCount
+	warningCount := grouped.Stats.WarningCount
 
 	_, _ = fmt.Fprintln(w)
 
@@ -55,40 +78,88 @@ func FormatText(w io.Writer, grouped *errors.GroupedErrors) {
 		_, _ = fmt.Fprintf(w, "%s%s%s\n\n", colorGray, divider(dividerWidth), colorReset)
 	}
 
-	if len(grouped.ByFile) > 0 {
-		files := make([]string, 0, len(grouped.ByFile))
-		for f := range grouped.ByFile {
-			files = append(files, f)
+	// Display errors grouped by category
+	for _, category := range categoryOrder {
+		categoryErrors := grouped.ByCategory[category]
+		if len(categoryErrors) == 0 {
+			continue
 		}
-		sort.Strings(files)
 
-		for _, file := range files {
-			errs := grouped.ByFile[file]
-			fileErrors := countBySeverity(errs, "error")
-			fileWarnings := countBySeverity(errs, "warning")
+		// Print category header
+		categoryName := categoryNames[category]
+		categoryColor := getCategoryColor(category)
+		_, _ = fmt.Fprintf(w, "%s%s%s:%s\n\n", colorBold, categoryColor, categoryName, colorReset)
 
-			_, _ = fmt.Fprintf(w, "%s%s%s%s ", colorBold, colorCyan, file, colorReset)
-			_, _ = fmt.Fprintf(w, "%s(%d error%s, %d warning%s)%s\n",
-				colorGray, fileErrors, plural(fileErrors), fileWarnings, plural(fileWarnings), colorReset)
+		// Group errors within this category by file
+		byFile := make(map[string][]*errors.ExtractedError)
+		var noFile []*errors.ExtractedError
 
-			for _, err := range errs {
-				formatError(w, err)
+		for _, err := range categoryErrors {
+			if err.File != "" {
+				byFile[err.File] = append(byFile[err.File], err)
+			} else {
+				noFile = append(noFile, err)
 			}
+		}
+
+		// Display errors with file location
+		if len(byFile) > 0 {
+			files := make([]string, 0, len(byFile))
+			for f := range byFile {
+				files = append(files, f)
+			}
+			sort.Strings(files)
+
+			for _, file := range files {
+				errs := byFile[file]
+				fileErrors := countBySeverity(errs, "error")
+				fileWarnings := countBySeverity(errs, "warning")
+
+				_, _ = fmt.Fprintf(w, "%s%s%s%s ", colorBold, colorCyan, file, colorReset)
+				_, _ = fmt.Fprintf(w, "%s(%d error%s, %d warning%s)%s\n",
+					colorGray, fileErrors, plural(fileErrors), fileWarnings, plural(fileWarnings), colorReset)
+
+				for _, err := range errs {
+					formatError(w, err)
+				}
+				_, _ = fmt.Fprintln(w)
+			}
+		}
+
+		// Display errors without file location
+		for _, err := range noFile {
+			severity := getSeverityColor(err.Severity)
+			message := err.Message
+			if err.RuleID != "" {
+				message = fmt.Sprintf("%s [%s]", err.Message, err.RuleID)
+			}
+			_, _ = fmt.Fprintf(w, "  %s●%s %s\n", severity, colorReset, message)
+		}
+		if len(noFile) > 0 {
 			_, _ = fmt.Fprintln(w)
 		}
 	}
 
-	if len(grouped.NoFile) > 0 {
-		_, _ = fmt.Fprintf(w, "%s%sOther Issues:%s\n\n", colorBold, colorYellow, colorReset)
-		for _, err := range grouped.NoFile {
-			severity := getSeverityColor(err.Severity)
-			_, _ = fmt.Fprintf(w, "  %s●%s %s\n", severity, colorReset, err.Message)
-		}
-		_, _ = fmt.Fprintln(w)
-	}
-
 	if grouped.Total == 0 {
 		_, _ = fmt.Fprintf(w, "%s> %s✓ No problems found%s\n", colorBold, colorGreen, colorReset)
+	}
+}
+
+// getCategoryColor returns the appropriate color for a category
+func getCategoryColor(category errors.ErrorCategory) string {
+	switch category {
+	case errors.CategoryLint:
+		return colorYellow
+	case errors.CategoryTypeCheck:
+		return colorRed
+	case errors.CategoryTest:
+		return colorRed
+	case errors.CategoryCompile:
+		return colorRed
+	case errors.CategoryRuntime:
+		return colorRed
+	default:
+		return colorYellow
 	}
 }
 
@@ -150,17 +221,6 @@ func plural(count int) string {
 		return ""
 	}
 	return "s"
-}
-
-// countSeverities counts errors and warnings in grouped errors
-func countSeverities(grouped *errors.GroupedErrors) (errorCount, warningCount int) {
-	for _, errs := range grouped.ByFile {
-		errorCount += countBySeverity(errs, "error")
-		warningCount += countBySeverity(errs, "warning")
-	}
-	errorCount += countBySeverity(grouped.NoFile, "error")
-	warningCount += countBySeverity(grouped.NoFile, "warning")
-	return errorCount, warningCount
 }
 
 // countBySeverity counts errors by severity level in a list

@@ -11,7 +11,6 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/detent/cli/internal/cache"
-	internalerrors "github.com/detent/cli/internal/errors"
 	"github.com/detent/cli/internal/git"
 	"github.com/detent/cli/internal/output"
 	"github.com/detent/cli/internal/runner"
@@ -141,13 +140,11 @@ func displayOutput(cfg *runner.RunConfig, result *runner.RunResult) error {
 			return fmt.Errorf("formatting JSON output: %w", err)
 		}
 	case "json-detailed":
-		// Use already-extracted errors to create comprehensive grouping
-		groupedDetailed := internalerrors.GroupComprehensive(result.Extracted, cfg.RepoRoot)
-		if err := output.FormatJSONDetailed(os.Stdout, groupedDetailed); err != nil {
+		if err := output.FormatJSONDetailed(os.Stdout, result.GroupedComprehensive); err != nil {
 			return fmt.Errorf("formatting JSON detailed output: %w", err)
 		}
 	default:
-		output.FormatText(os.Stdout, result.Grouped)
+		output.FormatText(os.Stdout, result.GroupedComprehensive)
 	}
 
 	return nil

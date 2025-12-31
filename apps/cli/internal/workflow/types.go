@@ -28,6 +28,10 @@ type Job struct {
 	TimeoutMinutes  any               `yaml:"timeout-minutes,omitempty"`
 	Defaults        any               `yaml:"defaults,omitempty"`
 	Concurrency     any               `yaml:"concurrency,omitempty"`
+	Environment     any               `yaml:"environment,omitempty"` // Deployment environment (string or object with name/url)
+	Uses            string            `yaml:"uses,omitempty"`        // Reusable workflow reference
+	With            map[string]any    `yaml:"with,omitempty"`        // Inputs for reusable workflow
+	Secrets         any               `yaml:"secrets,omitempty"`     // Secrets for reusable workflow
 }
 
 // JobInfo contains extracted job information for TUI display

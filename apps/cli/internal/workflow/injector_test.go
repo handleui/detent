@@ -816,6 +816,130 @@ func timeoutEquals(a, b any) bool {
 	return aInt == bInt
 }
 
+// TestPrepareWorkflows_ValidationErrors tests that unsupported features are rejected
+func TestPrepareWorkflows_ValidationErrors(t *testing.T) {
+	tests := []struct {
+		name        string
+		workflow    string
+		wantErr     bool
+		errorSubstr string
+	}{
+		{
+			name: "unsupported runs-on macos",
+			workflow: `name: Test
+on: push
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - run: echo test
+`,
+			wantErr:     true,
+			errorSubstr: "macos-latest",
+		},
+		{
+			name: "unsupported runs-on windows",
+			workflow: `name: Test
+on: push
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - run: echo test
+`,
+			wantErr:     true,
+			errorSubstr: "windows-latest",
+		},
+		{
+			name: "reusable workflow",
+			workflow: `name: Test
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ./.github/workflows/reusable.yml
+`,
+			wantErr:     true,
+			errorSubstr: "reusable workflow",
+		},
+		{
+			name: "services warning allows execution",
+			workflow: `name: Test
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+    steps:
+      - run: echo test
+`,
+			wantErr: false, // Services is a warning, not an error - execution should continue
+		},
+		{
+			name: "valid workflow",
+			workflow: `name: Test
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo test
+`,
+			wantErr: false,
+		},
+		{
+			name: "multiple unsupported features",
+			workflow: `name: Test
+on: push
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - run: echo build
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: ./.github/workflows/test.yml
+`,
+			wantErr:     true,
+			errorSubstr: "unsupported features",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "test.yml"), []byte(tt.workflow), 0o600); err != nil {
+				t.Fatalf("Failed to create workflow: %v", err)
+			}
+
+			tmpDir, cleanup, err := PrepareWorkflows(dir, "")
+			if cleanup != nil {
+				defer cleanup()
+			}
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("PrepareWorkflows() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			if tt.wantErr && err != nil && tt.errorSubstr != "" {
+				if !strings.Contains(err.Error(), tt.errorSubstr) {
+					t.Errorf("Error should contain %q, got: %v", tt.errorSubstr, err)
+				}
+			}
+
+			if !tt.wantErr && tmpDir == "" {
+				t.Error("tmpDir should not be empty for valid workflow")
+			}
+		})
+	}
+}
+
 // TestPrepareWorkflows_Integration tests the full integration with real workflow files
 func TestPrepareWorkflows_Integration(t *testing.T) {
 	dir := t.TempDir()

@@ -16,7 +16,8 @@ func TestRunResult_HasErrors_NoErrors(t *testing.T) {
 		},
 	}
 	result := &RunResult{
-		Grouped: internalerrors.GroupByFile(warnings),
+		Grouped:              internalerrors.GroupByFile(warnings),
+		GroupedComprehensive: internalerrors.GroupComprehensive(warnings, ""),
 	}
 	if result.HasErrors() {
 		t.Error("expected no errors")
@@ -37,20 +38,22 @@ func TestRunResult_HasErrors_WithErrors(t *testing.T) {
 		},
 	}
 	result := &RunResult{
-		Grouped: internalerrors.GroupByFile(errors),
+		Grouped:              internalerrors.GroupByFile(errors),
+		GroupedComprehensive: internalerrors.GroupComprehensive(errors, ""),
 	}
 	if !result.HasErrors() {
 		t.Error("expected errors to be detected")
 	}
 }
 
-// Test HasErrors with nil Grouped
+// Test HasErrors with nil GroupedComprehensive
 func TestRunResult_HasErrors_NilGrouped(t *testing.T) {
 	result := &RunResult{
-		Grouped: nil,
+		Grouped:              nil,
+		GroupedComprehensive: nil,
 	}
 	if result.HasErrors() {
-		t.Error("expected no errors for nil Grouped")
+		t.Error("expected no errors for nil GroupedComprehensive")
 	}
 }
 
@@ -64,8 +67,9 @@ func TestRunResult_Success_NoErrors(t *testing.T) {
 		},
 	}
 	result := &RunResult{
-		ExitCode: 0,
-		Grouped:  internalerrors.GroupByFile(warnings),
+		ExitCode:             0,
+		Grouped:              internalerrors.GroupByFile(warnings),
+		GroupedComprehensive: internalerrors.GroupComprehensive(warnings, ""),
 	}
 	if !result.Success() {
 		t.Error("expected success")
@@ -82,8 +86,9 @@ func TestRunResult_Success_HasErrors(t *testing.T) {
 		},
 	}
 	result := &RunResult{
-		ExitCode: 0,
-		Grouped:  internalerrors.GroupByFile(errors),
+		ExitCode:             0,
+		Grouped:              internalerrors.GroupByFile(errors),
+		GroupedComprehensive: internalerrors.GroupComprehensive(errors, ""),
 	}
 	if result.Success() {
 		t.Error("expected failure due to errors")
@@ -100,8 +105,9 @@ func TestRunResult_Success_NonZeroExit(t *testing.T) {
 		},
 	}
 	result := &RunResult{
-		ExitCode: 1,
-		Grouped:  internalerrors.GroupByFile(warnings),
+		ExitCode:             1,
+		Grouped:              internalerrors.GroupByFile(warnings),
+		GroupedComprehensive: internalerrors.GroupComprehensive(warnings, ""),
 	}
 	if result.Success() {
 		t.Error("expected failure due to exit code")

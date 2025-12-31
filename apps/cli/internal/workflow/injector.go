@@ -133,6 +133,33 @@ func PrepareWorkflows(srcDir, specificWorkflow string) (tmpDir string, cleanup f
 		}
 	}
 
+	// First pass: parse and validate all workflows before creating temp directory
+	parsedWorkflows := make(map[string]*Workflow, len(workflows))
+	for _, wfPath := range workflows {
+		wf, parseErr := ParseWorkflowFile(wfPath)
+		if parseErr != nil {
+			return "", nil, fmt.Errorf("parsing %s: %w", wfPath, parseErr)
+		}
+		parsedWorkflows[wfPath] = wf
+	}
+
+	// Validate all workflows for unsupported features
+	var allWorkflows []*Workflow
+	for _, wf := range parsedWorkflows {
+		allWorkflows = append(allWorkflows, wf)
+	}
+	if validationErr := ValidateWorkflows(allWorkflows); validationErr != nil {
+		// Only block on actual errors, not warnings
+		if validationErrors, ok := validationErr.(ValidationErrors); ok {
+			if validationErrors.HasErrors() {
+				return "", nil, validationErrors.Errors()
+			}
+			// Warnings only - continue execution (warnings are logged elsewhere if needed)
+		} else {
+			return "", nil, validationErr
+		}
+	}
+
 	tmpDir, err = os.MkdirTemp("", "detent-workflows-*")
 	if err != nil {
 		return "", nil, fmt.Errorf("creating temp directory: %w", err)
@@ -149,15 +176,10 @@ func PrepareWorkflows(srcDir, specificWorkflow string) (tmpDir string, cleanup f
 	// This limits the number of concurrent workflow processing goroutines
 	g.SetLimit(10)
 
-	for _, wfPath := range workflows {
+	for wfPath, wf := range parsedWorkflows {
 		wfPath := wfPath // Capture loop variable for goroutine
+		wf := wf         // Capture loop variable for goroutine
 		g.Go(func() error {
-			// Parse workflow file
-			wf, parseErr := ParseWorkflowFile(wfPath)
-			if parseErr != nil {
-				return fmt.Errorf("parsing %s: %w", wfPath, parseErr)
-			}
-
 			// Apply modifications
 			InjectContinueOnError(wf)
 			InjectTimeouts(wf)

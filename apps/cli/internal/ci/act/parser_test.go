@@ -66,6 +66,26 @@ func TestParser_ParseLine(t *testing.T) {
 			wantOK: true,
 		},
 		{
+			name: "job skipped - simple",
+			line: "[CI/Deploy] ⏭️  Skipping job because a]",
+			wantEvent: &ci.JobEvent{
+				JobName: "Deploy",
+				Action:  "skip",
+				Success: false,
+			},
+			wantOK: true,
+		},
+		{
+			name: "job skipped - brackets in name",
+			line: "[CI/[CLI] Release] ⏭️  Skipping job because \"needs\" condition not met",
+			wantEvent: &ci.JobEvent{
+				JobName: "[CLI] Release",
+				Action:  "skip",
+				Success: false,
+			},
+			wantOK: true,
+		},
+		{
 			name:      "step success - ignored",
 			line:      "[CI/[CLI] Lint] ✅  Success",
 			wantEvent: nil,

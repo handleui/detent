@@ -93,16 +93,16 @@ func displayResults(run *persistence.RunRecord, cachedErrors []*persistence.Erro
 	// Convert cached errors to grouped format for display
 	extracted := convertToExtracted(cachedErrors)
 	grouped := errors.GroupByFile(extracted)
+	groupedComprehensive := errors.GroupComprehensive(extracted, repoRoot)
 
 	// Display based on output format
 	switch outputFormat {
 	case "json":
 		_ = output.FormatJSON(os.Stdout, grouped)
 	case "json-detailed":
-		groupedDetailed := errors.GroupComprehensive(extracted, repoRoot)
-		_ = output.FormatJSONDetailed(os.Stdout, groupedDetailed)
+		_ = output.FormatJSONDetailed(os.Stdout, groupedComprehensive)
 	default:
-		output.FormatText(os.Stdout, grouped)
+		output.FormatText(os.Stdout, groupedComprehensive)
 	}
 }
 

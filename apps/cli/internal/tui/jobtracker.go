@@ -71,6 +71,11 @@ func (t *JobTracker) ProcessEvent(event *ci.JobEvent) bool {
 			}
 			return true
 		}
+	case "skip":
+		if job.Status == ci.JobPending {
+			job.Status = ci.JobSkipped
+			return true
+		}
 	}
 
 	return false
@@ -80,6 +85,7 @@ func (t *JobTracker) ProcessEvent(event *ci.JobEvent) bool {
 // Called when the entire workflow finishes.
 // Jobs that never started (stayed pending) are also marked - this handles cases
 // where act fails early (e.g., Docker issues) before emitting start events.
+// Skipped jobs are left as skipped (not marked as failed).
 func (t *JobTracker) MarkAllRunningComplete(hasErrors bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -97,8 +103,8 @@ func (t *JobTracker) MarkAllRunningComplete(hasErrors bool) {
 			// Pending jobs that never started should be marked as failed
 			// (they didn't run, which is a failure condition)
 			job.Status = ci.JobFailed
-		case ci.JobSuccess, ci.JobFailed:
-			// Already complete, no change needed
+		case ci.JobSuccess, ci.JobFailed, ci.JobSkipped:
+			// Already complete or skipped, no change needed
 		}
 	}
 }
