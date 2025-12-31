@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/detent/cli/internal/tools"
 )
 
 // ValidationSeverity indicates how critical a validation issue is.
@@ -520,9 +522,25 @@ func validateStrategy(jobID string, strategy any) ValidationErrors {
 	return errors
 }
 
+// toolRegistry is the default tool parser registry used for tool detection.
+// Initialized lazily to avoid import cycles.
+var toolRegistry *tools.Registry
+
+func getToolRegistry() *tools.Registry {
+	if toolRegistry == nil {
+		toolRegistry = tools.DefaultRegistry()
+	}
+	return toolRegistry
+}
+
 // validateSteps checks steps for unsupported features.
 func validateSteps(jobID string, steps []*Step) ValidationErrors {
 	var errors ValidationErrors
+	registry := getToolRegistry()
+	supportedTools := registry.SupportedToolIDs()
+
+	// Track unsupported tools for Sentry reporting
+	var unsupportedToolsForSentry []tools.UnsupportedToolInfo
 
 	for _, step := range steps {
 		if step == nil {
@@ -551,6 +569,44 @@ func validateSteps(jobID string, steps []*Step) ValidationErrors {
 
 		// Check for OIDC token usage in step expressions
 		errors = append(errors, checkOIDCUsage(jobID, stepName, step)...)
+
+		// Check for unsupported tools in run commands (detect all tools, not just first)
+		if step.Run != "" {
+			detectedTools := registry.DetectAllAndCheckSupport(step.Run)
+
+			// Filter to only unsupported tools
+			var unsupportedTools []tools.DetectedTool
+			for _, t := range detectedTools {
+				if !t.Supported {
+					unsupportedTools = append(unsupportedTools, t)
+					// Track for Sentry reporting
+					unsupportedToolsForSentry = append(unsupportedToolsForSentry, tools.UnsupportedToolInfo{
+						ToolID:      t.ID,
+						DisplayName: t.DisplayName,
+						StepName:    stepName,
+						JobID:       jobID,
+					})
+				}
+			}
+
+			// Generate warning for unsupported tools
+			if len(unsupportedTools) > 0 {
+				warningMsg := tools.FormatUnsupportedToolsWarning(unsupportedTools, supportedTools)
+				errors = append(errors, &ValidationError{
+					Feature:     "tool-parsing",
+					Description: warningMsg,
+					Suggestion:  "Errors will be captured but file paths and line numbers may not be extracted accurately",
+					JobID:       jobID,
+					StepName:    stepName,
+					Severity:    SeverityWarning,
+				})
+			}
+		}
+	}
+
+	// Report unsupported tools to Sentry for monitoring (helps prioritize parser development)
+	if len(unsupportedToolsForSentry) > 0 {
+		tools.ReportUnsupportedTools(unsupportedToolsForSentry)
 	}
 
 	return errors

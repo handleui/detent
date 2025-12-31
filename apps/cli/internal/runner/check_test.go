@@ -469,7 +469,7 @@ func TestCheckRunner_extractAndProcessErrors(t *testing.T) {
 				ExitCode: 1,
 				Duration: 3 * time.Second,
 			},
-			wantExtractedLen: 2, // Go error + exit code metadata
+			wantExtractedLen: 1, // Go error (exit code message is filtered as noise)
 			wantErrorCount:   true,
 		},
 		{

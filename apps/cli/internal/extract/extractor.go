@@ -78,30 +78,27 @@ type errKey struct {
 }
 
 // Extractor uses the tool registry to extract errors from CI output.
-// It delegates to tool-specific parsers for precise pattern matching
-// and falls back to the legacy extractor for patterns not yet migrated.
+// It delegates to tool-specific parsers for precise pattern matching.
 type Extractor struct {
 	registry           *tools.Registry
-	legacyExtractor    *errors.Extractor
 	currentWorkflowCtx *errors.WorkflowContext
 }
 
-// NewExtractor creates a new registry-based extractor with legacy fallback.
+// NewExtractor creates a new registry-based extractor.
 func NewExtractor(registry *tools.Registry) *Extractor {
 	return &Extractor{
-		registry:        registry,
-		legacyExtractor: errors.NewExtractor(),
+		registry: registry,
 	}
 }
 
 // Extract parses CI output using the tool registry for error extraction.
-// It uses tool-specific parsers (Go, TypeScript, etc.) for precise pattern matching
-// and falls back to legacy extraction for patterns not yet migrated.
+// It uses tool-specific parsers (Go, TypeScript, Rust, ESLint, etc.) for precise pattern matching
+// and falls back to the generic parser for unrecognized patterns.
 //
 // The extraction strategy is:
 // 1. Try tool-specific parsers first (better multi-line handling, more precise)
-// 2. Fall back to legacy extractor for patterns not yet migrated (Python, Rust, ESLint, etc.)
-// 3. Deduplicate results from both extractors
+// 2. Fall back to generic parser for patterns not matched by dedicated parsers
+// 3. Deduplicate results to avoid duplicates
 func (e *Extractor) Extract(output string, ctxParser ci.ContextParser) []*errors.ExtractedError {
 	var extracted []*errors.ExtractedError
 	seen := make(map[errKey]struct{}, 256)
@@ -198,27 +195,6 @@ func (e *Extractor) Extract(output string, ctxParser ci.ContextParser) []*errors
 				seen[key] = struct{}{}
 				extracted = append(extracted, found)
 			}
-		}
-	}
-
-	// Use legacy extractor for patterns not yet migrated to tool parsers
-	// (Python, Rust, ESLint, Node.js, Docker, metadata patterns)
-	legacyErrors := e.legacyExtractor.ExtractWithContext(output, ctxParser)
-	for _, err := range legacyErrors {
-		// Skip Go and TypeScript errors - they're handled by tool parsers
-		if err.Source == errors.SourceGo || err.Source == errors.SourceGoTest || err.Source == errors.SourceTypeScript {
-			continue
-		}
-
-		if len(seen) >= maxDeduplicationSize {
-			extracted = append(extracted, err)
-			continue
-		}
-
-		key := errKey{err.Message, err.File, err.Line}
-		if _, exists := seen[key]; !exists {
-			seen[key] = struct{}{}
-			extracted = append(extracted, err)
 		}
 	}
 

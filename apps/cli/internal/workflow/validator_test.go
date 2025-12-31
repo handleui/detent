@@ -800,3 +800,187 @@ func TestValidateWorkflow_OIDCTokens(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateWorkflow_ToolDetection(t *testing.T) {
+	tests := []struct {
+		name           string
+		run            string
+		wantWarning    bool
+		wantToolInMsg  string
+	}{
+		{
+			name:          "supported go test",
+			run:           "go test ./...",
+			wantWarning:   false,
+		},
+		{
+			name:          "supported golangci-lint",
+			run:           "golangci-lint run ./...",
+			wantWarning:   false,
+		},
+		{
+			name:          "supported tsc",
+			run:           "tsc --noEmit",
+			wantWarning:   false,
+		},
+		{
+			name:          "supported eslint",
+			run:           "eslint src/",
+			wantWarning:   false,
+		},
+		{
+			name:          "supported cargo test",
+			run:           "cargo test",
+			wantWarning:   false,
+		},
+		{
+			name:          "unsupported pytest",
+			run:           "pytest tests/",
+			wantWarning:   true,
+			wantToolInMsg: "pytest",
+		},
+		{
+			name:          "unsupported jest",
+			run:           "npx jest --coverage",
+			wantWarning:   true,
+			wantToolInMsg: "jest",
+		},
+		{
+			name:          "unsupported biome",
+			run:           "biome check .",
+			wantWarning:   true,
+			wantToolInMsg: "biome",
+		},
+		{
+			name:          "no tool detected",
+			run:           "echo hello",
+			wantWarning:   false,
+		},
+		{
+			name:          "npm install (no tool)",
+			run:           "npm install",
+			wantWarning:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			workflow := &Workflow{
+				Jobs: map[string]*Job{
+					"test": {
+						RunsOn: "ubuntu-latest",
+						Steps:  []*Step{{Name: "Run", Run: tt.run}},
+					},
+				},
+			}
+
+			err := ValidateWorkflow(workflow)
+
+			if tt.wantWarning {
+				if err == nil {
+					t.Error("expected warning for unsupported tool, got nil")
+					return
+				}
+
+				validationErrs, ok := err.(ValidationErrors)
+				if !ok {
+					t.Errorf("expected ValidationErrors type, got %T", err)
+					return
+				}
+
+				// Should have warning(s), not blocking errors
+				if validationErrs.HasErrors() {
+					t.Errorf("expected only warnings, but HasErrors() returned true: %v", err)
+				}
+
+				warnings := validationErrs.Warnings()
+				if len(warnings) == 0 {
+					t.Error("expected at least one warning")
+					return
+				}
+
+				// Check the warning mentions the tool
+				if tt.wantToolInMsg != "" {
+					found := false
+					for _, w := range warnings {
+						if strings.Contains(w.Error(), tt.wantToolInMsg) {
+							found = true
+							break
+						}
+					}
+					if !found {
+						t.Errorf("warning should mention %q, got: %v", tt.wantToolInMsg, err)
+					}
+				}
+			} else {
+				// No warning expected - either no error or no warnings
+				if err != nil {
+					if validationErrs, ok := err.(ValidationErrors); ok {
+						// Check there are no tool-parsing warnings
+						for _, e := range validationErrs {
+							if e.Feature == "tool-parsing" {
+								t.Errorf("unexpected tool-parsing warning: %v", e)
+							}
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestValidateWorkflow_ToolDetectionShowsSupportedTools(t *testing.T) {
+	// Test with an unsupported tool (pytest) to verify supported tools are listed
+	workflow := &Workflow{
+		Jobs: map[string]*Job{
+			"test": {
+				RunsOn: "ubuntu-latest",
+				Steps:  []*Step{{Name: "Test", Run: "pytest tests/"}},
+			},
+		},
+	}
+
+	err := ValidateWorkflow(workflow)
+	if err == nil {
+		t.Error("expected warning for pytest, got nil")
+		return
+	}
+
+	errStr := err.Error()
+
+	// Should mention supported tools in the suggestion
+	if !strings.Contains(errStr, "go") || !strings.Contains(errStr, "typescript") {
+		t.Errorf("warning should list supported tools (go, typescript), got: %s", errStr)
+	}
+}
+
+func TestValidateWorkflow_MultipleToolsInStep(t *testing.T) {
+	// Test that multiple unsupported tools in a single step are detected
+	workflow := &Workflow{
+		Jobs: map[string]*Job{
+			"test": {
+				RunsOn: "ubuntu-latest",
+				Steps: []*Step{{
+					Name: "Lint and Test",
+					Run:  "pytest tests/ && jest --coverage",
+				}},
+			},
+		},
+	}
+
+	err := ValidateWorkflow(workflow)
+	if err == nil {
+		t.Error("expected warning for unsupported tools, got nil")
+		return
+	}
+
+	errStr := err.Error()
+
+	// Should mention both tools
+	if !strings.Contains(errStr, "pytest") {
+		t.Errorf("warning should mention pytest, got: %s", errStr)
+	}
+	if !strings.Contains(errStr, "jest") {
+		t.Errorf("warning should mention jest, got: %s", errStr)
+	}
+}
