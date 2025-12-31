@@ -10,21 +10,75 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/nightlyone/lockfile"
 )
 
 const (
-	// cleanupTimeout is the maximum time allowed for cleanup operations
-	cleanupTimeout = 30 * time.Second
+	// CleanupTimeout is the maximum time allowed for cleanup operations
+	CleanupTimeout = 30 * time.Second
 
 	// maxTmpDiskUsagePct is the maximum percentage of disk usage allowed in /tmp
 	// before we refuse to create a worktree (prevents filling the disk)
 	maxTmpDiskUsagePct = 80
+
+	// LockFileName is the name of the lockfile used to track worktree ownership.
+	// The lockfile library writes the owning process's PID to this file.
+	LockFileName = ".detent.lock"
+
+	// lockRetryAttempts is the number of times to retry acquiring a lock on temporary errors.
+	lockRetryAttempts = 3
+
+	// lockRetryDelay is the delay between lock acquisition attempts.
+	lockRetryDelay = 100 * time.Millisecond
 )
 
 // WorktreeInfo contains metadata about the created worktree
 type WorktreeInfo struct {
-	Path      string // Absolute path to worktree directory
-	CommitSHA string // Commit SHA that worktree is based on
+	Path      string            // Absolute path to worktree directory
+	CommitSHA string            // Commit SHA that worktree is based on
+	lock      lockfile.Lockfile // Lockfile for tracking ownership (unexported)
+}
+
+// tryLockWithRetry attempts to acquire a lock with retries on temporary errors.
+// Returns nil on success, lockfile.ErrBusy if lock is held by another process,
+// or another error if the lock cannot be acquired after retries.
+func tryLockWithRetry(lock lockfile.Lockfile) error {
+	var lastErr error
+	for range lockRetryAttempts {
+		lastErr = lock.TryLock()
+		if lastErr == nil {
+			return nil // Lock acquired
+		}
+
+		// Check if error is temporary (ErrBusy, ErrNotExist)
+		if te, ok := lastErr.(interface{ Temporary() bool }); ok && te.Temporary() {
+			// ErrBusy means another process holds the lock - don't retry
+			if lastErr == lockfile.ErrBusy {
+				return lastErr
+			}
+			// ErrNotExist is transient (file disappeared during creation) - retry
+			time.Sleep(lockRetryDelay)
+			continue
+		}
+
+		// Permanent error - don't retry
+		return lastErr
+	}
+	return lastErr
+}
+
+// unlockWithLogging releases a lock and logs any errors appropriately.
+// ErrRogueDeletion is logged as an error (potential security concern),
+// other errors are logged as warnings.
+func unlockWithLogging(lock lockfile.Lockfile, worktreeDir string) {
+	if unlockErr := lock.Unlock(); unlockErr != nil {
+		if unlockErr == lockfile.ErrRogueDeletion {
+			fmt.Fprintf(os.Stderr, "Error: worktree lock was unexpectedly deleted: %s\n", worktreeDir)
+		} else {
+			fmt.Fprintf(os.Stderr, "Warning: failed to unlock worktree at %s: %v\n", worktreeDir, unlockErr)
+		}
+	}
 }
 
 // PrepareWorktree creates a git worktree for isolated workflow execution.
@@ -47,15 +101,27 @@ func PrepareWorktree(ctx context.Context, repoRoot, worktreeDir string) (*Worktr
 	// Check if worktree already exists at the specified path and can be reused
 	if worktreeDir != "" {
 		if existingInfo, ok := isExistingWorktree(ctx, worktreeDir, commitSHA); ok {
-			// Worktree exists and is at the same commit - reuse it
-			cleanup := func() {
-				cleanupCtx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
-				defer cancel()
-				if rmErr := removeWorktree(cleanupCtx, repoRoot, worktreeDir); rmErr != nil {
-					fmt.Fprintf(os.Stderr, "Warning: failed to remove worktree at %s: %v\n", worktreeDir, rmErr)
+			// Worktree exists and is at the same commit - try to acquire lock for reuse
+			lock, lockErr := lockfile.New(filepath.Join(worktreeDir, LockFileName))
+			if lockErr == nil {
+				lockErr = tryLockWithRetry(lock)
+				if lockErr == nil {
+					// Lock acquired - we can reuse this worktree
+					existingInfo.lock = lock
+					cleanup := func() {
+						unlockWithLogging(existingInfo.lock, worktreeDir)
+						cleanupCtx, cancel := context.WithTimeout(context.Background(), CleanupTimeout)
+						defer cancel()
+						if rmErr := removeWorktree(cleanupCtx, repoRoot, worktreeDir); rmErr != nil {
+							fmt.Fprintf(os.Stderr, "Warning: failed to remove worktree at %s: %v\n", worktreeDir, rmErr)
+						}
+					}
+					return existingInfo, cleanup, nil
 				}
+				// ErrBusy means another process owns it - fall through to handle
+				// Other errors mean we should try recreating the worktree
 			}
-			return existingInfo, cleanup, nil
+			// Can't create lock or lock busy - fall through to handle
 		}
 		// Directory exists but is not a valid worktree (orphaned/broken) - clean it up
 		// SECURITY: Use Lstat to detect symlinks before removal
@@ -105,13 +171,30 @@ func PrepareWorktree(ctx context.Context, repoRoot, worktreeDir string) (*Worktr
 		return nil, nil, fmt.Errorf("creating worktree: %w", err)
 	}
 
+	// Acquire lockfile to track ownership of this worktree.
+	// The lockfile library writes our PID to the file, allowing orphan detection.
+	lock, lockErr := lockfile.New(filepath.Join(worktreeDir, LockFileName))
+	if lockErr != nil {
+		_ = safeRemoveDir(worktreeDir)
+		pruneWorktrees(ctx, repoRoot)
+		return nil, nil, fmt.Errorf("creating lockfile: %w", lockErr)
+	}
+	if lockErr = tryLockWithRetry(lock); lockErr != nil {
+		_ = safeRemoveDir(worktreeDir)
+		pruneWorktrees(ctx, repoRoot)
+		return nil, nil, fmt.Errorf("acquiring worktree lock: %w", lockErr)
+	}
+
 	worktreeInfo := &WorktreeInfo{
 		Path:      worktreeDir,
 		CommitSHA: commitSHA,
+		lock:      lock,
 	}
 
 	cleanup := func() {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+		// Release lock before removing worktree
+		unlockWithLogging(worktreeInfo.lock, worktreeDir)
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), CleanupTimeout)
 		defer cancel()
 		if err := removeWorktree(cleanupCtx, repoRoot, worktreeDir); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to remove worktree at %s: %v\n", worktreeDir, err)
@@ -272,7 +355,7 @@ func safeRemoveDir(path string) error {
 // Uses context for cancellation and wraps it with a cleanup timeout.
 func pruneWorktrees(ctx context.Context, repoRoot string) {
 	// Wrap context with cleanup timeout to ensure bounded execution
-	ctx, cancel := context.WithTimeout(ctx, cleanupTimeout)
+	ctx, cancel := context.WithTimeout(ctx, CleanupTimeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "git", "-c", "core.hooksPath=/dev/null", "-C", repoRoot, "worktree", "prune")
