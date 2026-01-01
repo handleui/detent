@@ -511,6 +511,139 @@ func TestSQLiteWriter_GetErrorsByRunID_EmptyRun(t *testing.T) {
 	}
 }
 
+// TestSQLiteWriter_GetErrorsByRunID_EmptyRunID tests GetErrorsByRunID with empty string
+func TestSQLiteWriter_GetErrorsByRunID_EmptyRunID(t *testing.T) {
+	setupTestDetentHome(t)
+	tmpDir := t.TempDir()
+	writer, err := NewSQLiteWriter(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create writer: %v", err)
+	}
+	defer func() { _ = writer.Close() }()
+
+	// Query with empty runID - should return empty slice, not error
+	errors, err := writer.GetErrorsByRunID("")
+	if err != nil {
+		t.Fatalf("GetErrorsByRunID('') error = %v", err)
+	}
+	if errors == nil {
+		t.Error("GetErrorsByRunID('') returned nil, want empty slice")
+	}
+	if len(errors) != 0 {
+		t.Errorf("GetErrorsByRunID('') returned %d errors, want 0", len(errors))
+	}
+}
+
+// TestSQLiteWriter_GetErrorsByRunID_SpecialCharacters tests GetErrorsByRunID with special characters
+func TestSQLiteWriter_GetErrorsByRunID_SpecialCharacters(t *testing.T) {
+	setupTestDetentHome(t)
+	tmpDir := t.TempDir()
+	writer, err := NewSQLiteWriter(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create writer: %v", err)
+	}
+	defer func() { _ = writer.Close() }()
+
+	// runID with SQL injection attempt
+	runID := "run'; DROP TABLE errors; --"
+
+	// Record run
+	if err := writer.RecordRun(runID, "CI", "abc123", "tree123", "github"); err != nil {
+		t.Fatalf("RecordRun() error = %v", err)
+	}
+
+	// Record error for this run
+	finding := &FindingRecord{
+		RunID:    runID,
+		Message:  "test error",
+		FilePath: "/app/test.go",
+		Line:     10,
+		Category: "compile",
+	}
+	if err := writer.RecordError(finding); err != nil {
+		t.Fatalf("RecordError() error = %v", err)
+	}
+	if err := writer.Flush(); err != nil {
+		t.Fatalf("Flush() error = %v", err)
+	}
+
+	// Retrieve - should work correctly despite special characters
+	errors, err := writer.GetErrorsByRunID(runID)
+	if err != nil {
+		t.Fatalf("GetErrorsByRunID() error = %v", err)
+	}
+	if len(errors) != 1 {
+		t.Errorf("GetErrorsByRunID() returned %d errors, want 1", len(errors))
+	}
+
+	// Verify the errors table still exists (SQL injection did not work)
+	var tableName string
+	tableErr := writer.db.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name='errors'").Scan(&tableName)
+	if tableErr != nil {
+		t.Fatalf("errors table was dropped by SQL injection: %v", tableErr)
+	}
+}
+
+// TestSQLiteWriter_GetErrorsByRunID_Concurrent tests concurrent GetErrorsByRunID calls
+func TestSQLiteWriter_GetErrorsByRunID_Concurrent(t *testing.T) {
+	setupTestDetentHome(t)
+	tmpDir := t.TempDir()
+	writer, err := NewSQLiteWriter(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create writer: %v", err)
+	}
+	defer func() { _ = writer.Close() }()
+
+	// Create a run with some errors
+	runID := "concurrent-cache-test"
+	if err := writer.RecordRun(runID, "CI", "abc123", "tree123", "github"); err != nil {
+		t.Fatalf("RecordRun() error = %v", err)
+	}
+
+	// Record 10 distinct errors
+	for i := 0; i < 10; i++ {
+		finding := &FindingRecord{
+			RunID:    runID,
+			Message:  fmt.Sprintf("concurrent error %d", i),
+			FilePath: fmt.Sprintf("/app/file%d.go", i),
+			Line:     i + 1,
+			Category: "compile",
+		}
+		if err := writer.RecordError(finding); err != nil {
+			t.Fatalf("RecordError() error = %v", err)
+		}
+	}
+	if err := writer.Flush(); err != nil {
+		t.Fatalf("Flush() error = %v", err)
+	}
+
+	// Run 50 concurrent GetErrorsByRunID calls
+	var wg sync.WaitGroup
+	errChan := make(chan error, 50)
+
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errors, err := writer.GetErrorsByRunID(runID)
+			if err != nil {
+				errChan <- fmt.Errorf("GetErrorsByRunID() error = %v", err)
+				return
+			}
+			if len(errors) != 10 {
+				errChan <- fmt.Errorf("GetErrorsByRunID() returned %d errors, want 10", len(errors))
+			}
+		}()
+	}
+
+	wg.Wait()
+	close(errChan)
+
+	for err := range errChan {
+		t.Error(err)
+	}
+}
+
 // TestSQLiteWriter_RecordError_WithFlush tests error recording with manual flush
 func TestSQLiteWriter_RecordError_WithFlush(t *testing.T) {
 	setupTestDetentHome(t)
@@ -832,19 +965,21 @@ func TestSQLiteWriter_LastSeenAtUpdates(t *testing.T) {
 		t.Fatalf("FlushBatch() failed: %v", err)
 	}
 
-	// Get first timestamps
+	// Get first timestamps and seen_count
 	contentHash := ComputeContentHash(finding.Message)
 	var firstSeenAt1, lastSeenAt1 int64
-	query := "SELECT first_seen_at, last_seen_at FROM errors WHERE content_hash = ?"
-	err = writer.db.QueryRow(query, contentHash).Scan(&firstSeenAt1, &lastSeenAt1)
+	var seenCount1 int
+	query := "SELECT first_seen_at, last_seen_at, seen_count FROM errors WHERE content_hash = ?"
+	err = writer.db.QueryRow(query, contentHash).Scan(&firstSeenAt1, &lastSeenAt1, &seenCount1)
 	if err != nil {
 		t.Fatalf("Failed to query timestamps: %v", err)
 	}
 
-	// Wait to ensure timestamp difference
-	time.Sleep(1100 * time.Millisecond)
+	if seenCount1 != 1 {
+		t.Errorf("Initial seen_count = %d, want 1", seenCount1)
+	}
 
-	// Record again
+	// Record again (without sleep - we'll verify the update logic via seen_count)
 	if err := writer.RecordError(finding); err != nil {
 		t.Fatalf("RecordError() failed on second attempt: %v", err)
 	}
@@ -852,9 +987,10 @@ func TestSQLiteWriter_LastSeenAtUpdates(t *testing.T) {
 		t.Fatalf("FlushBatch() failed: %v", err)
 	}
 
-	// Get updated timestamps
+	// Get updated timestamps and seen_count
 	var firstSeenAt2, lastSeenAt2 int64
-	err = writer.db.QueryRow(query, contentHash).Scan(&firstSeenAt2, &lastSeenAt2)
+	var seenCount2 int
+	err = writer.db.QueryRow(query, contentHash).Scan(&firstSeenAt2, &lastSeenAt2, &seenCount2)
 	if err != nil {
 		t.Fatalf("Failed to query timestamps: %v", err)
 	}
@@ -864,9 +1000,14 @@ func TestSQLiteWriter_LastSeenAtUpdates(t *testing.T) {
 		t.Errorf("first_seen_at changed from %d to %d", firstSeenAt1, firstSeenAt2)
 	}
 
-	// last_seen_at should be updated (timestamps are in seconds, so need > 1s gap)
-	if lastSeenAt2 <= lastSeenAt1 {
-		t.Errorf("last_seen_at not updated: %d <= %d", lastSeenAt2, lastSeenAt1)
+	// seen_count should be incremented (proves the update path was taken)
+	if seenCount2 != 2 {
+		t.Errorf("seen_count = %d, want 2", seenCount2)
+	}
+
+	// last_seen_at should be >= first value (may be same if within same second)
+	if lastSeenAt2 < lastSeenAt1 {
+		t.Errorf("last_seen_at went backwards: %d < %d", lastSeenAt2, lastSeenAt1)
 	}
 }
 

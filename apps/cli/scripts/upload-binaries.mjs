@@ -48,7 +48,11 @@ const uploadChecksums = async (version) => {
   try {
     const content = await readFile(checksumsPath);
     const blobPath = `releases/v${version}/checksums.txt`;
-    await put(blobPath, content, { access: "public", addRandomSuffix: false });
+    await put(blobPath, content, {
+      access: "public",
+      addRandomSuffix: false,
+      allowOverwrite: true,
+    });
     log("Uploaded checksums.txt");
   } catch {
     log("Warning: checksums.txt not found, skipping");
@@ -89,6 +93,7 @@ const updateManifest = async (version) => {
   await put(MANIFEST_PATH, JSON.stringify(manifest, null, 2), {
     access: "public",
     addRandomSuffix: false,
+    allowOverwrite: true,
   });
 
   log(
@@ -107,6 +112,7 @@ const uploadBinary = async (archive, version) => {
   const blob = await put(blobPath, content, {
     access: "public",
     addRandomSuffix: false,
+    allowOverwrite: true,
   });
 
   log(`  → ${blob.url}`);
@@ -141,6 +147,7 @@ const cleanupOldVersions = async (manifest) => {
   await put(MANIFEST_PATH, JSON.stringify(manifest, null, 2), {
     access: "public",
     addRandomSuffix: false,
+    allowOverwrite: true,
   });
 };
 
