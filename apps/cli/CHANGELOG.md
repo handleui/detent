@@ -1,5 +1,11 @@
 # @detent/cli
 
+## 0.8.0
+
+### Minor Changes
+
+- 6ed486d: Enable GitHub releases for version visibility alongside blob distribution
+
 ## 0.7.0
 
 ### Minor Changes

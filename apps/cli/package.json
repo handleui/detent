@@ -1,6 +1,6 @@
 {
   "name": "@detent/cli",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "private": true,
   "scripts": {
     "build": "sh -c 'VERSION=$(node -p \"require(\\\"./package.json\\\").version\") && go build -ldflags \"-X github.com/detent/cli/cmd.Version=$VERSION -X github.com/detent/cli/internal/sentry.DSN=$SENTRY_DSN\" -o dist/dt'"
