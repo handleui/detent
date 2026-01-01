@@ -3085,6 +3085,220 @@ func TestInjectAlwaysForDependentJobs(t *testing.T) {
 	}
 }
 
+// TestInjectAlwaysForDependentJobs_WithOverrides tests job override states
+func TestInjectAlwaysForDependentJobs_WithOverrides(t *testing.T) {
+	tests := []struct {
+		name         string
+		workflow     *Workflow
+		jobOverrides map[string]string
+		validate     func(*testing.T, *Workflow)
+	}{
+		{
+			name: "skip override injects if: false",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"lint": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "lint"}}},
+					"build": {
+						RunsOn: "ubuntu-latest",
+						Needs:  "lint",
+						Steps:  []*Step{{Run: "go build"}},
+					},
+				},
+			},
+			jobOverrides: map[string]string{"build": "skip"},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				if wf.Jobs["build"].If != "false" {
+					t.Errorf("build should have if: false, got %q", wf.Jobs["build"].If)
+				}
+				if wf.Jobs["lint"].If != "" {
+					t.Errorf("lint should not have if condition, got %q", wf.Jobs["lint"].If)
+				}
+			},
+		},
+		{
+			name: "run override forces sensitive job to run with always()",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"test": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "test"}}},
+					"release": {
+						RunsOn: "ubuntu-latest",
+						Needs:  "test",
+						Steps:  []*Step{{Uses: "changesets/action@v1"}},
+					},
+				},
+			},
+			jobOverrides: map[string]string{"release": "run"},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				if wf.Jobs["release"].If != "always()" {
+					t.Errorf("release should have if: always() due to run override, got %q", wf.Jobs["release"].If)
+				}
+			},
+		},
+		{
+			name: "run override on job without dependencies still injects always()",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"standalone": {
+						RunsOn: "ubuntu-latest",
+						Steps:  []*Step{{Run: "test"}},
+					},
+				},
+			},
+			jobOverrides: map[string]string{"standalone": "run"},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				if wf.Jobs["standalone"].If != "always()" {
+					t.Errorf("standalone should have if: always() due to run override, got %q", wf.Jobs["standalone"].If)
+				}
+			},
+		},
+		{
+			name: "run override preserves existing if condition",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"test": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "test"}}},
+					"deploy": {
+						RunsOn: "ubuntu-latest",
+						Needs:  "test",
+						If:     "github.ref == 'refs/heads/main'",
+						Steps:  []*Step{{Run: "npm publish"}},
+					},
+				},
+			},
+			jobOverrides: map[string]string{"deploy": "run"},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				expected := "always() && (github.ref == 'refs/heads/main')"
+				if wf.Jobs["deploy"].If != expected {
+					t.Errorf("deploy if = %q, want %q", wf.Jobs["deploy"].If, expected)
+				}
+			},
+		},
+		{
+			name: "skip override replaces existing if condition",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"test": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "test"}}},
+					"deploy": {
+						RunsOn: "ubuntu-latest",
+						Needs:  "test",
+						If:     "github.ref == 'refs/heads/main'",
+						Steps:  []*Step{{Run: "deploy"}},
+					},
+				},
+			},
+			jobOverrides: map[string]string{"deploy": "skip"},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				if wf.Jobs["deploy"].If != "false" {
+					t.Errorf("deploy should have if: false (skip override), got %q", wf.Jobs["deploy"].If)
+				}
+			},
+		},
+		{
+			name: "mixed overrides",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"lint":  {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "lint"}}},
+					"test":  {RunsOn: "ubuntu-latest", Needs: "lint", Steps: []*Step{{Run: "test"}}},
+					"build": {RunsOn: "ubuntu-latest", Needs: "test", Steps: []*Step{{Run: "build"}}},
+					"deploy": {
+						RunsOn: "ubuntu-latest",
+						Needs:  "build",
+						Steps:  []*Step{{Run: "npm publish"}},
+					},
+				},
+			},
+			jobOverrides: map[string]string{
+				"test":   "skip",
+				"deploy": "run",
+			},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				if wf.Jobs["test"].If != "false" {
+					t.Errorf("test should have if: false (skip), got %q", wf.Jobs["test"].If)
+				}
+				if wf.Jobs["build"].If != "always()" {
+					t.Errorf("build should have if: always() (auto with deps), got %q", wf.Jobs["build"].If)
+				}
+				if wf.Jobs["deploy"].If != "always()" {
+					t.Errorf("deploy should have if: always() (run override), got %q", wf.Jobs["deploy"].If)
+				}
+			},
+		},
+		{
+			name: "auto behavior (nil overrides) skips sensitive job",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"test": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "test"}}},
+					"release": {
+						RunsOn: "ubuntu-latest",
+						Needs:  "test",
+						Steps:  []*Step{{Uses: "changesets/action@v1"}},
+					},
+				},
+			},
+			jobOverrides: nil,
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				if wf.Jobs["release"].If != "" {
+					t.Errorf("release should NOT get always() with auto behavior, got %q", wf.Jobs["release"].If)
+				}
+			},
+		},
+		{
+			name: "override on reusable workflow is ignored",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"build": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "build"}}},
+					"reusable": {
+						Uses:  "./.github/workflows/reusable.yml",
+						Needs: "build",
+					},
+				},
+			},
+			jobOverrides: map[string]string{"reusable": "run"},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				// Reusable workflows don't support if: at job level
+				if wf.Jobs["reusable"].If != "" {
+					t.Errorf("reusable workflow should not get if condition, got %q", wf.Jobs["reusable"].If)
+				}
+			},
+		},
+		{
+			name: "override on unknown job is ignored",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"lint": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "lint"}}},
+					"build": {
+						RunsOn: "ubuntu-latest",
+						Needs:  "lint",
+						Steps:  []*Step{{Run: "go build"}},
+					},
+				},
+			},
+			jobOverrides: map[string]string{"unknown": "skip"},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				// build should still get always() (auto behavior)
+				if wf.Jobs["build"].If != "always()" {
+					t.Errorf("build should have if: always(), got %q", wf.Jobs["build"].If)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			InjectAlwaysForDependentJobs(tt.workflow, tt.jobOverrides)
+			tt.validate(t, tt.workflow)
+		})
+	}
+}
+
 // TestSanitizeForShellEcho_Unicode verifies sanitizeForShellEcho handles Unicode correctly
 func TestSanitizeForShellEcho_Unicode(t *testing.T) {
 	tests := []struct {

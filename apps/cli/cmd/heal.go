@@ -163,6 +163,7 @@ func runHeal(cmd *cobra.Command, args []string) error {
 
 	// Set up tool context with command approval
 	repoSHA := repoCtx.FirstCommitSHA
+	remoteURL, _ := git.GetRemoteURL(repoCtx.Path)
 	toolCtx := &tools.Context{
 		WorktreePath:   worktreePath,
 		RepoRoot:       repoCtx.Path,
@@ -173,7 +174,7 @@ func runHeal(cmd *cobra.Command, args []string) error {
 		},
 		CommandApprover:  promptForCommand,
 		CommandPersister: func(cmd string) error {
-			return cfg.AddAllowedCommand(repoSHA, cmd)
+			return cfg.AddAllowedCommand(repoSHA, remoteURL, cmd)
 		},
 	}
 

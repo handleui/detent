@@ -157,8 +157,8 @@ func TestMatchesCommand(t *testing.T) {
 	repoSHA := "test-repo-sha"
 	cfg := &Config{
 		global: &GlobalConfig{
-			AllowedCommands: map[string][]string{
-				repoSHA: {"bun run typecheck", "pnpm exec playwright *", "make deploy"},
+			AllowedCommands: map[string]RepoCommands{
+				repoSHA: {Commands: []string{"bun run typecheck", "pnpm exec playwright *", "make deploy"}},
 			},
 		},
 	}
@@ -554,7 +554,7 @@ func TestAllowedCommands(t *testing.T) {
 		t.Setenv(DetentHomeEnv, tmpDir)
 
 		cfg := createTestConfig(nil)
-		if err := cfg.AddAllowedCommand(repoSHA, "bun test"); err != nil {
+		if err := cfg.AddAllowedCommand(repoSHA, "", "bun test"); err != nil {
 			t.Fatalf("AddAllowedCommand() error = %v", err)
 		}
 
@@ -570,8 +570,8 @@ func TestAllowedCommands(t *testing.T) {
 
 		cfg := &Config{
 			global: &GlobalConfig{
-				AllowedCommands: map[string][]string{
-					repoSHA: {"bun test", "npm run lint"},
+				AllowedCommands: map[string]RepoCommands{
+					repoSHA: {Commands: []string{"bun test", "npm run lint"}},
 				},
 			},
 		}
@@ -599,8 +599,8 @@ func TestAllowedCommands(t *testing.T) {
 		t.Setenv(DetentHomeEnv, tmpDir)
 
 		cfg := createTestConfig(nil)
-		_ = cfg.AddAllowedCommand(repoSHA, "bun test")
-		_ = cfg.AddAllowedCommand(repoSHA, "bun test")
+		_ = cfg.AddAllowedCommand(repoSHA, "", "bun test")
+		_ = cfg.AddAllowedCommand(repoSHA, "", "bun test")
 
 		commands := cfg.GetAllowedCommands(repoSHA)
 		if len(commands) != 1 {
@@ -614,8 +614,8 @@ func TestAllowedCommands(t *testing.T) {
 
 		cfg := &Config{
 			global: &GlobalConfig{
-				AllowedCommands: map[string][]string{
-					repoSHA: {"bun test"},
+				AllowedCommands: map[string]RepoCommands{
+					repoSHA: {Commands: []string{"bun test"}},
 				},
 			},
 		}
@@ -656,9 +656,9 @@ func TestAllowedCommands(t *testing.T) {
 		t.Setenv(DetentHomeEnv, tmpDir)
 
 		cfg := createTestConfig(nil)
-		_ = cfg.AddAllowedCommand(repoSHA, "bun test")
-		_ = cfg.AddAllowedCommand(repoSHA, "npm run lint")
-		_ = cfg.AddAllowedCommand(repoSHA, "go build ./...")
+		_ = cfg.AddAllowedCommand(repoSHA, "", "bun test")
+		_ = cfg.AddAllowedCommand(repoSHA, "", "npm run lint")
+		_ = cfg.AddAllowedCommand(repoSHA, "", "go build ./...")
 
 		commands := cfg.GetAllowedCommands(repoSHA)
 		if len(commands) != 3 {
@@ -671,8 +671,8 @@ func TestAllowedCommands(t *testing.T) {
 		t.Setenv(DetentHomeEnv, tmpDir)
 
 		cfg := createTestConfig(nil)
-		_ = cfg.AddAllowedCommand("repo1", "cmd1")
-		_ = cfg.AddAllowedCommand("repo2", "cmd2")
+		_ = cfg.AddAllowedCommand("repo1", "", "cmd1")
+		_ = cfg.AddAllowedCommand("repo2", "", "cmd2")
 
 		commands1 := cfg.GetAllowedCommands("repo1")
 		commands2 := cfg.GetAllowedCommands("repo2")
@@ -792,8 +792,8 @@ func TestMatchesCommand_EdgeCases(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := &Config{
 				global: &GlobalConfig{
-					AllowedCommands: map[string][]string{
-						repoSHA: tt.patterns,
+					AllowedCommands: map[string]RepoCommands{
+						repoSHA: {Commands: tt.patterns},
 					},
 				},
 			}
@@ -823,186 +823,218 @@ func TestMatchesCommand_NilSafety(t *testing.T) {
 	})
 }
 
-// TestAllowedSensitiveJobs tests the allowed sensitive jobs management
-func TestAllowedSensitiveJobs(t *testing.T) {
+// TestJobOverrides tests the job override management
+func TestJobOverrides(t *testing.T) {
 	repoSHA := "test-repo-sha"
 
-	t.Run("add job", func(t *testing.T) {
+	t.Run("set job override to run", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		t.Setenv(DetentHomeEnv, tmpDir)
 
 		cfg := createTestConfig(nil)
-		if err := cfg.AddAllowedSensitiveJob(repoSHA, "deploy"); err != nil {
-			t.Fatalf("AddAllowedSensitiveJob() error = %v", err)
+		if err := cfg.SetJobOverride(repoSHA, "", "deploy", JobStateRun); err != nil {
+			t.Fatalf("SetJobOverride() error = %v", err)
 		}
 
-		jobs := cfg.GetAllowedSensitiveJobs(repoSHA)
-		if len(jobs) != 1 || jobs[0] != "deploy" {
-			t.Errorf("GetAllowedSensitiveJobs() = %v, want [deploy]", jobs)
+		state := cfg.GetJobState(repoSHA, "deploy")
+		if state != JobStateRun {
+			t.Errorf("GetJobState() = %q, want %q", state, JobStateRun)
 		}
 	})
 
-	t.Run("add duplicate job is idempotent", func(t *testing.T) {
+	t.Run("set job override to skip", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		t.Setenv(DetentHomeEnv, tmpDir)
 
 		cfg := createTestConfig(nil)
-		_ = cfg.AddAllowedSensitiveJob(repoSHA, "deploy")
-		_ = cfg.AddAllowedSensitiveJob(repoSHA, "deploy")
+		if err := cfg.SetJobOverride(repoSHA, "", "release", JobStateSkip); err != nil {
+			t.Fatalf("SetJobOverride() error = %v", err)
+		}
 
-		jobs := cfg.GetAllowedSensitiveJobs(repoSHA)
-		if len(jobs) != 1 {
-			t.Errorf("GetAllowedSensitiveJobs() len = %d, want 1 (no duplicates)", len(jobs))
+		state := cfg.GetJobState(repoSHA, "release")
+		if state != JobStateSkip {
+			t.Errorf("GetJobState() = %q, want %q", state, JobStateSkip)
 		}
 	})
 
-	t.Run("remove job", func(t *testing.T) {
+	t.Run("invalid state returns error", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		t.Setenv(DetentHomeEnv, tmpDir)
+
+		cfg := createTestConfig(nil)
+		err := cfg.SetJobOverride(repoSHA, "", "job", "invalid")
+		if err == nil {
+			t.Error("Expected error for invalid state")
+		}
+	})
+
+	t.Run("empty job ID returns error", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		t.Setenv(DetentHomeEnv, tmpDir)
+
+		cfg := createTestConfig(nil)
+		err := cfg.SetJobOverride(repoSHA, "", "", JobStateRun)
+		if err == nil {
+			t.Error("Expected error for empty job ID")
+		}
+	})
+
+	t.Run("clear job override", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		t.Setenv(DetentHomeEnv, tmpDir)
 
 		cfg := &Config{
 			global: &GlobalConfig{
-				AllowedSensitiveJobs: map[string][]string{
-					repoSHA: {"deploy", "release"},
+				JobOverrides: map[string]RepoJobOverrides{
+					repoSHA: {Jobs: map[string]string{"deploy": JobStateRun, "release": JobStateSkip}},
 				},
 			},
 		}
 
-		if err := cfg.RemoveAllowedSensitiveJob(repoSHA, "deploy"); err != nil {
-			t.Fatalf("RemoveAllowedSensitiveJob() error = %v", err)
+		if err := cfg.ClearJobOverride(repoSHA, "deploy"); err != nil {
+			t.Fatalf("ClearJobOverride() error = %v", err)
 		}
 
-		jobs := cfg.GetAllowedSensitiveJobs(repoSHA)
-		if len(jobs) != 1 || jobs[0] != "release" {
-			t.Errorf("GetAllowedSensitiveJobs() = %v, want [release]", jobs)
-		}
-	})
-
-	t.Run("check if job is allowed", func(t *testing.T) {
-		cfg := &Config{
-			global: &GlobalConfig{
-				AllowedSensitiveJobs: map[string][]string{
-					repoSHA: {"deploy", "release"},
-				},
-			},
+		state := cfg.GetJobState(repoSHA, "deploy")
+		if state != "" {
+			t.Errorf("GetJobState() = %q, want empty (auto)", state)
 		}
 
-		if !cfg.IsSensitiveJobAllowed(repoSHA, "deploy") {
-			t.Error("Expected 'deploy' to be allowed")
-		}
-		if !cfg.IsSensitiveJobAllowed(repoSHA, "release") {
-			t.Error("Expected 'release' to be allowed")
-		}
-		if cfg.IsSensitiveJobAllowed(repoSHA, "unknown") {
-			t.Error("Expected 'unknown' to not be allowed")
-		}
-	})
-
-	t.Run("check job with empty config", func(t *testing.T) {
-		cfg := createTestConfig(nil)
-
-		if cfg.IsSensitiveJobAllowed(repoSHA, "deploy") {
-			t.Error("Expected 'deploy' to not be allowed with empty config")
+		// Other override should still be there
+		state = cfg.GetJobState(repoSHA, "release")
+		if state != JobStateSkip {
+			t.Errorf("GetJobState() = %q, want %q", state, JobStateSkip)
 		}
 	})
 
 	t.Run("get empty for unknown repo", func(t *testing.T) {
 		cfg := createTestConfig(nil)
-		jobs := cfg.GetAllowedSensitiveJobs("unknown-sha")
-		if len(jobs) != 0 {
-			t.Errorf("GetAllowedSensitiveJobs() = %v, want empty", jobs)
+		overrides := cfg.GetJobOverrides("unknown-sha")
+		if overrides != nil {
+			t.Errorf("GetJobOverrides() = %v, want nil", overrides)
 		}
 	})
 
-	t.Run("multiple repos with different jobs", func(t *testing.T) {
+	t.Run("get empty state for unknown job", func(t *testing.T) {
+		cfg := &Config{
+			global: &GlobalConfig{
+				JobOverrides: map[string]RepoJobOverrides{
+					repoSHA: {Jobs: map[string]string{"deploy": JobStateRun}},
+				},
+			},
+		}
+
+		state := cfg.GetJobState(repoSHA, "unknown")
+		if state != "" {
+			t.Errorf("GetJobState() = %q, want empty", state)
+		}
+	})
+
+	t.Run("multiple repos with different overrides", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		t.Setenv(DetentHomeEnv, tmpDir)
 
 		cfg := createTestConfig(nil)
-		_ = cfg.AddAllowedSensitiveJob("repo1", "deploy-prod")
-		_ = cfg.AddAllowedSensitiveJob("repo2", "deploy-staging")
+		_ = cfg.SetJobOverride("repo1", "", "deploy", JobStateRun)
+		_ = cfg.SetJobOverride("repo2", "", "deploy", JobStateSkip)
 
-		jobs1 := cfg.GetAllowedSensitiveJobs("repo1")
-		jobs2 := cfg.GetAllowedSensitiveJobs("repo2")
+		state1 := cfg.GetJobState("repo1", "deploy")
+		state2 := cfg.GetJobState("repo2", "deploy")
 
-		if len(jobs1) != 1 || jobs1[0] != "deploy-prod" {
-			t.Errorf("GetAllowedSensitiveJobs('repo1') = %v, want [deploy-prod]", jobs1)
+		if state1 != JobStateRun {
+			t.Errorf("GetJobState('repo1', 'deploy') = %q, want %q", state1, JobStateRun)
 		}
-		if len(jobs2) != 1 || jobs2[0] != "deploy-staging" {
-			t.Errorf("GetAllowedSensitiveJobs('repo2') = %v, want [deploy-staging]", jobs2)
-		}
-
-		if cfg.IsSensitiveJobAllowed("repo1", "deploy-staging") {
-			t.Error("Expected 'deploy-staging' to not be allowed for repo1")
-		}
-		if cfg.IsSensitiveJobAllowed("repo2", "deploy-prod") {
-			t.Error("Expected 'deploy-prod' to not be allowed for repo2")
+		if state2 != JobStateSkip {
+			t.Errorf("GetJobState('repo2', 'deploy') = %q, want %q", state2, JobStateSkip)
 		}
 	})
 
-	t.Run("add multiple jobs to same repo", func(t *testing.T) {
+	t.Run("overwrite existing override", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		t.Setenv(DetentHomeEnv, tmpDir)
 
 		cfg := createTestConfig(nil)
-		_ = cfg.AddAllowedSensitiveJob(repoSHA, "deploy")
-		_ = cfg.AddAllowedSensitiveJob(repoSHA, "release")
-		_ = cfg.AddAllowedSensitiveJob(repoSHA, "publish")
+		_ = cfg.SetJobOverride(repoSHA, "", "deploy", JobStateRun)
+		_ = cfg.SetJobOverride(repoSHA, "", "deploy", JobStateSkip)
 
-		jobs := cfg.GetAllowedSensitiveJobs(repoSHA)
-		if len(jobs) != 3 {
-			t.Errorf("GetAllowedSensitiveJobs() len = %d, want 3", len(jobs))
+		state := cfg.GetJobState(repoSHA, "deploy")
+		if state != JobStateSkip {
+			t.Errorf("GetJobState() = %q, want %q", state, JobStateSkip)
 		}
 	})
 
-	t.Run("remove nonexistent job", func(t *testing.T) {
+	t.Run("set job overrides batch", func(t *testing.T) {
+		cfg := createTestConfig(nil)
+		overrides := map[string]string{
+			"deploy":  JobStateRun,
+			"release": JobStateSkip,
+		}
+		cfg.SetJobOverrides(repoSHA, "", overrides)
+
+		result := cfg.GetJobOverrides(repoSHA)
+		if len(result) != 2 {
+			t.Errorf("GetJobOverrides() len = %d, want 2", len(result))
+		}
+		if result["deploy"] != JobStateRun {
+			t.Errorf("GetJobOverrides()['deploy'] = %q, want %q", result["deploy"], JobStateRun)
+		}
+		if result["release"] != JobStateSkip {
+			t.Errorf("GetJobOverrides()['release'] = %q, want %q", result["release"], JobStateSkip)
+		}
+	})
+
+	t.Run("set empty overrides clears repo", func(t *testing.T) {
+		cfg := &Config{
+			global: &GlobalConfig{
+				JobOverrides: map[string]RepoJobOverrides{
+					repoSHA: {Jobs: map[string]string{"deploy": JobStateRun}},
+				},
+			},
+		}
+		cfg.SetJobOverrides(repoSHA, "", nil)
+
+		result := cfg.GetJobOverrides(repoSHA)
+		if result != nil {
+			t.Errorf("GetJobOverrides() = %v, want nil", result)
+		}
+	})
+
+	t.Run("clear from nil config", func(t *testing.T) {
+		cfg := &Config{global: nil}
+
+		err := cfg.ClearJobOverride(repoSHA, "any")
+		if err != nil {
+			t.Fatalf("ClearJobOverride() error = %v", err)
+		}
+	})
+
+	t.Run("clear from nil JobOverrides map", func(t *testing.T) {
+		cfg := &Config{global: &GlobalConfig{}}
+
+		err := cfg.ClearJobOverride(repoSHA, "any")
+		if err != nil {
+			t.Fatalf("ClearJobOverride() error = %v", err)
+		}
+	})
+
+	t.Run("clear last override cleans up empty map", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		t.Setenv(DetentHomeEnv, tmpDir)
 
 		cfg := &Config{
 			global: &GlobalConfig{
-				AllowedSensitiveJobs: map[string][]string{
-					repoSHA: {"deploy"},
+				JobOverrides: map[string]RepoJobOverrides{
+					repoSHA: {Jobs: map[string]string{"deploy": JobStateRun}},
 				},
 			},
 		}
 
-		if err := cfg.RemoveAllowedSensitiveJob(repoSHA, "nonexistent"); err != nil {
-			t.Fatalf("RemoveAllowedSensitiveJob() error = %v", err)
+		if err := cfg.ClearJobOverride(repoSHA, "deploy"); err != nil {
+			t.Fatalf("ClearJobOverride() error = %v", err)
 		}
 
-		jobs := cfg.GetAllowedSensitiveJobs(repoSHA)
-		if len(jobs) != 1 || jobs[0] != "deploy" {
-			t.Errorf("GetAllowedSensitiveJobs() = %v, want [deploy]", jobs)
-		}
-	})
-
-	t.Run("remove from nil config", func(t *testing.T) {
-		cfg := &Config{global: nil}
-
-		err := cfg.RemoveAllowedSensitiveJob(repoSHA, "any")
-		if err != nil {
-			t.Fatalf("RemoveAllowedSensitiveJob() error = %v", err)
-		}
-	})
-
-	t.Run("remove from nil AllowedSensitiveJobs map", func(t *testing.T) {
-		cfg := &Config{global: &GlobalConfig{}}
-
-		err := cfg.RemoveAllowedSensitiveJob(repoSHA, "any")
-		if err != nil {
-			t.Fatalf("RemoveAllowedSensitiveJob() error = %v", err)
-		}
-	})
-
-	t.Run("add empty job ID returns error", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		t.Setenv(DetentHomeEnv, tmpDir)
-
-		cfg := createTestConfig(nil)
-		err := cfg.AddAllowedSensitiveJob(repoSHA, "")
-		if err == nil {
-			t.Error("Expected error when adding empty job ID")
+		if _, exists := cfg.global.JobOverrides[repoSHA]; exists {
+			t.Error("Expected empty repo map to be cleaned up")
 		}
 	})
 
@@ -1011,8 +1043,8 @@ func TestAllowedSensitiveJobs(t *testing.T) {
 		t.Setenv(DetentHomeEnv, tmpDir)
 
 		cfg := createTestConfig(nil)
-		if err := cfg.AddAllowedSensitiveJob(repoSHA, "deploy"); err != nil {
-			t.Fatalf("AddAllowedSensitiveJob() error = %v", err)
+		if err := cfg.SetJobOverride(repoSHA, "", "deploy", JobStateRun); err != nil {
+			t.Fatalf("SetJobOverride() error = %v", err)
 		}
 
 		configPath := filepath.Join(tmpDir, "detent.json")
@@ -1024,25 +1056,164 @@ func TestAllowedSensitiveJobs(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Load() error = %v", err)
 		}
-		if !loadedCfg.IsSensitiveJobAllowed(repoSHA, "deploy") {
-			t.Error("Loaded config should have allowed sensitive job")
+		if loadedCfg.GetJobState(repoSHA, "deploy") != JobStateRun {
+			t.Error("Loaded config should have job override")
 		}
 	})
 }
 
-// TestIsSensitiveJobAllowed_NilSafety tests nil safety of IsSensitiveJobAllowed
-func TestIsSensitiveJobAllowed_NilSafety(t *testing.T) {
+// TestGetJobState_NilSafety tests nil safety of GetJobState
+func TestGetJobState_NilSafety(t *testing.T) {
 	t.Run("nil global config", func(t *testing.T) {
 		cfg := &Config{global: nil}
-		if cfg.IsSensitiveJobAllowed("repo", "job") {
-			t.Error("Expected false for nil global config")
+		if state := cfg.GetJobState("repo", "job"); state != "" {
+			t.Errorf("Expected empty string for nil global config, got %q", state)
 		}
 	})
 
-	t.Run("nil AllowedSensitiveJobs map", func(t *testing.T) {
+	t.Run("nil JobOverrides map", func(t *testing.T) {
 		cfg := &Config{global: &GlobalConfig{}}
-		if cfg.IsSensitiveJobAllowed("repo", "job") {
-			t.Error("Expected false for nil AllowedSensitiveJobs map")
+		if state := cfg.GetJobState("repo", "job"); state != "" {
+			t.Errorf("Expected empty string for nil JobOverrides map, got %q", state)
+		}
+	})
+}
+
+// TestJobOverrides_JobIDValidation tests job ID validation for security
+func TestJobOverrides_JobIDValidation(t *testing.T) {
+	repoSHA := "test-repo-sha"
+
+	t.Run("SetJobOverride rejects invalid job ID format", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		t.Setenv(DetentHomeEnv, tmpDir)
+
+		cfg := createTestConfig(nil)
+
+		invalidIDs := []string{
+			"1invalid",      // starts with number
+			"-invalid",      // starts with hyphen
+			"invalid;shell", // contains semicolon (injection attempt)
+			"invalid$(cmd)", // contains shell substitution
+			"invalid`id`",   // contains backticks
+			"invalid\nid",   // contains newline
+			"invalid id",    // contains space
+			"invalid>file",  // contains redirection
+			"invalid|pipe",  // contains pipe
+		}
+
+		for _, id := range invalidIDs {
+			err := cfg.SetJobOverride(repoSHA, "", id, JobStateRun)
+			if err == nil {
+				t.Errorf("Expected error for invalid job ID %q", id)
+			}
+		}
+	})
+
+	t.Run("SetJobOverride accepts valid job IDs", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		t.Setenv(DetentHomeEnv, tmpDir)
+
+		cfg := createTestConfig(nil)
+
+		validIDs := []string{
+			"build",
+			"test",
+			"deploy_prod",
+			"release-v1",
+			"_private",
+			"Build_Test_Deploy",
+			"job123",
+			"A",
+			"_",
+		}
+
+		for _, id := range validIDs {
+			// Reset config for each test
+			cfg = createTestConfig(nil)
+			err := cfg.SetJobOverride(repoSHA, "", id, JobStateRun)
+			if err != nil {
+				t.Errorf("Unexpected error for valid job ID %q: %v", id, err)
+			}
+		}
+	})
+
+	t.Run("SetJobOverrides filters invalid job IDs", func(t *testing.T) {
+		cfg := createTestConfig(nil)
+
+		overrides := map[string]string{
+			"valid_job":     JobStateRun,
+			"1invalid":      JobStateRun,  // Invalid: starts with number
+			"another-valid": JobStateSkip,
+			"shell;inject":  JobStateRun,  // Invalid: contains semicolon
+			"$(whoami)":     JobStateRun,  // Invalid: shell substitution
+		}
+
+		cfg.SetJobOverrides(repoSHA, "", overrides)
+
+		// Only valid job IDs should be stored
+		stored := cfg.GetJobOverrides(repoSHA)
+		if len(stored) != 2 {
+			t.Errorf("Expected 2 valid overrides, got %d: %v", len(stored), stored)
+		}
+		if stored["valid_job"] != JobStateRun {
+			t.Error("Expected valid_job to be stored with 'run' state")
+		}
+		if stored["another-valid"] != JobStateSkip {
+			t.Error("Expected another-valid to be stored with 'skip' state")
+		}
+		if _, exists := stored["1invalid"]; exists {
+			t.Error("Invalid job ID '1invalid' should not be stored")
+		}
+		if _, exists := stored["shell;inject"]; exists {
+			t.Error("Invalid job ID 'shell;inject' should not be stored")
+		}
+	})
+
+	t.Run("SetJobOverrides filters invalid states", func(t *testing.T) {
+		cfg := createTestConfig(nil)
+
+		overrides := map[string]string{
+			"job1": JobStateRun,
+			"job2": JobStateSkip,
+			"job3": "invalid_state",
+			"job4": "",
+			"job5": "auto", // Not a valid state (empty string means auto)
+		}
+
+		cfg.SetJobOverrides(repoSHA, "", overrides)
+
+		stored := cfg.GetJobOverrides(repoSHA)
+		if len(stored) != 2 {
+			t.Errorf("Expected 2 valid overrides, got %d: %v", len(stored), stored)
+		}
+		if stored["job1"] != JobStateRun {
+			t.Error("Expected job1 to be stored")
+		}
+		if stored["job2"] != JobStateSkip {
+			t.Error("Expected job2 to be stored")
+		}
+	})
+
+	t.Run("SetJobOverrides clears when all invalid", func(t *testing.T) {
+		cfg := createTestConfig(nil)
+
+		// First set some valid overrides
+		cfg.SetJobOverrides(repoSHA, "", map[string]string{"valid": JobStateRun})
+		if cfg.GetJobOverrides(repoSHA) == nil {
+			t.Fatal("Setup failed: expected valid overrides to be stored")
+		}
+
+		// Then try to set all invalid
+		overrides := map[string]string{
+			"1invalid": JobStateRun,
+			"2invalid": "bad_state",
+		}
+
+		cfg.SetJobOverrides(repoSHA, "", overrides)
+
+		stored := cfg.GetJobOverrides(repoSHA)
+		if stored != nil {
+			t.Errorf("Expected nil overrides when all are invalid, got %v", stored)
 		}
 	})
 }

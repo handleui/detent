@@ -97,6 +97,57 @@ func Execute() error {
 	return rootCmd.ExecuteContext(ctx)
 }
 
+func customHelpFunc(cmd *cobra.Command, _ []string) {
+	// Only show custom help for root command
+	if cmd != rootCmd {
+		// Use default help for subcommands
+		_ = cmd.UsageFunc()(cmd)
+		return
+	}
+
+	fmt.Print(`Detent runs GitHub Actions locally to catch CI errors before pushing.
+It uses act under the hood and provides structured error extraction,
+grouping results by file for efficient debugging.
+
+USAGE
+  $ detent <command> [flags]
+
+REQUIREMENTS
+  docker:   Container runtime for running workflow steps
+  act:      nektos/act - automatically invoked by detent
+
+CORE COMMANDS
+  detent check:       Run workflows locally and extract errors
+  detent heal:        Auto-fix CI errors using AI (requires API key)
+  detent workflows:   Manage which workflow jobs run (enable/disable)
+  detent allow:       Manage allowed shell commands for this repo
+  detent config:      View and manage detent configuration
+  detent prune:       Clean up orphaned git worktrees
+
+  Pass --help to any command for specific help
+  (e.g., detent check --help)
+
+TYPICAL WORKFLOW
+  1. Run detent check to see all CI errors locally
+  2. Fix errors manually, or run detent heal for AI assistance
+  3. Re-run detent check to verify fixes
+  4. Push with confidence
+
+CONFIGURATION
+  API key for heal command:
+    - Set ANTHROPIC_API_KEY environment variable, or
+    - Run detent config set api-key <key>
+
+  Workflow job control:
+    - Run detent workflows to enable/disable specific jobs
+
+LEARN MORE
+  GitHub:   https://github.com/detent-dev/detent
+  Issues:   https://github.com/detent-dev/detent/issues
+
+`)
+}
+
 func init() {
 	rootCmd.AddCommand(checkCmd)
 	rootCmd.AddCommand(healCmd)
@@ -110,10 +161,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVarP(&workflowsDir, "workflows", "w", runner.WorkflowsDir, "workflows directory path")
 	rootCmd.PersistentFlags().StringVar(&workflowFile, "workflow", "", "specific workflow file (e.g., ci.yml)")
 
-	rootCmd.SetHelpTemplate(`Detent v` + Version + `
-{{with (or .Long .Short)}}{{. | trimTrailingWhitespaces}}
-
-{{end}}{{if or .Runnable .HasSubCommands}}{{.UsageString}}{{end}}`)
+	rootCmd.SetHelpFunc(customHelpFunc)
 }
 
 // ensureAPIKey checks for API key and prompts interactively if missing.

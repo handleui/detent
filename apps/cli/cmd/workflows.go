@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/detent/cli/internal/git"
 	"github.com/detent/cli/internal/repo"
 	"github.com/detent/cli/internal/tui"
 	tuiworkflows "github.com/detent/cli/internal/tui/workflows"
@@ -129,8 +130,11 @@ func runWorkflows(_ *cobra.Command, _ []string) error {
 
 	// Handle save
 	if model.WasSaved() {
+		// Get remote URL for context (best effort)
+		remoteURL, _ := git.GetRemoteURL(repoCtx.Path)
+
 		newOverrides := model.GetOverrides()
-		cfg.SetJobOverrides(repoSHA, newOverrides)
+		cfg.SetJobOverrides(repoSHA, remoteURL, newOverrides)
 		if saveErr := cfg.SaveGlobal(); saveErr != nil {
 			return fmt.Errorf("saving config: %w", saveErr)
 		}

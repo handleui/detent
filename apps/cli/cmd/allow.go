@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/detent/cli/internal/git"
 	"github.com/detent/cli/internal/repo"
 	"github.com/detent/cli/internal/tui"
 	"github.com/spf13/cobra"
@@ -94,7 +95,10 @@ func runAllow(_ *cobra.Command, args []string) error {
 		return nil
 	}
 
-	if err := cfg.AddAllowedCommand(repoSHA, command); err != nil {
+	// Get remote URL for context (best effort)
+	remoteURL, _ := git.GetRemoteURL(repoCtx.Path)
+
+	if err := cfg.AddAllowedCommand(repoSHA, remoteURL, command); err != nil {
 		return fmt.Errorf("adding command: %w", err)
 	}
 

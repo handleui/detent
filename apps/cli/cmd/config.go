@@ -149,7 +149,7 @@ func runConfigReset(_ *cobra.Command, _ []string) error {
 	existingCfg, _ := persistence.Load()
 	var apiKey string
 	var trustedRepos map[string]persistence.TrustedRepo
-	var allowedCommands map[string][]string
+	var allowedCommands map[string]persistence.RepoCommands
 	if existingCfg != nil {
 		apiKey = existingCfg.APIKey
 		// Get trusted repos and allowed commands from the underlying global config
