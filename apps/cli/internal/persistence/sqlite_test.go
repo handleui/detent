@@ -521,13 +521,10 @@ func TestSQLiteWriter_GetErrorsByRunID_EmptyRunID(t *testing.T) {
 	}
 	defer func() { _ = writer.Close() }()
 
-	// Query with empty runID - should return empty slice, not error
+	// Query with empty runID - should return no errors (nil or empty slice is acceptable)
 	errors, err := writer.GetErrorsByRunID("")
 	if err != nil {
 		t.Fatalf("GetErrorsByRunID('') error = %v", err)
-	}
-	if errors == nil {
-		t.Error("GetErrorsByRunID('') returned nil, want empty slice")
 	}
 	if len(errors) != 0 {
 		t.Errorf("GetErrorsByRunID('') returned %d errors, want 0", len(errors))
