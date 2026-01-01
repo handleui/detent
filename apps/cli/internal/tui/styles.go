@@ -101,5 +101,5 @@ func ExitError(message string) string {
 // UpdateAvailable returns a styled update notification message.
 // Uses cyan/blue color for the indicator.
 func UpdateAvailable(version string) string {
-	return AccentStyle.Render("!") + " Update available: " + AccentStyle.Render(version) + MutedStyle.Render(" (run `dt update`)")
+	return AccentStyle.Render("[!]") + " " + AccentStyle.Render(version) + " " + MutedStyle.Render("·") + " run " + MutedStyle.Render("dt update")
 }
