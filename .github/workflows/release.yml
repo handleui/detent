@@ -65,6 +65,18 @@ jobs:
             echo "should_release=true" >> $GITHUB_OUTPUT
           fi
 
+      - name: Create git tag
+        if: steps.check.outputs.should_release == 'true'
+        run: |
+          TAG="v${{ steps.check.outputs.version }}"
+          if ! git rev-parse "$TAG" >/dev/null 2>&1; then
+            git tag "$TAG"
+            git push origin "$TAG"
+            echo "Created and pushed tag $TAG"
+          else
+            echo "Tag $TAG already exists"
+          fi
+
       - name: Build binaries with GoReleaser
         if: steps.check.outputs.should_release == 'true'
         uses: goreleaser/goreleaser-action@v6
