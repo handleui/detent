@@ -39,6 +39,18 @@ archives:
 checksum:
   name_template: "checksums.txt"
 
+signs:
+  - cmd: cosign
+    certificate: "${artifact}.pem"
+    artifacts: checksum
+    output: true
+    args:
+      - sign-blob
+      - "--output-certificate=${certificate}"
+      - "--output-signature=${signature}"
+      - "${artifact}"
+      - "--yes"
+
 changelog:
   use: github
   sort: asc

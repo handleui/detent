@@ -80,6 +80,28 @@ const uploadChecksums = async (version) => {
   } catch {
     log("Warning: checksums.txt not found, skipping");
   }
+
+  // Upload cosign signature files if they exist
+  const signatureFiles = ["checksums.txt.sig", "checksums.txt.pem"];
+  for (const filename of signatureFiles) {
+    const filePath = join(DIST_DIR, filename);
+    try {
+      const content = await readFile(filePath);
+      const blobPath = `releases/v${version}/${filename}`;
+      await withRetry(
+        () =>
+          put(blobPath, content, {
+            access: "public",
+            addRandomSuffix: false,
+            allowOverwrite: true,
+          }),
+        `Upload ${filename}`
+      );
+      log(`Uploaded ${filename}`);
+    } catch {
+      log(`Note: ${filename} not found (cosign signing may not be configured)`);
+    }
+  }
 };
 
 const getManifest = async () => {

@@ -1,9 +1,10 @@
-export const generateInstallScript = (): string => `#!/bin/sh
-set -e
+export const generateInstallScript = (): string => `#!/usr/bin/env bash
+set -euo pipefail
 
 BINARY_NAME="dt"
 INSTALL_DIR="\${DETENT_INSTALL_DIR:-$HOME/.local/bin}"
 BASE_URL="https://detent.sh/api/binaries"
+VERSION="\${DETENT_VERSION:-\${1:-latest}}"
 
 detect_os() {
   case "$(uname -s)" in
@@ -15,10 +16,22 @@ detect_os() {
 }
 
 detect_arch() {
-  case "$(uname -m)" in
+  local arch
+  arch=$(uname -m)
+
+  # Detect Rosetta 2 on macOS
+  if [ "$(uname -s)" = "Darwin" ] && [ "$arch" = "x86_64" ]; then
+    if sysctl -n sysctl.proc_translated 2>/dev/null | grep -q 1; then
+      echo "  Note: Running under Rosetta 2, using native arm64 binary" >&2
+      echo "arm64"
+      return
+    fi
+  fi
+
+  case "$arch" in
     x86_64|amd64) echo "amd64" ;;
     arm64|aarch64) echo "arm64" ;;
-    *) echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+    *) echo "Unsupported architecture: $arch" >&2; exit 1 ;;
   esac
 }
 
@@ -33,12 +46,32 @@ download() {
   fi
 }
 
-verify_checksum() {
-  archive="$1"
-  checksums="$2"
-  filename="$3"
+download_with_retry() {
+  local url="$1"
+  local output="$2"
+  local max_attempts=3
+  local attempt=1
 
-  expected=$(grep "$filename" "$checksums" | awk '{print $1}')
+  while [ $attempt -le $max_attempts ]; do
+    if download "$url" "$output"; then
+      return 0
+    fi
+    echo "  Attempt $attempt failed, retrying in $((attempt * 2))s..." >&2
+    sleep $((attempt * 2))
+    attempt=$((attempt + 1))
+  done
+
+  echo "Error: Download failed after $max_attempts attempts" >&2
+  return 1
+}
+
+verify_checksum() {
+  local archive="$1"
+  local checksums="$2"
+  local filename="$3"
+  local expected actual
+
+  expected=$(grep -F "$filename" "$checksums" | awk '{print $1}')
   if [ -z "$expected" ]; then
     echo "Error: No checksum found for $filename" >&2
     exit 1
@@ -76,10 +109,11 @@ main() {
   fi
 
   FILENAME="\${BINARY_NAME}-\${OS}-\${ARCH}.\${EXT}"
-  DOWNLOAD_URL="\${BASE_URL}/latest/\${FILENAME}"
-  CHECKSUMS_URL="\${BASE_URL}/latest/checksums.txt"
+  DOWNLOAD_URL="\${BASE_URL}/\${VERSION}/\${FILENAME}"
+  CHECKSUMS_URL="\${BASE_URL}/\${VERSION}/checksums.txt"
 
   echo "Installing detent..."
+  echo "  Version: $VERSION"
   echo "  OS: $OS"
   echo "  Arch: $ARCH"
 
@@ -90,13 +124,10 @@ main() {
   CHECKSUMS="$TMP_DIR/checksums.txt"
 
   echo "Downloading..."
-  download "$DOWNLOAD_URL" "$ARCHIVE"
+  download_with_retry "$DOWNLOAD_URL" "$ARCHIVE"
 
   echo "Downloading checksums..."
-  if ! download "$CHECKSUMS_URL" "$CHECKSUMS"; then
-    echo "Error: Failed to download checksums" >&2
-    exit 1
-  fi
+  download_with_retry "$CHECKSUMS_URL" "$CHECKSUMS"
 
   verify_checksum "$ARCHIVE" "$CHECKSUMS" "$FILENAME"
 
