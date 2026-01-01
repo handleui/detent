@@ -24,6 +24,15 @@ export const GET = async (
 ): Promise<NextResponse> => {
   const { path } = await params;
 
+  // Handle manifest request: /api/binaries/releases/manifest.json
+  if (path.length === 2 && path[0] === "releases" && path[1] === "manifest.json") {
+    const { blobs } = await list({ prefix: MANIFEST_PATH });
+    if (!blobs[0]) {
+      return NextResponse.json({ error: "No manifest found" }, { status: 404 });
+    }
+    return NextResponse.redirect(blobs[0].url);
+  }
+
   if (path.length !== 2) {
     return NextResponse.json(
       { error: "Expected: /api/binaries/{version}/{filename}" },
