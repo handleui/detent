@@ -2,11 +2,14 @@ name: Release
 
 on:
   push:
-    tags:
-      - "v*"
+    branches:
+      - main
+
+concurrency: ${{ github.workflow }}-${{ github.ref }}
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   release:
@@ -34,17 +37,28 @@ jobs:
       - name: Install dependencies
         run: bun install
 
-      - name: Build binaries with GoReleaser
-        uses: goreleaser/goreleaser-action@v6
+      - name: Create Release Pull Request or Publish
+        id: changesets
+        uses: changesets/action@v1
         with:
-          distribution: goreleaser
-          version: "~> v2"
-          args: release --clean
-          workdir: apps/cli
+          version: bun changeset version
+          publish: echo "ready"
+          commit: "chore: release"
+          title: "chore: release"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload binaries to Vercel Blob
+      - name: Build and Release
+        if: steps.changesets.outputs.published == 'true'
+        run: |
+          export GORELEASER_CURRENT_TAG=v$(node -p "require('./apps/cli/package.json').version")
+          cd apps/cli
+          goreleaser release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload to Blob
+        if: steps.changesets.outputs.published == 'true'
         run: bun apps/cli/scripts/upload-binaries.mjs
         env:
           BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
