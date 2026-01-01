@@ -5,12 +5,24 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/detent/cli/schema"
 )
+
+// validJobIDPattern matches GitHub Actions job ID requirements: [a-zA-Z_][a-zA-Z0-9_-]*
+// This prevents injection via malicious job IDs in the config file.
+var validJobIDPattern = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_-]*$`)
+
+// isValidJobID checks if a job ID matches GitHub Actions requirements.
+// Valid IDs must start with a letter or underscore and contain only alphanumeric, underscore, or hyphen.
+// This validation prevents injection attacks via malformed job IDs.
+func isValidJobID(jobID string) bool {
+	return validJobIDPattern.MatchString(jobID)
+}
 
 // --- File paths ---
 
@@ -46,18 +58,32 @@ type TrustedRepo struct {
 	TrustedAt time.Time `json:"trusted_at"`
 }
 
+// RepoCommands stores allowed commands for a repository with context.
+// The key in AllowedCommands map is the first commit SHA.
+type RepoCommands struct {
+	RemoteURL string   `json:"remote_url,omitempty"`
+	Commands  []string `json:"commands"`
+}
+
+// RepoJobOverrides stores job overrides for a repository with context.
+// The key in JobOverrides map is the first commit SHA.
+type RepoJobOverrides struct {
+	RemoteURL string            `json:"remote_url,omitempty"`
+	Jobs      map[string]string `json:"jobs"`
+}
+
 // GlobalConfig is the user's global settings (~/.detent/detent.json).
 // This is the raw structure that gets persisted to disk.
 type GlobalConfig struct {
-	Schema               string                 `json:"$schema,omitempty"`
-	APIKey               string                 `json:"api_key,omitempty"`
-	Model                string                 `json:"model,omitempty"`
-	BudgetPerRunUSD      *float64               `json:"budget_per_run_usd,omitempty"`
-	BudgetMonthlyUSD     *float64               `json:"budget_monthly_usd,omitempty"`
-	TimeoutMins          *int                   `json:"timeout_mins,omitempty"`
-	TrustedRepos         map[string]TrustedRepo `json:"trusted_repos,omitempty"`
-	AllowedCommands      map[string][]string    `json:"allowed_commands,omitempty"`       // key is first commit SHA
-	AllowedSensitiveJobs map[string][]string    `json:"allowed_sensitive_jobs,omitempty"` // key is first commit SHA, value is job IDs allowed to run
+	Schema           string                       `json:"$schema,omitempty"`
+	APIKey           string                       `json:"api_key,omitempty"`
+	Model            string                       `json:"model,omitempty"`
+	BudgetPerRunUSD  *float64                     `json:"budget_per_run_usd,omitempty"`
+	BudgetMonthlyUSD *float64                     `json:"budget_monthly_usd,omitempty"`
+	TimeoutMins      *int                         `json:"timeout_mins,omitempty"`
+	TrustedRepos     map[string]TrustedRepo       `json:"trusted_repos,omitempty"`
+	AllowedCommands  map[string]RepoCommands      `json:"allowed_commands,omitempty"`
+	JobOverrides     map[string]RepoJobOverrides  `json:"job_overrides,omitempty"`
 }
 
 // Config is the merged, resolved config used by the application.
@@ -472,7 +498,11 @@ func (c *Config) GetAllowedCommands(repoSHA string) []string {
 	if c.global == nil || c.global.AllowedCommands == nil {
 		return nil
 	}
-	return c.global.AllowedCommands[repoSHA]
+	repo, ok := c.global.AllowedCommands[repoSHA]
+	if !ok {
+		return nil
+	}
+	return repo.Commands
 }
 
 // dangerousPatterns are shell metacharacters and patterns that could enable command injection.
@@ -564,7 +594,7 @@ func ValidateAllowedCommand(cmd string) error {
 
 // AddAllowedCommand adds a command to a repo's allowlist and saves.
 // Returns an error if the command pattern is unsafe.
-func (c *Config) AddAllowedCommand(repoSHA, cmd string) error {
+func (c *Config) AddAllowedCommand(repoSHA, remoteURL, cmd string) error {
 	// Validate command before adding
 	if err := ValidateAllowedCommand(cmd); err != nil {
 		return fmt.Errorf("invalid command pattern: %w", err)
@@ -574,16 +604,24 @@ func (c *Config) AddAllowedCommand(repoSHA, cmd string) error {
 		c.global = &GlobalConfig{}
 	}
 	if c.global.AllowedCommands == nil {
-		c.global.AllowedCommands = make(map[string][]string)
+		c.global.AllowedCommands = make(map[string]RepoCommands)
+	}
+
+	repo := c.global.AllowedCommands[repoSHA]
+	// Update remote URL if provided (keeps it current)
+	if remoteURL != "" {
+		repo.RemoteURL = remoteURL
 	}
 
 	// Check if already exists
-	for _, existing := range c.global.AllowedCommands[repoSHA] {
+	for _, existing := range repo.Commands {
 		if existing == cmd {
+			c.global.AllowedCommands[repoSHA] = repo
 			return nil
 		}
 	}
-	c.global.AllowedCommands[repoSHA] = append(c.global.AllowedCommands[repoSHA], cmd)
+	repo.Commands = append(repo.Commands, cmd)
+	c.global.AllowedCommands[repoSHA] = repo
 	return c.SaveGlobal()
 }
 
@@ -593,84 +631,152 @@ func (c *Config) RemoveAllowedCommand(repoSHA, cmd string) error {
 		return nil
 	}
 
-	commands := c.global.AllowedCommands[repoSHA]
-	for i, existing := range commands {
+	repo, ok := c.global.AllowedCommands[repoSHA]
+	if !ok {
+		return nil
+	}
+
+	for i, existing := range repo.Commands {
 		if existing == cmd {
-			c.global.AllowedCommands[repoSHA] = append(commands[:i], commands[i+1:]...)
+			repo.Commands = append(repo.Commands[:i], repo.Commands[i+1:]...)
+			// Clean up if no commands left
+			if len(repo.Commands) == 0 {
+				delete(c.global.AllowedCommands, repoSHA)
+			} else {
+				c.global.AllowedCommands[repoSHA] = repo
+			}
 			return c.SaveGlobal()
 		}
 	}
 	return nil
 }
 
-// --- Allowed Sensitive Jobs helpers ---
+// --- Job Overrides helpers ---
 
-// GetAllowedSensitiveJobs returns the allowed sensitive job IDs for a repo by its first commit SHA.
-func (c *Config) GetAllowedSensitiveJobs(repoSHA string) []string {
-	if c.global == nil || c.global.AllowedSensitiveJobs == nil {
+// JobState constants for job override states.
+const (
+	JobStateRun  = "run"  // Force job to run (bypass security skip)
+	JobStateSkip = "skip" // Force job to skip
+	// Jobs not in overrides use "auto" (default behavior)
+)
+
+// GetJobOverrides returns the job overrides for a repo by its first commit SHA.
+// Returns nil if no overrides are set.
+func (c *Config) GetJobOverrides(repoSHA string) map[string]string {
+	if c.global == nil || c.global.JobOverrides == nil {
 		return nil
 	}
-	return c.global.AllowedSensitiveJobs[repoSHA]
-}
-
-// IsSensitiveJobAllowed checks if a sensitive job ID is in the repo's allowlist.
-func (c *Config) IsSensitiveJobAllowed(repoSHA, jobID string) bool {
-	jobs := c.GetAllowedSensitiveJobs(repoSHA)
-	for _, allowed := range jobs {
-		if allowed == jobID {
-			return true
-		}
+	repo, ok := c.global.JobOverrides[repoSHA]
+	if !ok {
+		return nil
 	}
-	return false
+	return repo.Jobs
 }
 
-// AddAllowedSensitiveJob adds a job ID to a repo's sensitive jobs allowlist and saves.
-// This allows a job that would normally be skipped for security to run with if: always().
-func (c *Config) AddAllowedSensitiveJob(repoSHA, jobID string) error {
+// GetJobState returns the override state for a specific job.
+// Returns empty string if no override is set (meaning "auto").
+func (c *Config) GetJobState(repoSHA, jobID string) string {
+	overrides := c.GetJobOverrides(repoSHA)
+	if overrides == nil {
+		return ""
+	}
+	return overrides[jobID]
+}
+
+// SetJobOverride sets an override state for a job and saves.
+// State should be "run" or "skip". Use ClearJobOverride to reset to auto.
+// Job IDs are validated against GitHub Actions format requirements.
+func (c *Config) SetJobOverride(repoSHA, remoteURL, jobID, state string) error {
 	if jobID == "" {
 		return fmt.Errorf("job ID cannot be empty")
 	}
+	if !isValidJobID(jobID) {
+		return fmt.Errorf("invalid job ID: must start with letter or underscore and contain only alphanumeric, underscore, or hyphen")
+	}
+	if state != JobStateRun && state != JobStateSkip {
+		return fmt.Errorf("invalid state: must be %q or %q", JobStateRun, JobStateSkip)
+	}
 
 	if c.global == nil {
 		c.global = &GlobalConfig{}
 	}
-	if c.global.AllowedSensitiveJobs == nil {
-		c.global.AllowedSensitiveJobs = make(map[string][]string)
+	if c.global.JobOverrides == nil {
+		c.global.JobOverrides = make(map[string]RepoJobOverrides)
 	}
 
-	// Check if already exists
-	for _, existing := range c.global.AllowedSensitiveJobs[repoSHA] {
-		if existing == jobID {
-			return nil
-		}
+	repo := c.global.JobOverrides[repoSHA]
+	if remoteURL != "" {
+		repo.RemoteURL = remoteURL
 	}
-	c.global.AllowedSensitiveJobs[repoSHA] = append(c.global.AllowedSensitiveJobs[repoSHA], jobID)
+	if repo.Jobs == nil {
+		repo.Jobs = make(map[string]string)
+	}
+	repo.Jobs[jobID] = state
+	c.global.JobOverrides[repoSHA] = repo
 	return c.SaveGlobal()
 }
 
-// RemoveAllowedSensitiveJob removes a job ID from a repo's sensitive jobs allowlist and saves.
-func (c *Config) RemoveAllowedSensitiveJob(repoSHA, jobID string) error {
-	if c.global == nil || c.global.AllowedSensitiveJobs == nil {
+// ClearJobOverride removes an override for a job (returns to auto behavior) and saves.
+func (c *Config) ClearJobOverride(repoSHA, jobID string) error {
+	if c.global == nil || c.global.JobOverrides == nil {
 		return nil
 	}
 
-	jobs := c.global.AllowedSensitiveJobs[repoSHA]
-	for i, existing := range jobs {
-		if existing == jobID {
-			c.global.AllowedSensitiveJobs[repoSHA] = append(jobs[:i], jobs[i+1:]...)
-			return c.SaveGlobal()
-		}
+	repo, ok := c.global.JobOverrides[repoSHA]
+	if !ok || repo.Jobs == nil {
+		return nil
 	}
-	return nil
+
+	delete(repo.Jobs, jobID)
+
+	// Clean up empty maps
+	if len(repo.Jobs) == 0 {
+		delete(c.global.JobOverrides, repoSHA)
+	} else {
+		c.global.JobOverrides[repoSHA] = repo
+	}
+
+	return c.SaveGlobal()
 }
 
-// SetAllowedSensitiveJobs sets the allowed sensitive jobs map without saving.
+// SetJobOverrides sets all job overrides for a repo without saving.
 // Use SaveGlobal() after to persist changes.
-func (c *Config) SetAllowedSensitiveJobs(jobs map[string][]string) {
+// Job IDs are validated against GitHub Actions format requirements.
+// Invalid job IDs or states are silently filtered out to prevent injection attacks.
+func (c *Config) SetJobOverrides(repoSHA, remoteURL string, overrides map[string]string) {
 	if c.global == nil {
 		c.global = &GlobalConfig{}
 	}
-	c.global.AllowedSensitiveJobs = jobs
+	if c.global.JobOverrides == nil {
+		c.global.JobOverrides = make(map[string]RepoJobOverrides)
+	}
+	if len(overrides) == 0 {
+		delete(c.global.JobOverrides, repoSHA)
+		return
+	}
+
+	// Filter and validate job IDs and states
+	validatedOverrides := make(map[string]string)
+	for jobID, state := range overrides {
+		// Skip invalid job IDs
+		if !isValidJobID(jobID) {
+			continue
+		}
+		// Skip invalid states
+		if state != JobStateRun && state != JobStateSkip {
+			continue
+		}
+		validatedOverrides[jobID] = state
+	}
+
+	if len(validatedOverrides) == 0 {
+		delete(c.global.JobOverrides, repoSHA)
+	} else {
+		c.global.JobOverrides[repoSHA] = RepoJobOverrides{
+			RemoteURL: remoteURL,
+			Jobs:      validatedOverrides,
+		}
+	}
 }
 
 // MaskAPIKey returns a masked version of an API key for safe display.
@@ -742,9 +848,18 @@ func (c *Config) SetTrustedRepos(repos map[string]TrustedRepo) {
 
 // SetAllowedCommands sets the allowed commands map without saving.
 // Use SaveGlobal() after to persist changes.
-func (c *Config) SetAllowedCommands(commands map[string][]string) {
+func (c *Config) SetAllowedCommands(commands map[string]RepoCommands) {
 	if c.global == nil {
 		c.global = &GlobalConfig{}
 	}
 	c.global.AllowedCommands = commands
+}
+
+// SetJobOverridesMap sets the job overrides for all repositories.
+// Use SaveGlobal() after to persist changes.
+func (c *Config) SetJobOverridesMap(overrides map[string]RepoJobOverrides) {
+	if c.global == nil {
+		c.global = &GlobalConfig{}
+	}
+	c.global.JobOverrides = overrides
 }

@@ -135,11 +135,11 @@ func (p *WorkflowPreparer) runValidationChecks(ctx context.Context, verbose bool
 
 // prepareWorkflowsAndWorktree prepares workflow files and creates worktree in parallel.
 func (p *WorkflowPreparer) prepareWorkflowsAndWorktree(ctx context.Context, verbose bool) (*PrepareResult, error) {
-	// Load config and get allowed sensitive jobs for this repo (before goroutines)
-	var allowedSensitiveJobs []string
+	// Load config and get job overrides for this repo (before goroutines)
+	var jobOverrides map[string]string
 	if cfg, cfgErr := persistence.Load(); cfgErr == nil {
 		if repoSHA, shaErr := git.GetFirstCommitSHA(p.config.RepoRoot); shaErr == nil && repoSHA != "" {
-			allowedSensitiveJobs = cfg.GetAllowedSensitiveJobs(repoSHA)
+			jobOverrides = cfg.GetJobOverrides(repoSHA)
 		}
 	}
 
@@ -159,7 +159,7 @@ func (p *WorkflowPreparer) prepareWorkflowsAndWorktree(ctx context.Context, verb
 	worktreeChan := make(chan worktreeResult, 1)
 
 	go func() {
-		tmpDir, cleanupWorkflows, err := workflow.PrepareWorkflows(p.config.WorkflowPath, p.config.WorkflowFile, allowedSensitiveJobs)
+		tmpDir, cleanupWorkflows, err := workflow.PrepareWorkflows(p.config.WorkflowPath, p.config.WorkflowFile, jobOverrides)
 		workflowChan <- workflowResult{
 			tmpDir:           tmpDir,
 			cleanupWorkflows: cleanupWorkflows,

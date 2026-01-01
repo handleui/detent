@@ -344,7 +344,7 @@ var sensitiveCommands = []string{
 	"capistrano deploy", "cap deploy",
 }
 
-// Package-level sets for O(1) substring lookups in isSensitiveJob.
+// Package-level sets for O(1) substring lookups in IsSensitiveJob.
 // These are built once at init time from the original arrays.
 var (
 	sensitiveJobNamesSet  = buildStringSet(sensitiveJobNames)
@@ -363,9 +363,9 @@ func containsSensitiveSubstring(haystack string, patterns map[string]struct{}) b
 	return false
 }
 
-// isSensitiveJob returns true if the job might publish, release, or deploy.
+// IsSensitiveJob returns true if the job might publish, release, or deploy.
 // These jobs should NOT get if: always() to prevent accidental production releases.
-func isSensitiveJob(jobID string, job *Job) bool {
+func IsSensitiveJob(jobID string, job *Job) bool {
 	if job == nil {
 		return false
 	}
@@ -427,31 +427,22 @@ func isSensitiveJob(jobID string, job *Job) bool {
 // Detent to capture ALL errors instead of stopping at the first failure.
 // Jobs with existing if: conditions get them combined: if: always() && (original)
 //
-// SAFETY: Sensitive jobs (release, publish, deploy) are skipped to prevent
-// accidental production releases, unless explicitly allowed via the allowedJobs list.
+// Job override states:
+//   - "skip": Force job to skip by injecting if: false
+//   - "run": Force job to run (bypass security check, inject if: always())
+//   - "" (auto): Default behavior - skip sensitive jobs, run others
 //
 // Parameters:
 //   - wf: The workflow to modify
-//   - allowedJobs: Optional list of job IDs that should NOT be skipped even if sensitive.
-//     Pass nil to skip all sensitive jobs.
-func InjectAlwaysForDependentJobs(wf *Workflow, allowedJobs []string) {
+//   - jobOverrides: Map of jobID -> state ("run", "skip", or "" for auto).
+//     Pass nil to use auto behavior for all jobs.
+func InjectAlwaysForDependentJobs(wf *Workflow, jobOverrides map[string]string) {
 	if wf == nil || wf.Jobs == nil {
 		return
 	}
 
-	// Build allowlist set for O(1) lookup
-	allowedSet := make(map[string]bool)
-	for _, jobID := range allowedJobs {
-		allowedSet[jobID] = true
-	}
-
 	for jobID, job := range wf.Jobs {
 		if job == nil {
-			continue
-		}
-
-		// Only inject if job has dependencies
-		if !jobHasNeeds(job) {
 			continue
 		}
 
@@ -460,10 +451,24 @@ func InjectAlwaysForDependentJobs(wf *Workflow, allowedJobs []string) {
 			continue
 		}
 
-		// SAFETY: Skip sensitive jobs to prevent accidental releases/deploys
-		// UNLESS the job is explicitly in the allowlist
-		if isSensitiveJob(jobID, job) && !allowedSet[jobID] {
+		override := jobOverrides[jobID]
+
+		switch override {
+		case "skip":
+			// Force skip: inject if: false
+			job.If = "false"
 			continue
+		case "run":
+			// Force run: fall through to inject if: always()
+		default:
+			// Auto: skip sensitive jobs (no injection)
+			if IsSensitiveJob(jobID, job) {
+				continue
+			}
+			// Also skip jobs without dependencies for auto mode
+			if !jobHasNeeds(job) {
+				continue
+			}
 		}
 
 		// Combine with existing condition if present
@@ -610,7 +615,7 @@ func BuildManifest(wf *Workflow) *ci.ManifestInfo {
 		mj := &ci.ManifestJob{
 			ID:        jobID,
 			Name:      job.Name,
-			Sensitive: isSensitiveJob(jobID, job),
+			Sensitive: IsSensitiveJob(jobID, job),
 		}
 		if mj.Name == "" {
 			mj.Name = jobID
@@ -1034,9 +1039,9 @@ func isValidJobID(jobID string) bool {
 // Parameters:
 //   - srcDir: The directory containing workflow files
 //   - specificWorkflow: Optional specific workflow file to process (empty for all)
-//   - allowedSensitiveJobs: Optional list of job IDs that should NOT be security-skipped
-//     even if they contain sensitive patterns. Pass nil to skip all sensitive jobs.
-func PrepareWorkflows(srcDir, specificWorkflow string, allowedSensitiveJobs []string) (tmpDir string, cleanup func(), err error) {
+//   - jobOverrides: Map of jobID -> state ("run", "skip", or "" for auto).
+//     Pass nil to use auto behavior for all jobs.
+func PrepareWorkflows(srcDir, specificWorkflow string, jobOverrides map[string]string) (tmpDir string, cleanup func(), err error) {
 	var workflows []string
 
 	if specificWorkflow != "" {
@@ -1173,7 +1178,7 @@ func PrepareWorkflows(srcDir, specificWorkflow string, allowedSensitiveJobs []st
 			// Apply modifications
 			// Order matters: continue-on-error first, then always() for deps, then markers, then timeouts
 			InjectContinueOnError(wf)
-			InjectAlwaysForDependentJobs(wf, allowedSensitiveJobs)
+			InjectAlwaysForDependentJobs(wf, jobOverrides)
 
 			// Inject markers with combined manifest (only first workflow gets manifest step)
 			if wfPath == manifestWfPath {

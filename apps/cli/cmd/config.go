@@ -149,13 +149,15 @@ func runConfigReset(_ *cobra.Command, _ []string) error {
 	existingCfg, _ := persistence.Load()
 	var apiKey string
 	var trustedRepos map[string]persistence.TrustedRepo
-	var allowedCommands map[string][]string
+	var allowedCommands map[string]persistence.RepoCommands
+	var jobOverrides map[string]persistence.RepoJobOverrides
 	if existingCfg != nil {
 		apiKey = existingCfg.APIKey
-		// Get trusted repos and allowed commands from the underlying global config
+		// Get trusted repos, allowed commands, and job overrides from the underlying global config
 		if global := existingCfg.GetGlobal(); global != nil {
 			trustedRepos = global.TrustedRepos
 			allowedCommands = global.AllowedCommands
+			jobOverrides = global.JobOverrides
 		}
 	}
 
@@ -169,6 +171,9 @@ func runConfigReset(_ *cobra.Command, _ []string) error {
 	}
 	if allowedCommands != nil {
 		newCfg.SetAllowedCommands(allowedCommands)
+	}
+	if jobOverrides != nil {
+		newCfg.SetJobOverridesMap(jobOverrides)
 	}
 	if err := newCfg.SaveGlobal(); err != nil {
 		return fmt.Errorf("saving config: %w", err)
