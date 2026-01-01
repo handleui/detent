@@ -23,7 +23,7 @@ permissions:
 
 jobs:
   build:
-    name: Build and Release
+    name: "[Build] CLI Binaries"
     runs-on: ubuntu-latest
 
     steps:
