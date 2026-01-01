@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@detent/ui": "*",
+    "@tailwindcss/postcss": "^4.1.18",
     "@vercel/blob": "^2.0.0",
     "fumadocs-core": "^16.4.2",
     "fumadocs-mdx": "^14.2.4",
