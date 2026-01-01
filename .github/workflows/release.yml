@@ -36,42 +36,37 @@ jobs:
           cache-dependency-path: apps/cli/go.sum
 
       - name: Install dependencies
-        run: bun install
+        run: bun install --ignore-scripts
 
-      - name: Create Release Pull Request or Publish
+      - name: Create Release Pull Request or Check for Release
         id: changesets
         uses: changesets/action@v1
         with:
           version: bun run version
-          publish: bun run release
           commit: "chore: version packages"
           title: "chore: version packages"
           createGithubReleases: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NPM_CONFIG_PROVENANCE: true
 
-      - name: Create Git Tag for CLI Release
-        id: tag
-        if: steps.changesets.outputs.published == 'true'
+      - name: Check if should release
+        id: check
+        if: steps.changesets.outputs.hasChangesets == 'false'
         run: |
           CLI_VERSION=$(node -p "require('./apps/cli/package.json').version")
-          TAG="v${CLI_VERSION}"
+          echo "version=$CLI_VERSION" >> $GITHUB_OUTPUT
 
-          if git rev-parse "$TAG" >/dev/null 2>&1; then
-            echo "Tag $TAG already exists, skipping"
-            echo "created=false" >> $GITHUB_OUTPUT
+          # Check if version already published to npm
+          if npm view @detent/cli@$CLI_VERSION version 2>/dev/null; then
+            echo "Version $CLI_VERSION already on npm, skipping release"
+            echo "should_release=false" >> $GITHUB_OUTPUT
           else
-            echo "Creating tag $TAG"
-            git tag "$TAG"
-            git push origin "$TAG"
-            echo "created=true" >> $GITHUB_OUTPUT
+            echo "New version $CLI_VERSION, will release"
+            echo "should_release=true" >> $GITHUB_OUTPUT
           fi
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Run GoReleaser
-        if: steps.tag.outputs.created == 'true'
+      - name: Build binaries with GoReleaser
+        if: steps.check.outputs.should_release == 'true'
         uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
@@ -80,6 +75,19 @@ jobs:
           workdir: apps/cli
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload binaries to Vercel Blob
+        if: steps.check.outputs.should_release == 'true'
+        run: node apps/cli/scripts/upload-binaries.mjs
+        env:
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+
+      - name: Publish to npm
+        if: steps.check.outputs.should_release == 'true'
+        run: bun run changeset publish
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: true
 
       - name: Add labels to release PR
         if: steps.changesets.outputs.pullRequestNumber != ''

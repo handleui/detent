@@ -51,9 +51,4 @@ changelog:
       - Merge branch
 
 release:
-  github:
-    owner: handleui
-    name: detent
-  draft: false
-  prerelease: auto
-  name_template: "v{{ .Version }}"
+  disable: true

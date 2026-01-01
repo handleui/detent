@@ -53,6 +53,6 @@
   "goBinary": {
     "name": "dt",
     "path": "./bin",
-    "url": "https://github.com/handleui/detent/releases/download/v{{version}}/dt-{{platform}}-{{arch}}.{{ext}}"
+    "url": "https://detent.dev/api/binaries/v{{version}}/dt-{{platform}}-{{arch}}.{{ext}}"
   }
 }

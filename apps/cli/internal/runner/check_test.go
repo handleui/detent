@@ -723,8 +723,6 @@ func TestPreparer_ParallelChannelWrites_Race(t *testing.T) {
 
 			// Simulate concurrent writes to channels (mimics preparer.go pattern)
 			go func() {
-				// Simulate some work
-				time.Sleep(time.Microsecond * time.Duration(i%5))
 				workflowChan <- workflowResult{
 					tmpDir:           "/tmp/workflow",
 					cleanupWorkflows: func() {},
@@ -732,8 +730,6 @@ func TestPreparer_ParallelChannelWrites_Race(t *testing.T) {
 			}()
 
 			go func() {
-				// Simulate some work
-				time.Sleep(time.Microsecond * time.Duration(i%3))
 				worktreeChan <- worktreeResult{
 					worktreePath:    "/tmp/worktree",
 					cleanupWorktree: func() {},
@@ -834,16 +830,12 @@ func TestExecutor_ResultChannelConcurrency_Race(t *testing.T) {
 			// Writer goroutine (simulates startActRunnerGoroutine)
 			go func() {
 				defer wg.Done()
-				// Simulate variable execution time
-				time.Sleep(time.Microsecond * time.Duration(i%10))
 				resultChan <- result{
 					stdout:   "test output",
 					exitCode: 0,
 				}
 			}()
 
-			// Simulate program.Run() waiting and then reading result
-			time.Sleep(time.Microsecond * 5)
 			res := <-resultChan
 			wg.Wait()
 
@@ -995,7 +987,6 @@ func TestPreparer_CleanupFunctionRace(t *testing.T) {
 
 			// Concurrent setup of cleanup functions
 			go func() {
-				time.Sleep(time.Microsecond * time.Duration(i%5))
 				workflowChan <- func() {
 					mu.Lock()
 					defer mu.Unlock()
@@ -1003,7 +994,6 @@ func TestPreparer_CleanupFunctionRace(t *testing.T) {
 			}()
 
 			go func() {
-				time.Sleep(time.Microsecond * time.Duration(i%3))
 				worktreeChan <- func() {
 					mu.Lock()
 					defer mu.Unlock()
@@ -1127,8 +1117,6 @@ func TestPreparer_ContextCancellation_Race(t *testing.T) {
 				}
 			}()
 
-			// Cancel at a random point
-			time.Sleep(time.Microsecond * time.Duration(i%5))
 			cancel()
 
 			wg.Wait()
