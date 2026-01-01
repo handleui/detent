@@ -12,6 +12,7 @@ import (
 	"github.com/detent/cli/internal/runner"
 	"github.com/detent/cli/internal/signal"
 	"github.com/detent/cli/internal/tui"
+	"github.com/detent/cli/internal/update"
 	"github.com/detentsh/core/agent"
 	"github.com/detentsh/core/git"
 	"github.com/mattn/go-isatty"
@@ -54,9 +55,9 @@ Requirements:
 		// Track command start time
 		StartTime = time.Now()
 
-		// Skip for config subcommands
+		// Skip for config and update subcommands
 		for c := cmd; c != nil; c = c.Parent() {
-			if c == configCmd {
+			if c == configCmd || c == updateCmd {
 				return nil
 			}
 		}
@@ -68,6 +69,10 @@ Requirements:
 		fmt.Println()
 		fmt.Println(tui.Header(Version, cmd.Name()))
 
+		// Check for updates (non-blocking, cached 24h)
+		if latest, hasUpdate := update.Check(Version); hasUpdate {
+			fmt.Println(tui.UpdateAvailable(latest))
+		}
 
 		// Load config
 		loadedCfg, configErr := persistence.Load()

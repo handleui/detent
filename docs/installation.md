@@ -19,6 +19,10 @@ curl -fsSL https://detent.dev/install.sh | DETENT_INSTALL_DIR=/usr/local/bin bas
 ### Install specific version
 
 ```bash
+# Using argument (recommended)
+curl -fsSL https://detent.dev/install.sh | bash -s v1.2.3
+
+# Using environment variable
 curl -fsSL https://detent.dev/install.sh | DETENT_VERSION=v1.2.3 bash
 ```
 
@@ -41,6 +45,16 @@ Apple Silicon Macs running under Rosetta 2 are automatically detected and will r
 ## Manual installation
 
 Download binaries directly from [GitHub Releases](https://github.com/detent/cli/releases).
+
+## Updating
+
+Update to the latest version:
+
+```bash
+dt update
+```
+
+Detent automatically checks for updates and shows a notification when a new version is available.
 
 ## Uninstall
 
