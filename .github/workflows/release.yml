@@ -101,7 +101,7 @@ jobs:
 
       - name: Upload binaries to Vercel Blob
         if: steps.check.outputs.should_release == 'true'
-        run: node apps/cli/scripts/upload-binaries.mjs
+        run: bun apps/cli/scripts/upload-binaries.mjs
         env:
           BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
 
