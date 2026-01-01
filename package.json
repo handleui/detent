@@ -8,14 +8,10 @@
     "lint:go": "cd apps/cli && golangci-lint run ./...",
     "fix": "ultracite fix && cd apps/cli && golangci-lint run --fix ./...",
     "check-types": "turbo run check-types",
-    "prepare": "lefthook install",
-    "changeset": "changeset",
-    "version": "changeset version",
-    "release": "changeset publish"
+    "prepare": "lefthook install"
   },
   "devDependencies": {
     "@biomejs/biome": "2.3.10",
-    "@changesets/cli": "^2.29.8",
     "lefthook": "^2.0.12",
     "turbo": "^2.7.2",
     "typescript": "5.9.2",

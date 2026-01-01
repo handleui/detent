@@ -1,61 +1,11 @@
 {
   "name": "@detent/cli",
   "version": "0.7.0",
-  "description": "Run GitHub Actions locally, intelligently parse errors, and troubleshoot with parallel Claude iterations",
-  "author": "handleui",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/handleui/detent.git",
-    "directory": "apps/cli"
-  },
-  "bugs": {
-    "url": "https://github.com/handleui/detent/issues"
-  },
-  "homepage": "https://github.com/handleui/detent#readme",
-  "keywords": [
-    "cli",
-    "github-actions",
-    "local-runner",
-    "error-parsing",
-    "ai-troubleshooting",
-    "claude",
-    "detent"
-  ],
-  "license": "MIT",
-  "engines": {
-    "node": ">=20.0.0"
-  },
-  "bin": {
-    "dt": "bin.js"
-  },
-  "files": [
-    "bin.js",
-    "install.js",
-    "uninstall.js",
-    "bin/",
-    "README.md"
-  ],
+  "private": true,
   "scripts": {
-    "build": "sh -c 'VERSION=$(node -p \"require(\\\"./package.json\\\").version\") && go build -ldflags \"-X github.com/detent/cli/cmd.Version=$VERSION -X github.com/detent/cli/internal/sentry.DSN=$SENTRY_DSN\" -o dist/dt'",
-    "clean": "rm -rf dist bin",
-    "prepare-release": "npm run clean && mkdir -p bin",
-    "build-binaries": "sh -c 'npm run prepare-release && VERSION=$(node -p \"require(\\\"./package.json\\\").version\") && for platform in linux/amd64 darwin/arm64 windows/amd64; do GOOS=${platform%/*} GOARCH=${platform#*/} OUTPUT=bin/dt-${platform%/*}-${platform#*/}; [ \"${platform%/*}\" = \"windows\" ] && OUTPUT=\"${OUTPUT}.exe\"; echo \"Building for $platform...\"; CGO_ENABLED=0 GOOS=${platform%/*} GOARCH=${platform#*/} go build -trimpath -ldflags \"-s -w -X github.com/detent/cli/cmd.Version=$VERSION -X github.com/detent/cli/internal/sentry.DSN=$SENTRY_DSN\" -o \"$OUTPUT\"; done'",
-    "postinstall": "node ./install.js",
-    "preuninstall": "node ./uninstall.js"
-  },
-  "dependencies": {
-    "tar-fs": "^3.0.6",
-    "adm-zip": "^0.5.16"
+    "build": "sh -c 'VERSION=$(node -p \"require(\\\"./package.json\\\").version\") && go build -ldflags \"-X github.com/detent/cli/cmd.Version=$VERSION -X github.com/detent/cli/internal/sentry.DSN=$SENTRY_DSN\" -o dist/dt'"
   },
   "devDependencies": {
     "@vercel/blob": "^2.0.0"
-  },
-  "publishConfig": {
-    "access": "public"
-  },
-  "goBinary": {
-    "name": "dt",
-    "path": "./bin",
-    "url": "https://detent.sh/api/binaries/v{{version}}/dt-{{platform}}-{{arch}}.{{ext}}"
   }
 }
