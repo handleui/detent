@@ -3,7 +3,7 @@ set -e
 
 BINARY_NAME="dt"
 INSTALL_DIR="\${DETENT_INSTALL_DIR:-$HOME/.local/bin}"
-BASE_URL="https://detent.dev/api/binaries"
+BASE_URL="https://detent.sh/api/binaries"
 
 detect_os() {
   case "$(uname -s)" in
