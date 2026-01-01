@@ -1,5 +1,11 @@
 # @detent/cli
 
+## 0.7.0
+
+### Minor Changes
+
+- 2c1e2d8: Moved core functionality to external package :)
+
 ## 0.6.0
 
 ### Minor Changes
