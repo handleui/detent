@@ -854,3 +854,12 @@ func (c *Config) SetAllowedCommands(commands map[string]RepoCommands) {
 	}
 	c.global.AllowedCommands = commands
 }
+
+// SetJobOverridesMap sets the job overrides for all repositories.
+// Use SaveGlobal() after to persist changes.
+func (c *Config) SetJobOverridesMap(overrides map[string]RepoJobOverrides) {
+	if c.global == nil {
+		c.global = &GlobalConfig{}
+	}
+	c.global.JobOverrides = overrides
+}
