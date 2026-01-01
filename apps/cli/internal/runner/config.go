@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"time"
 )
 
 var validEventPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
@@ -110,9 +109,10 @@ func (c *RunConfig) ResolveWorkflowPath() string {
 	return c.WorkflowPath
 }
 
-// ActTimeout returns the default timeout for act execution.
-// This is currently a package-level constant but could be made configurable in the future.
-const ActTimeout = 35 * time.Minute
+// ActTimeout returns the timeout for act execution.
+// The value can be configured via the DETENT_ACT_TIMEOUT environment variable.
+// Default is 35 minutes if not configured.
+var ActTimeout = GetActTimeout()
 
 // WorkflowsDir is the default directory containing workflow files
 const WorkflowsDir = ".github/workflows"

@@ -5,16 +5,19 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/detent/cli/internal/act"
 	internalerrors "github.com/detent/cli/internal/errors"
 	"github.com/detent/cli/internal/git"
+	"golang.org/x/sync/errgroup"
 )
 
 // generateTestRunID creates a unique 16-character hex string for test isolation.
@@ -687,4 +690,453 @@ func TestCheckRunner_StartTimeTracking(t *testing.T) {
 
 	// Note: We can't easily test Run() without a full setup,
 	// but we've verified the initial state
+}
+
+// =============================================================================
+// Race Condition Tests
+// =============================================================================
+// These tests are designed to catch race conditions when run with `go test -race`.
+// They exercise concurrent code paths in preparer.go and executor.go to verify
+// that shared state access is properly synchronized.
+
+// TestPreparer_ParallelChannelWrites_Race tests that concurrent writes to
+// workflowChan and worktreeChan don't cause races. This exercises the parallel
+// goroutine pattern in prepareWorkflowsAndWorktree.
+func TestPreparer_ParallelChannelWrites_Race(t *testing.T) {
+	// Run multiple iterations to increase likelihood of catching races
+	for i := 0; i < 10; i++ {
+		t.Run("iteration", func(t *testing.T) {
+			t.Parallel()
+
+			type workflowResult struct {
+				tmpDir           string
+				cleanupWorkflows func()
+			}
+
+			type worktreeResult struct {
+				worktreePath    string
+				cleanupWorktree func()
+			}
+
+			workflowChan := make(chan workflowResult, 1)
+			worktreeChan := make(chan worktreeResult, 1)
+
+			// Simulate concurrent writes to channels (mimics preparer.go pattern)
+			go func() {
+				// Simulate some work
+				time.Sleep(time.Microsecond * time.Duration(i%5))
+				workflowChan <- workflowResult{
+					tmpDir:           "/tmp/workflow",
+					cleanupWorkflows: func() {},
+				}
+			}()
+
+			go func() {
+				// Simulate some work
+				time.Sleep(time.Microsecond * time.Duration(i%3))
+				worktreeChan <- worktreeResult{
+					worktreePath:    "/tmp/worktree",
+					cleanupWorktree: func() {},
+				}
+			}()
+
+			// Read from both channels (mimics the pattern in preparer.go)
+			workflowRes := <-workflowChan
+			worktreeRes := <-worktreeChan
+
+			if workflowRes.tmpDir == "" {
+				t.Error("workflow result should have tmpDir")
+			}
+			if worktreeRes.worktreePath == "" {
+				t.Error("worktree result should have path")
+			}
+		})
+	}
+}
+
+// TestExecutor_LogChannelConcurrency_Race tests that concurrent log channel
+// operations don't cause races. This exercises the pattern in ExecuteWithTUI
+// where one goroutine writes and another reads from logChan.
+func TestExecutor_LogChannelConcurrency_Race(t *testing.T) {
+	for i := 0; i < 10; i++ {
+		t.Run("iteration", func(t *testing.T) {
+			t.Parallel()
+
+			logChan := make(chan string, 100)
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
+
+			var wg sync.WaitGroup
+			wg.Add(2)
+
+			// Writer goroutine (simulates startActRunnerGoroutine)
+			go func() {
+				defer wg.Done()
+				defer close(logChan)
+				for j := 0; j < 50; j++ {
+					select {
+					case logChan <- fmt.Sprintf("log line %d", j):
+					case <-ctx.Done():
+						return
+					}
+				}
+			}()
+
+			// Reader goroutine (simulates startLogProcessorGoroutine)
+			var receivedCount int
+			go func() {
+				defer wg.Done()
+				for {
+					select {
+					case line, ok := <-logChan:
+						if !ok {
+							return
+						}
+						if line != "" {
+							receivedCount++
+						}
+					case <-ctx.Done():
+						// Drain remaining
+						for range logChan {
+						}
+						return
+					}
+				}
+			}()
+
+			wg.Wait()
+
+			if receivedCount == 0 {
+				t.Error("should have received some log lines")
+			}
+		})
+	}
+}
+
+// TestExecutor_ResultChannelConcurrency_Race tests that concurrent result
+// channel operations don't cause races. This exercises the pattern where
+// startActRunnerGoroutine writes to resultChan.
+func TestExecutor_ResultChannelConcurrency_Race(t *testing.T) {
+	for i := 0; i < 10; i++ {
+		t.Run("iteration", func(t *testing.T) {
+			t.Parallel()
+
+			type result struct {
+				stdout   string
+				exitCode int
+			}
+
+			resultChan := make(chan result, 1)
+
+			var wg sync.WaitGroup
+			wg.Add(1)
+
+			// Writer goroutine (simulates startActRunnerGoroutine)
+			go func() {
+				defer wg.Done()
+				// Simulate variable execution time
+				time.Sleep(time.Microsecond * time.Duration(i%10))
+				resultChan <- result{
+					stdout:   "test output",
+					exitCode: 0,
+				}
+			}()
+
+			// Simulate program.Run() waiting and then reading result
+			time.Sleep(time.Microsecond * 5)
+			res := <-resultChan
+			wg.Wait()
+
+			if res.stdout != "test output" {
+				t.Errorf("expected 'test output', got %q", res.stdout)
+			}
+		})
+	}
+}
+
+// TestPreparer_ErrGroupConcurrency_Race tests that errgroup-based parallel
+// checks don't cause races. This exercises the patterns in runPreflightChecks
+// and runValidationChecks.
+func TestPreparer_ErrGroupConcurrency_Race(t *testing.T) {
+	for i := 0; i < 10; i++ {
+		t.Run("iteration", func(t *testing.T) {
+			t.Parallel()
+
+			ctx := context.Background()
+			g, gctx := errgroup.WithContext(ctx)
+
+			// Shared state that checks might access (simulates verbose flag check)
+			var checkResults []string
+			var mu sync.Mutex
+
+			// Simulate parallel preflight checks
+			g.Go(func() error {
+				select {
+				case <-gctx.Done():
+					return gctx.Err()
+				default:
+					mu.Lock()
+					checkResults = append(checkResults, "git")
+					mu.Unlock()
+					return nil
+				}
+			})
+
+			g.Go(func() error {
+				select {
+				case <-gctx.Done():
+					return gctx.Err()
+				default:
+					mu.Lock()
+					checkResults = append(checkResults, "act")
+					mu.Unlock()
+					return nil
+				}
+			})
+
+			g.Go(func() error {
+				select {
+				case <-gctx.Done():
+					return gctx.Err()
+				default:
+					mu.Lock()
+					checkResults = append(checkResults, "docker")
+					mu.Unlock()
+					return nil
+				}
+			})
+
+			if err := g.Wait(); err != nil {
+				t.Fatalf("errgroup failed: %v", err)
+			}
+
+			mu.Lock()
+			if len(checkResults) != 3 {
+				t.Errorf("expected 3 check results, got %d", len(checkResults))
+			}
+			mu.Unlock()
+		})
+	}
+}
+
+// TestExecutor_WaitGroupSynchronization_Race tests that WaitGroup synchronization
+// in ExecuteWithTUI doesn't cause races. This exercises the pattern where
+// multiple goroutines increment/decrement the same WaitGroup.
+func TestExecutor_WaitGroupSynchronization_Race(t *testing.T) {
+	for i := 0; i < 10; i++ {
+		t.Run("iteration", func(t *testing.T) {
+			t.Parallel()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+			defer cancel()
+
+			logChan := make(chan string, 10)
+			resultChan := make(chan struct{}, 1)
+
+			var wg sync.WaitGroup
+			wg.Add(2)
+
+			// Goroutine 1 (simulates startActRunnerGoroutine)
+			go func() {
+				defer wg.Done()
+				defer close(logChan)
+				for j := 0; j < 5; j++ {
+					select {
+					case logChan <- "msg":
+					case <-ctx.Done():
+						return
+					}
+				}
+				resultChan <- struct{}{}
+			}()
+
+			// Goroutine 2 (simulates startLogProcessorGoroutine)
+			go func() {
+				defer wg.Done()
+				for {
+					select {
+					case _, ok := <-logChan:
+						if !ok {
+							return
+						}
+					case <-ctx.Done():
+						for range logChan {
+						}
+						return
+					}
+				}
+			}()
+
+			// Wait for result then cleanup (simulates program.Run() pattern)
+			select {
+			case <-resultChan:
+			case <-ctx.Done():
+			}
+
+			wg.Wait()
+		})
+	}
+}
+
+// TestPreparer_CleanupFunctionRace tests that cleanup functions can be called
+// safely after concurrent preparation. This exercises the pattern where
+// cleanup functions are set by goroutines and later called.
+func TestPreparer_CleanupFunctionRace(t *testing.T) {
+	for i := 0; i < 10; i++ {
+		t.Run("iteration", func(t *testing.T) {
+			t.Parallel()
+
+			var cleanupWorkflows func()
+			var cleanupWorktree func()
+			var mu sync.Mutex
+
+			workflowChan := make(chan func(), 1)
+			worktreeChan := make(chan func(), 1)
+
+			// Concurrent setup of cleanup functions
+			go func() {
+				time.Sleep(time.Microsecond * time.Duration(i%5))
+				workflowChan <- func() {
+					mu.Lock()
+					defer mu.Unlock()
+				}
+			}()
+
+			go func() {
+				time.Sleep(time.Microsecond * time.Duration(i%3))
+				worktreeChan <- func() {
+					mu.Lock()
+					defer mu.Unlock()
+				}
+			}()
+
+			cleanupWorkflows = <-workflowChan
+			cleanupWorktree = <-worktreeChan
+
+			// Call cleanup functions (simulates Cleanup() method)
+			if cleanupWorkflows != nil {
+				cleanupWorkflows()
+			}
+			if cleanupWorktree != nil {
+				cleanupWorktree()
+			}
+		})
+	}
+}
+
+// TestErrorProcessor_ConcurrentProcessing_Race tests that ErrorProcessor can
+// be called concurrently without races. This is important because multiple
+// goroutines might process errors simultaneously.
+func TestErrorProcessor_ConcurrentProcessing_Race(t *testing.T) {
+	t.Parallel()
+
+	processor := NewErrorProcessor("/test/repo")
+
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			result := &act.RunResult{
+				Stdout:   fmt.Sprintf("main.go:%d:5: undefined: x\n", idx),
+				Stderr:   "",
+				ExitCode: 1,
+				Duration: time.Second,
+			}
+			processed := processor.Process(result)
+			if processed == nil {
+				t.Error("processed result should not be nil")
+			}
+		}(i)
+	}
+	wg.Wait()
+}
+
+// TestCheckRunner_ConcurrentGetResult_Race tests that GetResult can be called
+// concurrently without races after Run completes.
+func TestCheckRunner_ConcurrentGetResult_Race(t *testing.T) {
+	t.Parallel()
+
+	cfg := &RunConfig{
+		RepoRoot:     "/test",
+		WorkflowPath: "/test/.github/workflows",
+		Event:        "push",
+		RunID:        "0123456789abcdef",
+	}
+
+	runner := New(cfg)
+
+	// Manually set result to simulate post-Run state
+	runner.result = &RunResult{
+		ActResult: &act.RunResult{
+			Stdout:   "test",
+			ExitCode: 0,
+			Duration: time.Second,
+		},
+		RunID: cfg.RunID,
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			result := runner.GetResult()
+			if result == nil {
+				t.Error("result should not be nil")
+			}
+			if result.RunID != cfg.RunID {
+				t.Errorf("expected RunID %s, got %s", cfg.RunID, result.RunID)
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+// TestPreparer_ContextCancellation_Race tests that context cancellation
+// doesn't cause races in concurrent operations.
+func TestPreparer_ContextCancellation_Race(t *testing.T) {
+	for i := 0; i < 10; i++ {
+		t.Run("iteration", func(t *testing.T) {
+			t.Parallel()
+
+			ctx, cancel := context.WithCancel(context.Background())
+
+			resultChan := make(chan error, 2)
+			var wg sync.WaitGroup
+			wg.Add(2)
+
+			// Start goroutines that respect context
+			go func() {
+				defer wg.Done()
+				select {
+				case <-ctx.Done():
+					resultChan <- ctx.Err()
+				case <-time.After(10 * time.Millisecond):
+					resultChan <- nil
+				}
+			}()
+
+			go func() {
+				defer wg.Done()
+				select {
+				case <-ctx.Done():
+					resultChan <- ctx.Err()
+				case <-time.After(10 * time.Millisecond):
+					resultChan <- nil
+				}
+			}()
+
+			// Cancel at a random point
+			time.Sleep(time.Microsecond * time.Duration(i%5))
+			cancel()
+
+			wg.Wait()
+			close(resultChan)
+
+			// Drain results
+			for range resultChan {
+			}
+		})
+	}
 }

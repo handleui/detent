@@ -458,6 +458,17 @@ func (m *CheckModel) renderCompletionView() string {
 	}
 	b.WriteString("\n")
 
+	// Check for security-skipped jobs
+	hasSecuritySkipped := false
+	if m.tracker != nil {
+		for _, job := range m.tracker.GetJobs() {
+			if job.Status == ci.JobSkippedSecurity {
+				hasSecuritySkipped = true
+				break
+			}
+		}
+	}
+
 	hasIssues := m.errors != nil && m.errors.Total > 0
 	workflowFailed := m.exitCode != 0
 
@@ -472,6 +483,12 @@ func (m *CheckModel) renderCompletionView() string {
 	default:
 		headerStyle := SuccessStyle.Bold(true)
 		b.WriteString(headerStyle.Render(fmt.Sprintf("✓ Check passed in %s\n", m.duration)))
+	}
+
+	// Show hint for security-skipped jobs
+	if hasSecuritySkipped {
+		b.WriteString("\n")
+		b.WriteString(HintStyle.Render("Locked jobs skipped for safety. Allow with: detent allow --job <id>") + "\n")
 	}
 
 	return b.String()

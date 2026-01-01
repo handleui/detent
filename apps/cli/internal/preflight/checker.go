@@ -11,6 +11,7 @@ import (
 	"github.com/detent/cli/internal/actbin"
 	"github.com/detent/cli/internal/docker"
 	"github.com/detent/cli/internal/git"
+	"github.com/detent/cli/internal/persistence"
 	"github.com/detent/cli/internal/tui"
 	"github.com/detent/cli/internal/workflow"
 )
@@ -59,6 +60,14 @@ func RunPreflightChecks(ctx context.Context, workflowPath, repoRoot, runID, work
 			program.Send(tui.PreflightDoneMsg{Err: err})
 		}
 
+		// Load config and get allowed sensitive jobs for this repo
+		var allowedSensitiveJobs []string
+		if cfg, cfgErr := persistence.Load(); cfgErr == nil {
+			if repoSHA, shaErr := git.GetFirstCommitSHA(repoRoot); shaErr == nil && repoSHA != "" {
+				allowedSensitiveJobs = cfg.GetAllowedSensitiveJobs(repoSHA)
+			}
+		}
+
 		program.Send(tui.PreflightUpdateMsg("Validating repository"))
 		err := git.ValidateNoEscapingSymlinks(ctx, repoRoot)
 		if err != nil {
@@ -84,7 +93,7 @@ func RunPreflightChecks(ctx context.Context, workflowPath, repoRoot, runID, work
 		}
 
 		program.Send(tui.PreflightUpdateMsg("Preparing workflows"))
-		tmpDir, cleanupWorkflows, err = workflow.PrepareWorkflows(workflowPath, workflowFile, nil)
+		tmpDir, cleanupWorkflows, err = workflow.PrepareWorkflows(workflowPath, workflowFile, allowedSensitiveJobs)
 		if err != nil {
 			sendError(fmt.Errorf("preparing workflows: %w", err))
 			return

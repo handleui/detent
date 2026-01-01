@@ -3144,11 +3144,8 @@ func TestSanitizeForShellEcho_Unicode(t *testing.T) {
 	}
 }
 
-// TestTopologicalSortManifest_CircularDependencies verifies topological sort handles cycles
+// TestTopologicalSortManifest_CircularDependencies verifies topological sort handles cycles gracefully
 func TestTopologicalSortManifest_CircularDependencies(t *testing.T) {
-	// Clear any existing warnings
-	_ = GetAndClearCycleWarnings()
-
 	// Create jobs with circular dependencies: a -> b -> c -> a
 	jobInfoMap := map[string]*ci.ManifestJob{
 		"a": {ID: "a", Name: "Job A", Needs: []string{"c"}},
@@ -3159,7 +3156,7 @@ func TestTopologicalSortManifest_CircularDependencies(t *testing.T) {
 
 	result := topologicalSortManifest(jobInfoMap)
 
-	// All jobs should still be included
+	// All jobs should still be included (cycles are handled gracefully)
 	if len(result) != 4 {
 		t.Errorf("expected 4 jobs, got %d", len(result))
 	}
@@ -3169,20 +3166,14 @@ func TestTopologicalSortManifest_CircularDependencies(t *testing.T) {
 		t.Errorf("expected job 'd' first, got %q", result[0].ID)
 	}
 
-	// Check that cycle warnings were recorded
-	warnings := GetAndClearCycleWarnings()
-	if len(warnings) != 3 {
-		t.Errorf("expected 3 cycle warnings (a,b,c), got %d: %v", len(warnings), warnings)
+	// Verify all jobs are present in result
+	resultSet := make(map[string]bool)
+	for _, job := range result {
+		resultSet[job.ID] = true
 	}
-
-	// Verify all cycle jobs are in warnings
-	warningSet := make(map[string]bool)
-	for _, w := range warnings {
-		warningSet[w] = true
-	}
-	for _, cycleJob := range []string{"a", "b", "c"} {
-		if !warningSet[cycleJob] {
-			t.Errorf("expected job %q in cycle warnings", cycleJob)
+	for _, expectedJob := range []string{"a", "b", "c", "d"} {
+		if !resultSet[expectedJob] {
+			t.Errorf("expected job %q in result", expectedJob)
 		}
 	}
 }

@@ -8,10 +8,12 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/detent/cli/internal/ci"
+	"github.com/detent/cli/internal/debug"
 	"github.com/goccy/go-yaml"
 	"golang.org/x/sync/errgroup"
 )
@@ -19,11 +21,6 @@ import (
 // validJobIDPattern matches GitHub Actions job ID requirements: [a-zA-Z_][a-zA-Z0-9_-]*
 // This prevents shell injection via malicious job IDs in marker echo commands.
 var validJobIDPattern = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_-]*$`)
-
-// CycleWarnings holds job IDs that form circular dependencies detected during manifest building.
-// This is populated by topologicalSortManifest and can be checked after BuildManifest.
-var CycleWarnings []string
-var cycleWarningsMu sync.Mutex
 
 // InjectContinueOnError modifies a workflow to add continue-on-error: true to all jobs and steps.
 // This ensures that Docker failures, job-level failures, and step-level failures don't stop execution,
@@ -480,17 +477,96 @@ func InjectAlwaysForDependentJobs(wf *Workflow, allowedJobs []string) {
 }
 
 const (
-	// Timeout values in minutes to prevent hanging Docker operations
-	defaultJobTimeoutMinutes  = 30 // Default timeout for jobs
-	defaultStepTimeoutMinutes = 15 // Default timeout for steps
+	// Display limits for step names derived from run commands
+	maxRunCommandDisplay = 40 // Max length before truncation
+	truncationSuffix     = "..."
+
+	// Concurrency limit for parallel workflow processing
+	maxConcurrentWorkflows = 10
 )
+
+// truncatedRunLength is derived from maxRunCommandDisplay to ensure the truncated
+// string plus suffix equals exactly maxRunCommandDisplay characters.
+var truncatedRunLength = maxRunCommandDisplay - len(truncationSuffix)
+
+// Environment variable names for timeout configuration.
+const (
+	// JobTimeoutEnv overrides the default job timeout.
+	// Value should be in minutes (e.g., "60" for 60 minutes).
+	JobTimeoutEnv = "DETENT_JOB_TIMEOUT"
+
+	// StepTimeoutEnv overrides the default step timeout.
+	// Value should be in minutes (e.g., "20" for 20 minutes).
+	StepTimeoutEnv = "DETENT_STEP_TIMEOUT"
+)
+
+// Default timeout values in minutes.
+const (
+	defaultJobTimeoutMinutes  = 30
+	defaultStepTimeoutMinutes = 15
+
+	// Minimum and maximum allowed timeout values (in minutes).
+	minTimeoutMinutes = 1
+	maxTimeoutMinutes = 120
+)
+
+// getJobTimeout returns the default job timeout in minutes.
+// Reads from DETENT_JOB_TIMEOUT, defaults to 30 minutes.
+func getJobTimeout() int {
+	return getTimeoutFromEnv(JobTimeoutEnv, defaultJobTimeoutMinutes)
+}
+
+// getStepTimeout returns the default step timeout in minutes.
+// Reads from DETENT_STEP_TIMEOUT, defaults to 15 minutes.
+func getStepTimeout() int {
+	return getTimeoutFromEnv(StepTimeoutEnv, defaultStepTimeoutMinutes)
+}
+
+// getTimeoutFromEnv reads a timeout value from an environment variable.
+// Returns the default if the env var is not set, empty, or invalid.
+// Values are clamped to [minTimeoutMinutes, maxTimeoutMinutes].
+func getTimeoutFromEnv(envVar string, defaultValue int) int {
+	value := os.Getenv(envVar)
+	if value == "" {
+		return defaultValue
+	}
+
+	minutes, err := strconv.Atoi(value)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: invalid %s value %q, using default %d minutes\n",
+			envVar, value, defaultValue)
+		return defaultValue
+	}
+
+	return clampTimeout(minutes, defaultValue)
+}
+
+// clampTimeout ensures the timeout is within valid bounds.
+// Returns the default if the value is out of range.
+func clampTimeout(minutes, defaultValue int) int {
+	if minutes < minTimeoutMinutes {
+		fmt.Fprintf(os.Stderr, "warning: timeout %d minutes is below minimum %d, using default %d minutes\n",
+			minutes, minTimeoutMinutes, defaultValue)
+		return defaultValue
+	}
+	if minutes > maxTimeoutMinutes {
+		fmt.Fprintf(os.Stderr, "warning: timeout %d minutes exceeds maximum %d, using default %d minutes\n",
+			minutes, maxTimeoutMinutes, defaultValue)
+		return defaultValue
+	}
+	return minutes
+}
 
 // InjectTimeouts adds reasonable timeout values to prevent hanging Docker operations.
 // Jobs default to 30 minutes, steps to 15 minutes. Only applied if not already set.
+// Timeouts can be configured via DETENT_JOB_TIMEOUT and DETENT_STEP_TIMEOUT environment variables.
 func InjectTimeouts(wf *Workflow) {
 	if wf == nil || wf.Jobs == nil {
 		return
 	}
+
+	jobTimeout := getJobTimeout()
+	stepTimeout := getStepTimeout()
 
 	for _, job := range wf.Jobs {
 		if job == nil {
@@ -499,7 +575,7 @@ func InjectTimeouts(wf *Workflow) {
 
 		// Set job timeout if not already specified
 		if job.TimeoutMinutes == nil {
-			job.TimeoutMinutes = defaultJobTimeoutMinutes
+			job.TimeoutMinutes = jobTimeout
 		}
 
 		// Set step timeouts if not already specified
@@ -509,7 +585,7 @@ func InjectTimeouts(wf *Workflow) {
 					continue
 				}
 				if step.TimeoutMinutes == nil {
-					step.TimeoutMinutes = defaultStepTimeoutMinutes
+					step.TimeoutMinutes = stepTimeout
 				}
 			}
 		}
@@ -695,8 +771,8 @@ func getStepDisplayName(step *Step) string {
 		// Truncate long run commands
 		run := strings.TrimSpace(step.Run)
 		run = strings.Split(run, "\n")[0] // First line only
-		if len(run) > 40 {
-			return run[:37] + "..."
+		if len(run) > maxRunCommandDisplay {
+			return run[:truncatedRunLength] + truncationSuffix
 		}
 		return run
 	}
@@ -803,14 +879,6 @@ func topologicalSortManifest(jobInfoMap map[string]*ci.ManifestJob) []ci.Manifes
 			}
 		}
 		sort.Strings(remaining)
-
-		// Record cycle warning for user feedback
-		if len(remaining) > 0 {
-			cycleWarningsMu.Lock()
-			CycleWarnings = append(CycleWarnings, remaining...)
-			cycleWarningsMu.Unlock()
-		}
-
 		for _, id := range remaining {
 			if job, exists := jobInfoMap[id]; exists {
 				result = append(result, *job)
@@ -819,15 +887,6 @@ func topologicalSortManifest(jobInfoMap map[string]*ci.ManifestJob) []ci.Manifes
 	}
 
 	return result
-}
-
-// GetAndClearCycleWarnings returns any cycle warnings and clears them.
-func GetAndClearCycleWarnings() []string {
-	cycleWarningsMu.Lock()
-	defer cycleWarningsMu.Unlock()
-	warnings := CycleWarnings
-	CycleWarnings = nil
-	return warnings
 }
 
 // InjectJobMarkers injects lifecycle marker steps into each job for reliable job tracking.
@@ -1073,11 +1132,17 @@ func PrepareWorkflows(srcDir, specificWorkflow string, allowedSensitiveJobs []st
 	// MkdirTemp already uses 0700 on most systems, but this ensures consistency
 	//nolint:gosec // G302: 0o700 is correct for directories (execute bit needed to traverse)
 	if chmodErr := os.Chmod(tmpDir, 0o700); chmodErr != nil {
-		_ = os.RemoveAll(tmpDir)
+		if rmErr := os.RemoveAll(tmpDir); rmErr != nil {
+			debug.Log("Failed to cleanup temp directory %s: %v", tmpDir, rmErr)
+		}
 		return "", nil, fmt.Errorf("setting temp directory permissions: %w", chmodErr)
 	}
 
-	cleanup = func() { _ = os.RemoveAll(tmpDir) }
+	cleanup = func() {
+		if rmErr := os.RemoveAll(tmpDir); rmErr != nil {
+			debug.Log("Failed to cleanup temp directory %s: %v", tmpDir, rmErr)
+		}
+	}
 
 	// Build combined manifest from ALL workflows before processing
 	// This ensures the TUI sees all jobs from all workflow files in a single manifest
@@ -1099,8 +1164,7 @@ func PrepareWorkflows(srcDir, specificWorkflow string, allowedSensitiveJobs []st
 	var mu sync.Mutex // Protects file writes to tmpDir
 
 	// Set a reasonable concurrency limit to avoid resource exhaustion
-	// This limits the number of concurrent workflow processing goroutines
-	g.SetLimit(10)
+	g.SetLimit(maxConcurrentWorkflows)
 
 	for wfPath, wf := range parsedWorkflows {
 		wfPath := wfPath // Capture loop variable for goroutine
