@@ -2,7 +2,9 @@ package update
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -20,6 +22,9 @@ const (
 	cacheFile     = "update-cache.json"
 	cacheDuration = 24 * time.Hour
 	httpTimeout   = 5 * time.Second
+
+	// maxResponseSize limits manifest response to prevent memory exhaustion
+	maxResponseSize = 64 * 1024 // 64KB should be plenty for a version manifest
 )
 
 type manifest struct {
@@ -92,9 +97,21 @@ func fetchLatestVersion() (string, error) {
 		return "", fmt.Errorf("unexpected status: %d", resp.StatusCode)
 	}
 
+	// Limit response size to prevent memory exhaustion from malicious/broken servers
+	limitedReader := io.LimitReader(resp.Body, maxResponseSize)
+
 	var m manifest
-	if decodeErr := json.NewDecoder(resp.Body).Decode(&m); decodeErr != nil {
+	if decodeErr := json.NewDecoder(limitedReader).Decode(&m); decodeErr != nil {
 		return "", decodeErr
+	}
+
+	// Validate that the version is valid semver before returning
+	if m.Latest == "" {
+		return "", errors.New("manifest contains empty latest version")
+	}
+	latest := strings.TrimPrefix(m.Latest, "v")
+	if _, parseErr := semver.NewVersion(latest); parseErr != nil {
+		return "", fmt.Errorf("invalid version in manifest: %w", parseErr)
 	}
 
 	return m.Latest, nil
@@ -166,10 +183,14 @@ func Run() error {
 }
 
 // ClearCache removes the update cache file.
+// Returns nil if the file doesn't exist.
 func ClearCache() error {
 	path, err := getCachePath()
 	if err != nil {
 		return err
 	}
-	return os.Remove(path)
+	if removeErr := os.Remove(path); removeErr != nil && !os.IsNotExist(removeErr) {
+		return removeErr
+	}
+	return nil
 }

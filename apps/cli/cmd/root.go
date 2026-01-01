@@ -67,11 +67,14 @@ Requirements:
 
 		// Branding header (commands control spacing after)
 		fmt.Println()
-		fmt.Println(tui.Header(Version, cmd.Name()))
+		header := tui.Header(Version, cmd.Name())
 
 		// Check for updates (non-blocking, cached 24h)
 		if latest, hasUpdate := update.Check(Version); hasUpdate {
+			fmt.Println(header)
 			fmt.Println(tui.UpdateAvailable(latest))
+		} else {
+			fmt.Println(header)
 		}
 
 		// Load config
