@@ -1,5 +1,11 @@
 # @detent/web
 
+## 0.2.0
+
+### Minor Changes
+
+- 3a8cac2: Added security hardening, scaffolded docs and improved distribution method for CLI
+
 ## 0.1.0
 
 ### Minor Changes
