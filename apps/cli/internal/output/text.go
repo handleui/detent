@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/detent/cli/internal/errors"
+	"github.com/detentsh/core/errors"
 )
 
 // ANSI color codes - using ANSI 256 palette to match TUI styles (internal/tui/styles.go)

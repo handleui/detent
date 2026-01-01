@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/detent/cli/internal/errors"
-	"github.com/detent/cli/internal/git"
 	"github.com/detent/cli/internal/util"
+	"github.com/detentsh/core/errors"
+	"github.com/detentsh/core/git"
 )
 
 // Recorder persists scan results to SQLite

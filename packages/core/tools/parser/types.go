@@ -3,7 +3,7 @@ package parser
 import (
 	"regexp"
 
-	"github.com/handleui/detent/packages/core/errors"
+	"github.com/detentsh/core/errors"
 )
 
 // NoisePatternProvider is an optional interface that parsers can implement

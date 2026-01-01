@@ -12,7 +12,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/handleui/detent/packages/core/ci"
+	"github.com/detentsh/core/ci"
 	"github.com/goccy/go-yaml"
 	"golang.org/x/sync/errgroup"
 )

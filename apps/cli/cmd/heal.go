@@ -8,15 +8,15 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/detent/cli/internal/git"
-	"github.com/detent/cli/internal/heal/client"
-	"github.com/detent/cli/internal/heal/loop"
-	"github.com/detent/cli/internal/heal/prompt"
-	"github.com/detent/cli/internal/heal/tools"
 	"github.com/detent/cli/internal/persistence"
 	"github.com/detent/cli/internal/repo"
 	"github.com/detent/cli/internal/sentry"
 	"github.com/detent/cli/internal/tui"
+	"github.com/detentsh/core/git"
+	"github.com/detentsh/core/heal/client"
+	"github.com/detentsh/core/heal/loop"
+	"github.com/detentsh/core/heal/prompt"
+	"github.com/detentsh/core/heal/tools"
 	"github.com/spf13/cobra"
 )
 

@@ -8,13 +8,13 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/detent/cli/internal/act"
-	"github.com/detent/cli/internal/ci"
-	actparser "github.com/detent/cli/internal/ci/act"
 	"github.com/detent/cli/internal/debug"
-	internalerrors "github.com/detent/cli/internal/errors"
-	"github.com/detent/cli/internal/git"
 	"github.com/detent/cli/internal/tui"
+	"github.com/detentsh/core/act"
+	"github.com/detentsh/core/ci"
+	actparser "github.com/detentsh/core/ci/act"
+	coreerrors "github.com/detentsh/core/errors"
+	"github.com/detentsh/core/git"
 )
 
 // ActExecutor handles running the act process and capturing output.
@@ -28,9 +28,9 @@ type ActExecutor struct {
 // ExecuteResult contains the result of act execution including processed errors.
 type ExecuteResult struct {
 	ActResult            *act.RunResult
-	Extracted            []*internalerrors.ExtractedError
-	Grouped              *internalerrors.GroupedErrors
-	GroupedComprehensive *internalerrors.ComprehensiveErrorGroup
+	Extracted            []*coreerrors.ExtractedError
+	Grouped              *coreerrors.GroupedErrors
+	GroupedComprehensive *coreerrors.ComprehensiveErrorGroup
 	StartTime            time.Time
 	Duration             time.Duration
 	Cancelled            bool
@@ -130,9 +130,9 @@ func (e *ActExecutor) ExecuteWithTUI(ctx context.Context, logChan chan string, p
 // tuiExecuteResult encapsulates the result from the act runner goroutine.
 type tuiExecuteResult struct {
 	result               *act.RunResult
-	extracted            []*internalerrors.ExtractedError
-	grouped              *internalerrors.GroupedErrors
-	groupedComprehensive *internalerrors.ComprehensiveErrorGroup
+	extracted            []*coreerrors.ExtractedError
+	grouped              *coreerrors.GroupedErrors
+	groupedComprehensive *coreerrors.ComprehensiveErrorGroup
 	err                  error
 }
 

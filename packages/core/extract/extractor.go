@@ -5,10 +5,10 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/handleui/detent/packages/core/ci"
-	"github.com/handleui/detent/packages/core/errors"
-	"github.com/handleui/detent/packages/core/tools"
-	"github.com/handleui/detent/packages/core/tools/parser"
+	"github.com/detentsh/core/ci"
+	"github.com/detentsh/core/errors"
+	"github.com/detentsh/core/tools"
+	"github.com/detentsh/core/tools/parser"
 )
 
 const (

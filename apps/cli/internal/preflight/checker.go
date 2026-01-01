@@ -10,10 +10,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/detent/cli/internal/actbin"
 	"github.com/detent/cli/internal/docker"
-	"github.com/detent/cli/internal/git"
 	"github.com/detent/cli/internal/persistence"
 	"github.com/detent/cli/internal/tui"
-	"github.com/detent/cli/internal/workflow"
+	"github.com/detentsh/core/git"
+	"github.com/detentsh/core/workflow"
 )
 
 // ErrCancelled is returned when the user cancels an operation

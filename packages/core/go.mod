@@ -1,4 +1,4 @@
-module github.com/handleui/detent/packages/core
+module github.com/detentsh/core
 
 go 1.25.5
 

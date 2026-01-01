@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/detent/cli/internal/errors"
 	"github.com/detent/cli/internal/runner"
+	"github.com/detentsh/core/errors"
 )
 
 func TestCheckCommand(t *testing.T) {

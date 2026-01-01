@@ -7,10 +7,10 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/detent/cli/internal/ci"
-	"github.com/detent/cli/internal/errors"
 	"github.com/detent/cli/internal/output"
-	"github.com/detent/cli/internal/workflow"
+	"github.com/detentsh/core/ci"
+	"github.com/detentsh/core/errors"
+	"github.com/detentsh/core/workflow"
 	"github.com/handleui/shimmer"
 )
 

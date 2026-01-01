@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/detent/cli/internal/git"
 	"github.com/detent/cli/internal/tui"
+	"github.com/detentsh/core/git"
 	"github.com/spf13/cobra"
 )
 

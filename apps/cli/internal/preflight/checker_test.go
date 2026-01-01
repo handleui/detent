@@ -3,7 +3,7 @@ package preflight
 import (
 	"testing"
 
-	"github.com/detent/cli/internal/git"
+	"github.com/detentsh/core/git"
 )
 
 // TestPreflightResultStruct verifies that the Result struct has the expected fields

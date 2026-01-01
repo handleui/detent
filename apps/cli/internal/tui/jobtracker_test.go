@@ -3,8 +3,8 @@ package tui
 import (
 	"testing"
 
-	"github.com/detent/cli/internal/ci"
-	"github.com/detent/cli/internal/workflow"
+	"github.com/detentsh/core/ci"
+	"github.com/detentsh/core/workflow"
 )
 
 func TestJobTracker_BasicFlow(t *testing.T) {

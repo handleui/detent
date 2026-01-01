@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/handleui/detent/packages/core/heal/tools"
+	"github.com/detentsh/core/heal/tools"
 )
 
 const (

@@ -3,8 +3,8 @@ package tui
 import (
 	"sync"
 
-	"github.com/detent/cli/internal/ci"
-	"github.com/detent/cli/internal/workflow"
+	"github.com/detentsh/core/ci"
+	"github.com/detentsh/core/workflow"
 )
 
 // TrackedStep represents a step being tracked in the TUI.

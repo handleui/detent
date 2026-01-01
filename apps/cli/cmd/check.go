@@ -10,12 +10,12 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/detent/cli/internal/git"
 	"github.com/detent/cli/internal/output"
 	"github.com/detent/cli/internal/runner"
 	"github.com/detent/cli/internal/sentry"
 	"github.com/detent/cli/internal/tui"
 	"github.com/detent/cli/internal/util"
+	"github.com/detentsh/core/git"
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 )

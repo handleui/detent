@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"io"
 
-	"github.com/detent/cli/internal/errors"
+	"github.com/detentsh/core/errors"
 )
 
 // FormatJSON formats error groups as JSON output using the simple GroupedErrors structure.

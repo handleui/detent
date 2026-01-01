@@ -6,11 +6,11 @@ import (
 	"os"
 
 	"github.com/detent/cli/internal/debug"
-	"github.com/detent/cli/internal/git"
 	"github.com/detent/cli/internal/persistence"
 	"github.com/detent/cli/internal/preflight"
 	"github.com/detent/cli/internal/tui"
-	"github.com/detent/cli/internal/workflow"
+	"github.com/detentsh/core/git"
+	"github.com/detentsh/core/workflow"
 	"golang.org/x/sync/errgroup"
 )
 

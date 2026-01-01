@@ -14,8 +14,8 @@ import (
 
 	_ "github.com/ncruces/go-sqlite3/driver"
 	_ "github.com/ncruces/go-sqlite3/embed"
-	"github.com/detent/cli/internal/git"
 	"github.com/detent/cli/internal/util"
+	"github.com/detentsh/core/git"
 )
 
 const (

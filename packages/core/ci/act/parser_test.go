@@ -4,7 +4,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/handleui/detent/packages/core/ci"
+	"github.com/detentsh/core/ci"
 )
 
 func TestParser_ParseLineJobEvent(t *testing.T) {

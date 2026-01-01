@@ -3,9 +3,9 @@ package runner
 import (
 	"time"
 
-	"github.com/detent/cli/internal/act"
-	"github.com/detent/cli/internal/errors"
-	"github.com/detent/cli/internal/git"
+	"github.com/detentsh/core/act"
+	"github.com/detentsh/core/errors"
+	"github.com/detentsh/core/git"
 )
 
 // RunResult contains the complete result of a workflow execution run.

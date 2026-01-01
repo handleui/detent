@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/detent/cli/internal/errors"
+	"github.com/detentsh/core/errors"
 )
 
 func TestFormatText(t *testing.T) {

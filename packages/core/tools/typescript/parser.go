@@ -3,8 +3,8 @@ package typescript
 import (
 	"strconv"
 
-	"github.com/handleui/detent/packages/core/errors"
-	"github.com/handleui/detent/packages/core/tools/parser"
+	"github.com/detentsh/core/errors"
+	"github.com/detentsh/core/tools/parser"
 )
 
 const (

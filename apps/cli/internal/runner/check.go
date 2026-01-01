@@ -7,11 +7,11 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/detent/cli/internal/act"
 	"github.com/detent/cli/internal/debug"
-	"github.com/detent/cli/internal/errors"
-	"github.com/detent/cli/internal/git"
-	"github.com/detent/cli/internal/workflow"
+	"github.com/detentsh/core/act"
+	"github.com/detentsh/core/errors"
+	"github.com/detentsh/core/git"
+	"github.com/detentsh/core/workflow"
 )
 
 // CheckRunner orchestrates a complete check run lifecycle including:

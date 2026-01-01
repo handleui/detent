@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/handleui/detent/packages/core/ci"
+	"github.com/detentsh/core/ci"
 )
 
 // extractManifestJSON extracts the JSON content from a base64-encoded manifest marker.

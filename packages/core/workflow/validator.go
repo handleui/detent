@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/handleui/detent/packages/core/tools"
+	"github.com/detentsh/core/tools"
 )
 
 // ValidationSeverity indicates how critical a validation issue is.

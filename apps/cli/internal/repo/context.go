@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/detent/cli/internal/git"
+	"github.com/detentsh/core/git"
 )
 
 // Context contains resolved repository information.

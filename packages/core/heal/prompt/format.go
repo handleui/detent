@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/handleui/detent/packages/core/errors"
+	"github.com/detentsh/core/errors"
 )
 
 // Default values for error formatting.

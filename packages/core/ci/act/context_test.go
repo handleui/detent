@@ -3,7 +3,7 @@ package act
 import (
 	"testing"
 
-	"github.com/handleui/detent/packages/core/ci"
+	"github.com/detentsh/core/ci"
 )
 
 func TestContextParser_ParseLine(t *testing.T) {

@@ -8,12 +8,12 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/detent/cli/internal/agent"
-	"github.com/detent/cli/internal/git"
 	"github.com/detent/cli/internal/persistence"
 	"github.com/detent/cli/internal/runner"
 	"github.com/detent/cli/internal/signal"
 	"github.com/detent/cli/internal/tui"
+	"github.com/detentsh/core/agent"
+	"github.com/detentsh/core/git"
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 )

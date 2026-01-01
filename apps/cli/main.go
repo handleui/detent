@@ -3,12 +3,30 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 	"unicode"
 
 	"github.com/detent/cli/cmd"
+	"github.com/detent/cli/internal/actbin"
 	"github.com/detent/cli/internal/sentry"
 	"github.com/detent/cli/internal/tui"
+	"github.com/detentsh/core/act"
+	"github.com/detentsh/core/extract"
+	"github.com/detentsh/core/tools"
 )
+
+func init() {
+	// Inject CLI-specific act binary resolver into core
+	act.DefaultActPathResolver = actbin.ActPath
+
+	// Inject sentry reporters for unknown patterns and unsupported tools
+	extract.DefaultUnknownPatternReporter = func(patterns []string) {
+		sentry.CaptureMessage("Unknown error patterns: " + strings.Join(patterns, ", "))
+	}
+	tools.DefaultUnsupportedToolsReporter = func(toolNames []string) {
+		sentry.CaptureMessage("Unsupported tools: " + strings.Join(toolNames, ", "))
+	}
+}
 
 func main() {
 	os.Exit(run())

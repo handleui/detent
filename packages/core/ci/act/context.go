@@ -4,7 +4,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/handleui/detent/packages/core/ci"
+	"github.com/detentsh/core/ci"
 )
 
 // Regex patterns for act context parsing.

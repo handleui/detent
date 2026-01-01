@@ -6,11 +6,11 @@ import (
 	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/detent/cli/internal/git"
 	"github.com/detent/cli/internal/repo"
 	"github.com/detent/cli/internal/tui"
 	tuiworkflows "github.com/detent/cli/internal/tui/workflows"
-	"github.com/detent/cli/internal/workflow"
+	"github.com/detentsh/core/git"
+	"github.com/detentsh/core/workflow"
 	"github.com/spf13/cobra"
 )
 

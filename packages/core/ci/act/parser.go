@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/handleui/detent/packages/core/ci"
+	"github.com/detentsh/core/ci"
 )
 
 const detentMarkerPrefix = "::detent::"

@@ -3,11 +3,11 @@ package runner
 import (
 	"strings"
 
-	"github.com/detent/cli/internal/act"
-	actparser "github.com/detent/cli/internal/ci/act"
-	"github.com/detent/cli/internal/errors"
-	"github.com/detent/cli/internal/extract"
-	"github.com/detent/cli/internal/tools"
+	"github.com/detentsh/core/act"
+	actparser "github.com/detentsh/core/ci/act"
+	"github.com/detentsh/core/errors"
+	"github.com/detentsh/core/extract"
+	"github.com/detentsh/core/tools"
 )
 
 // ErrorProcessor handles extraction and processing of errors from act output.

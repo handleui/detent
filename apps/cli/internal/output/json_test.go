@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/detent/cli/internal/errors"
+	"github.com/detentsh/core/errors"
 )
 
 func TestFormatJSON(t *testing.T) {

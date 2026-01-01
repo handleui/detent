@@ -13,10 +13,10 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/detent/cli/internal/git"
-	"github.com/detent/cli/internal/heal/client"
-	"github.com/detent/cli/internal/heal/tools"
 	"github.com/detent/cli/internal/tui"
+	"github.com/detentsh/core/git"
+	"github.com/detentsh/core/heal/client"
+	"github.com/detentsh/core/heal/tools"
 	"github.com/handleui/shimmer"
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"

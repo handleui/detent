@@ -5,9 +5,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/detent/cli/internal/errors"
-	"github.com/detent/cli/internal/git"
 	"github.com/detent/cli/internal/persistence"
+	"github.com/detentsh/core/errors"
+	"github.com/detentsh/core/git"
 )
 
 // ResultPersister handles database persistence of check run results.

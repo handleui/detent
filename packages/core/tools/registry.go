@@ -7,12 +7,12 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/handleui/detent/packages/core/tools/eslint"
-	"github.com/handleui/detent/packages/core/tools/generic"
-	"github.com/handleui/detent/packages/core/tools/golang"
-	"github.com/handleui/detent/packages/core/tools/parser"
-	"github.com/handleui/detent/packages/core/tools/rust"
-	"github.com/handleui/detent/packages/core/tools/typescript"
+	"github.com/detentsh/core/tools/eslint"
+	"github.com/detentsh/core/tools/generic"
+	"github.com/detentsh/core/tools/golang"
+	"github.com/detentsh/core/tools/parser"
+	"github.com/detentsh/core/tools/rust"
+	"github.com/detentsh/core/tools/typescript"
 )
 
 type (

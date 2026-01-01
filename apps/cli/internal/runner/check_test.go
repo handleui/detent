@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/detent/cli/internal/act"
-	internalerrors "github.com/detent/cli/internal/errors"
-	"github.com/detent/cli/internal/git"
+	"github.com/detentsh/core/act"
+	coreerrors "github.com/detentsh/core/errors"
+	"github.com/detentsh/core/git"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -658,8 +658,8 @@ func TestCheckRunner_PersistWithoutWorktreeInfo(t *testing.T) {
 			ExitCode: 0,
 			Duration: 1 * time.Second,
 		},
-		Extracted: []*internalerrors.ExtractedError{},
-		Grouped:   &internalerrors.GroupedErrors{},
+		Extracted: []*coreerrors.ExtractedError{},
+		Grouped:   &coreerrors.GroupedErrors{},
 		RunID:     cfg.RunID,
 	}
 

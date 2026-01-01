@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/detent/cli/internal/errors"
 	"github.com/detent/cli/internal/util"
+	"github.com/detentsh/core/errors"
 )
 
 // setupTestDetentHomeRecorder sets DETENT_HOME to a temp directory for test isolation.
