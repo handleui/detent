@@ -23,23 +23,24 @@ func init() {
 }
 
 func runUpdate(_ *cobra.Command, _ []string) error {
-	fmt.Println()
-
 	latest, hasUpdate := update.Check(Version)
 
 	if !hasUpdate {
-		fmt.Println(tui.ExitSuccess("Already on the latest version"))
+		fmt.Println()
+		fmt.Println(tui.ExitSuccess("Already on latest"))
 		return nil
 	}
 
-	fmt.Printf("  Updating to %s...\n\n", tui.AccentStyle.Render(latest))
+	fmt.Println()
+	fmt.Println(tui.MutedStyle.Render(Version) + " " + tui.MutedStyle.Render("→") + " " + tui.AccentStyle.Render(latest))
+	fmt.Println()
 
 	if err := update.Run(); err != nil {
 		return fmt.Errorf("update failed: %w", err)
 	}
 
 	fmt.Println()
-	fmt.Println(tui.ExitSuccess("Updated to " + latest))
+	fmt.Println(tui.ExitSuccess("Updated"))
 
 	return nil
 }
