@@ -51,4 +51,10 @@ changelog:
       - Merge branch
 
 release:
-  disable: true
+  draft: false
+  prerelease: auto
+  footer: |
+    ## Install
+    ```bash
+    curl -fsSL https://detent.dev/install.sh | bash
+    ```

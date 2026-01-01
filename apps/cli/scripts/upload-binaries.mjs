@@ -12,6 +12,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { del, list, put } from "@vercel/blob";
+import { rcompare } from "semver";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CLI_ROOT = join(__dirname, "..");
@@ -25,6 +26,24 @@ const log = (msg) => console.log(`[upload] ${msg}`);
 const fatal = (msg) => {
   console.error(`[upload] ERROR: ${msg}`);
   process.exit(1);
+};
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const withRetry = async (fn, label, maxRetries = 3, baseDelayMs = 1000) => {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (attempt === maxRetries) {
+        throw err;
+      }
+      const delay = baseDelayMs * 2 ** (attempt - 1);
+      log(`${label} failed (attempt ${attempt}/${maxRetries}): ${err.message}`);
+      log(`Retrying in ${delay}ms...`);
+      await sleep(delay);
+    }
+  }
 };
 
 const getVersion = async () => {
@@ -48,11 +67,15 @@ const uploadChecksums = async (version) => {
   try {
     const content = await readFile(checksumsPath);
     const blobPath = `releases/v${version}/checksums.txt`;
-    await put(blobPath, content, {
-      access: "public",
-      addRandomSuffix: false,
-      allowOverwrite: true,
-    });
+    await withRetry(
+      () =>
+        put(blobPath, content, {
+          access: "public",
+          addRandomSuffix: false,
+          allowOverwrite: true,
+        }),
+      "Upload checksums.txt"
+    );
     log("Uploaded checksums.txt");
   } catch {
     log("Warning: checksums.txt not found, skipping");
@@ -80,21 +103,21 @@ const updateManifest = async (version) => {
     manifest.versions.unshift(tag);
   }
 
-  // Sort descending by semver
-  manifest.versions.sort((a, b) => {
-    const [aMaj, aMin, aPat] = a.slice(1).split(".").map(Number);
-    const [bMaj, bMin, bPat] = b.slice(1).split(".").map(Number);
-    return bMaj - aMaj || bMin - aMin || bPat - aPat;
-  });
+  // Sort descending by semver (handles pre-release versions correctly)
+  manifest.versions.sort((a, b) => rcompare(a, b));
 
   manifest.latest = manifest.versions[0] || tag;
   manifest.updatedAt = new Date().toISOString();
 
-  await put(MANIFEST_PATH, JSON.stringify(manifest, null, 2), {
-    access: "public",
-    addRandomSuffix: false,
-    allowOverwrite: true,
-  });
+  await withRetry(
+    () =>
+      put(MANIFEST_PATH, JSON.stringify(manifest, null, 2), {
+        access: "public",
+        addRandomSuffix: false,
+        allowOverwrite: true,
+      }),
+    "Update manifest"
+  );
 
   log(
     `Updated manifest: latest=${manifest.latest}, total=${manifest.versions.length} versions`
@@ -109,11 +132,15 @@ const uploadBinary = async (archive, version) => {
   log(`Uploading ${filename}...`);
   const content = await readFile(path);
 
-  const blob = await put(blobPath, content, {
-    access: "public",
-    addRandomSuffix: false,
-    allowOverwrite: true,
-  });
+  const blob = await withRetry(
+    () =>
+      put(blobPath, content, {
+        access: "public",
+        addRandomSuffix: false,
+        allowOverwrite: true,
+      }),
+    `Upload ${filename}`
+  );
 
   log(`  → ${blob.url}`);
   return blob;
@@ -144,11 +171,15 @@ const cleanupOldVersions = async (manifest) => {
   manifest.versions = manifest.versions.slice(0, MAX_VERSIONS_TO_KEEP);
   manifest.updatedAt = new Date().toISOString();
 
-  await put(MANIFEST_PATH, JSON.stringify(manifest, null, 2), {
-    access: "public",
-    addRandomSuffix: false,
-    allowOverwrite: true,
-  });
+  await withRetry(
+    () =>
+      put(MANIFEST_PATH, JSON.stringify(manifest, null, 2), {
+        access: "public",
+        addRandomSuffix: false,
+        allowOverwrite: true,
+      }),
+    "Update manifest after cleanup"
+  );
 };
 
 const main = async () => {

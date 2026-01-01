@@ -40,8 +40,8 @@ verify_checksum() {
 
   expected=$(grep "$filename" "$checksums" | awk '{print $1}')
   if [ -z "$expected" ]; then
-    echo "Warning: No checksum found for $filename, skipping verification"
-    return 0
+    echo "Error: No checksum found for $filename" >&2
+    exit 1
   fi
 
   if command -v sha256sum >/dev/null 2>&1; then
@@ -49,8 +49,8 @@ verify_checksum() {
   elif command -v shasum >/dev/null 2>&1; then
     actual=$(shasum -a 256 "$archive" | awk '{print $1}')
   else
-    echo "Warning: No sha256 tool found, skipping verification"
-    return 0
+    echo "Error: sha256sum or shasum required for verification" >&2
+    exit 1
   fi
 
   if [ "$expected" != "$actual" ]; then
@@ -91,11 +91,14 @@ main() {
 
   echo "Downloading..."
   download "$DOWNLOAD_URL" "$ARCHIVE"
-  download "$CHECKSUMS_URL" "$CHECKSUMS" 2>/dev/null || true
 
-  if [ -f "$CHECKSUMS" ]; then
-    verify_checksum "$ARCHIVE" "$CHECKSUMS" "$FILENAME"
+  echo "Downloading checksums..."
+  if ! download "$CHECKSUMS_URL" "$CHECKSUMS"; then
+    echo "Error: Failed to download checksums" >&2
+    exit 1
   fi
+
+  verify_checksum "$ARCHIVE" "$CHECKSUMS" "$FILENAME"
 
   echo "Extracting..."
   if [ "$EXT" = "zip" ]; then
