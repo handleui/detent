@@ -1,5 +1,11 @@
 # @detent/cli
 
+## 0.9.0
+
+### Minor Changes
+
+- 3a8cac2: Added security hardening, scaffolded docs and improved distribution method for CLI
+
 ## 0.8.0
 
 ### Minor Changes
