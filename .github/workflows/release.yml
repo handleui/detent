@@ -69,12 +69,23 @@ jobs:
         if: steps.check.outputs.should_release == 'true'
         run: |
           TAG="v${{ steps.check.outputs.version }}"
-          if ! git rev-parse "$TAG" >/dev/null 2>&1; then
+          CURRENT_COMMIT=$(git rev-parse HEAD)
+
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            TAG_COMMIT=$(git rev-parse "$TAG")
+            if [ "$TAG_COMMIT" = "$CURRENT_COMMIT" ]; then
+              echo "Tag $TAG already exists and points to current commit"
+            else
+              echo "Tag $TAG exists but points to $TAG_COMMIT, updating to $CURRENT_COMMIT"
+              git tag -d "$TAG"
+              git push origin --delete "$TAG" || true
+              git tag "$TAG"
+              git push origin "$TAG"
+            fi
+          else
+            echo "Creating new tag $TAG"
             git tag "$TAG"
             git push origin "$TAG"
-            echo "Created and pushed tag $TAG"
-          else
-            echo "Tag $TAG already exists"
           fi
 
       - name: Build binaries with GoReleaser
