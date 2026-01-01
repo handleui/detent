@@ -65,17 +65,15 @@ Requirements:
 		// Detect AI agent environment once (cached, safe to call multiple times)
 		agentInfo = agent.Detect()
 
-		// Branding header (commands control spacing after)
+		// Check for updates (non-blocking, cached 24h) - show above header
 		fmt.Println()
-		header := tui.Header(Version, cmd.Name())
-
-		// Check for updates (non-blocking, cached 24h)
 		if latest, hasUpdate := update.Check(Version); hasUpdate {
-			fmt.Println(header)
 			fmt.Println(tui.UpdateAvailable(latest))
-		} else {
-			fmt.Println(header)
+			fmt.Println()
 		}
+
+		// Branding header
+		fmt.Println(tui.Header(Version, cmd.Name()))
 
 		// Load config
 		loadedCfg, configErr := persistence.Load()

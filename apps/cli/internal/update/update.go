@@ -17,15 +17,19 @@ import (
 )
 
 const (
-	manifestURL   = "https://detent.sh/api/binaries/releases/manifest.json"
-	installScript = "https://detent.dev/install.sh"
-	cacheFile     = "update-cache.json"
-	cacheDuration = 24 * time.Hour
-	httpTimeout   = 5 * time.Second
+	defaultManifestURL = "https://detent.sh/api/binaries/releases/manifest.json"
+	installScript      = "https://detent.sh/install.sh"
+	cacheFile          = "update-cache.json"
+	cacheDuration      = 24 * time.Hour
+	httpTimeout        = 5 * time.Second
 
 	// maxResponseSize limits manifest response to prevent memory exhaustion
 	maxResponseSize = 64 * 1024 // 64KB should be plenty for a version manifest
 )
+
+// manifestURL is the URL to fetch the manifest from.
+// It can be overridden in tests to use a mock server.
+var manifestURL = defaultManifestURL
 
 type manifest struct {
 	Latest   string   `json:"latest"`
@@ -174,7 +178,7 @@ func compareVersions(current, latest string) (string, bool) {
 // Run executes the install script to update to the latest version.
 func Run() error {
 	// #nosec G204 - installScript is a hardcoded constant, not user input
-	cmd := exec.Command("bash", "-c", "curl -fsSL "+installScript+" | bash")
+	cmd := exec.Command("bash", "-c", "set -o pipefail; curl -fsSL "+installScript+" | bash")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
