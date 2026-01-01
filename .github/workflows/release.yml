@@ -10,11 +10,15 @@ concurrency: ${{ github.workflow }}-${{ github.ref }}
 permissions:
   contents: write
   pull-requests: write
+  id-token: write
 
 jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
+    outputs:
+      tagged: ${{ steps.tag.outputs.tagged }}
+      version: ${{ steps.tag.outputs.version }}
 
     steps:
       - name: Checkout code
@@ -41,6 +45,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create and Push Tag
+        id: tag
         if: steps.changesets.outputs.hasChangesets == 'false'
         run: |
           VERSION=v$(node -p "require('./apps/cli/package.json').version")
@@ -48,6 +53,18 @@ jobs:
             git tag $VERSION
             git push origin $VERSION
             echo "Created and pushed tag $VERSION"
+            echo "tagged=true" >> $GITHUB_OUTPUT
+            echo "version=$VERSION" >> $GITHUB_OUTPUT
           else
             echo "Tag $VERSION already exists"
+            echo "tagged=false" >> $GITHUB_OUTPUT
           fi
+
+  build:
+    name: Build
+    needs: release
+    if: needs.release.outputs.tagged == 'true'
+    uses: ./.github/workflows/build.yml
+    with:
+      tag: ${{ needs.release.outputs.version }}
+    secrets: inherit

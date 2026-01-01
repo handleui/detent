@@ -23,16 +23,20 @@ func init() {
 }
 
 func runUpdate(_ *cobra.Command, _ []string) error {
+	// Header with consistent padding
+	fmt.Println()
+	fmt.Println(tui.Header(Version, "update"))
+
 	latest, hasUpdate := update.Check(Version)
 
 	if !hasUpdate {
-		fmt.Println()
 		fmt.Println(tui.ExitSuccess("Already on latest"))
+		fmt.Println()
 		return nil
 	}
 
 	fmt.Println()
-	fmt.Println(tui.MutedStyle.Render(Version) + " " + tui.MutedStyle.Render("→") + " " + tui.AccentStyle.Render(latest))
+	fmt.Println(tui.MutedStyle.Render("v"+Version) + " " + tui.MutedStyle.Render("→") + " " + tui.AccentStyle.Render(latest))
 	fmt.Println()
 
 	if err := update.Run(); err != nil {
@@ -41,6 +45,7 @@ func runUpdate(_ *cobra.Command, _ []string) error {
 
 	fmt.Println()
 	fmt.Println(tui.ExitSuccess("Updated"))
+	fmt.Println()
 
 	return nil
 }
