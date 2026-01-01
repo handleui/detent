@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/detent/cli/internal/actbin"
@@ -89,8 +90,18 @@ func Run(ctx context.Context, cfg *RunConfig) (*RunResult, error) {
 	cmd := exec.CommandContext(ctx, actBinary, args...) //nolint:gosec // ActBinary is trusted; defaults to "act"
 	cmd.Dir = cfg.WorkDir
 
-	// Set up process group to ensure graceful shutdown (platform-specific)
+	// Set up process group for killing child processes (platform-specific)
 	setupProcessGroup(cmd)
+
+	// Go 1.20+: Use Cancel for graceful SIGTERM, WaitDelay before SIGKILL
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		// Send SIGTERM to entire process group (pgid == pid with Setpgid: true)
+		return killProcessGroup(cmd.Process.Pid, syscall.SIGTERM)
+	}
+	cmd.WaitDelay = gracefulShutdownTimeout
 
 	var stdout, stderr bytes.Buffer
 
@@ -119,41 +130,8 @@ func Run(ctx context.Context, cfg *RunConfig) (*RunResult, error) {
 
 	start := time.Now()
 
-	// Start the process instead of using Run() for better control
-	var err error
-	if err = cmd.Start(); err != nil {
-		return nil, fmt.Errorf("starting act: %w", err)
-	}
-
-	// Monitor context and handle graceful shutdown
-	done := make(chan error, 1)
-	go func() {
-		done <- cmd.Wait()
-	}()
-
-	select {
-	case err = <-done:
-		// Process finished normally
-	case <-ctx.Done():
-		// Context cancelled - attempt graceful shutdown of entire process group
-		if cmd.Process != nil {
-			// Try graceful termination first (SIGTERM on Unix, Kill on Windows)
-			terminateProcess(cmd)
-
-			// Wait for graceful shutdown
-			gracefulTimeout := time.After(gracefulShutdownTimeout)
-			select {
-			case err = <-done:
-				// Gracefully exited
-			case <-gracefulTimeout:
-				// Force kill if still running
-				forceKillProcess(cmd)
-				err = <-done
-			}
-		} else {
-			err = <-done
-		}
-	}
+	// Run the command - Go 1.20+ handles graceful shutdown via Cancel/WaitDelay
+	err := cmd.Run()
 
 	duration := time.Since(start)
 

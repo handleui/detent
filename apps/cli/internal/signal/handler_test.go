@@ -366,18 +366,14 @@ func TestSetupSignalHandler_SequentialSignals(t *testing.T) {
 		t.Fatal("Context not cancelled after first signal")
 	}
 
-	// Send another signal (should be safe, handler should be stopped)
-	if err := syscall.Kill(syscall.Getpid(), syscall.SIGTERM); err != nil {
-		t.Fatalf("Failed to send SIGTERM: %v", err)
-	}
-
 	// Context should remain cancelled
 	if ctx.Err() != context.Canceled {
 		t.Errorf("Expected context.Canceled error, got: %v", ctx.Err())
 	}
 
-	// Give time for any potential issues to surface
-	time.Sleep(50 * time.Millisecond)
+	// Note: We don't send a second signal here because after signal.Stop(),
+	// the default signal handler (process termination) would take effect.
+	// The handler properly cleans up after the first signal.
 }
 
 // TestSetupSignalHandler_WithValues tests that context values are preserved
