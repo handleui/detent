@@ -55,9 +55,10 @@ type GlobalConfig struct {
 	BudgetPerRunUSD      *float64               `json:"budget_per_run_usd,omitempty"`
 	BudgetMonthlyUSD     *float64               `json:"budget_monthly_usd,omitempty"`
 	TimeoutMins          *int                   `json:"timeout_mins,omitempty"`
-	TrustedRepos         map[string]TrustedRepo `json:"trusted_repos,omitempty"`
-	AllowedCommands      map[string][]string    `json:"allowed_commands,omitempty"`       // key is first commit SHA
-	AllowedSensitiveJobs map[string][]string    `json:"allowed_sensitive_jobs,omitempty"` // key is first commit SHA, value is job IDs allowed to run
+	TrustedRepos         map[string]TrustedRepo        `json:"trusted_repos,omitempty"`
+	AllowedCommands      map[string][]string           `json:"allowed_commands,omitempty"`       // key is first commit SHA
+	AllowedSensitiveJobs map[string][]string           `json:"allowed_sensitive_jobs,omitempty"` // DEPRECATED: use JobOverrides instead
+	JobOverrides         map[string]map[string]string  `json:"job_overrides,omitempty"`          // key is first commit SHA, value is map of jobID → state ("run" | "skip")
 }
 
 // Config is the merged, resolved config used by the application.
@@ -666,11 +667,102 @@ func (c *Config) RemoveAllowedSensitiveJob(repoSHA, jobID string) error {
 
 // SetAllowedSensitiveJobs sets the allowed sensitive jobs map without saving.
 // Use SaveGlobal() after to persist changes.
+//
+// Deprecated: Use JobOverrides instead.
 func (c *Config) SetAllowedSensitiveJobs(jobs map[string][]string) {
 	if c.global == nil {
 		c.global = &GlobalConfig{}
 	}
 	c.global.AllowedSensitiveJobs = jobs
+}
+
+// --- Job Overrides helpers ---
+
+// JobState constants for job override states.
+const (
+	JobStateRun  = "run"  // Force job to run (bypass security skip)
+	JobStateSkip = "skip" // Force job to skip
+	// Jobs not in overrides use "auto" (default behavior)
+)
+
+// GetJobOverrides returns the job overrides for a repo by its first commit SHA.
+// Returns nil if no overrides are set.
+func (c *Config) GetJobOverrides(repoSHA string) map[string]string {
+	if c.global == nil || c.global.JobOverrides == nil {
+		return nil
+	}
+	return c.global.JobOverrides[repoSHA]
+}
+
+// GetJobState returns the override state for a specific job.
+// Returns empty string if no override is set (meaning "auto").
+func (c *Config) GetJobState(repoSHA, jobID string) string {
+	overrides := c.GetJobOverrides(repoSHA)
+	if overrides == nil {
+		return ""
+	}
+	return overrides[jobID]
+}
+
+// SetJobOverride sets an override state for a job and saves.
+// State should be "run" or "skip". Use ClearJobOverride to reset to auto.
+func (c *Config) SetJobOverride(repoSHA, jobID, state string) error {
+	if jobID == "" {
+		return fmt.Errorf("job ID cannot be empty")
+	}
+	if state != JobStateRun && state != JobStateSkip {
+		return fmt.Errorf("invalid state: must be %q or %q", JobStateRun, JobStateSkip)
+	}
+
+	if c.global == nil {
+		c.global = &GlobalConfig{}
+	}
+	if c.global.JobOverrides == nil {
+		c.global.JobOverrides = make(map[string]map[string]string)
+	}
+	if c.global.JobOverrides[repoSHA] == nil {
+		c.global.JobOverrides[repoSHA] = make(map[string]string)
+	}
+
+	c.global.JobOverrides[repoSHA][jobID] = state
+	return c.SaveGlobal()
+}
+
+// ClearJobOverride removes an override for a job (returns to auto behavior) and saves.
+func (c *Config) ClearJobOverride(repoSHA, jobID string) error {
+	if c.global == nil || c.global.JobOverrides == nil {
+		return nil
+	}
+
+	overrides := c.global.JobOverrides[repoSHA]
+	if overrides == nil {
+		return nil
+	}
+
+	delete(overrides, jobID)
+
+	// Clean up empty maps
+	if len(overrides) == 0 {
+		delete(c.global.JobOverrides, repoSHA)
+	}
+
+	return c.SaveGlobal()
+}
+
+// SetJobOverrides sets all job overrides for a repo without saving.
+// Use SaveGlobal() after to persist changes.
+func (c *Config) SetJobOverrides(repoSHA string, overrides map[string]string) {
+	if c.global == nil {
+		c.global = &GlobalConfig{}
+	}
+	if c.global.JobOverrides == nil {
+		c.global.JobOverrides = make(map[string]map[string]string)
+	}
+	if len(overrides) == 0 {
+		delete(c.global.JobOverrides, repoSHA)
+	} else {
+		c.global.JobOverrides[repoSHA] = overrides
+	}
 }
 
 // MaskAPIKey returns a masked version of an API key for safe display.

@@ -2410,9 +2410,9 @@ func TestIsSensitiveJob(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := isSensitiveJob(tt.jobID, tt.job)
+			got := IsSensitiveJob(tt.jobID, tt.job)
 			if got != tt.sensitive {
-				t.Errorf("isSensitiveJob(%q) = %v, want %v", tt.jobID, got, tt.sensitive)
+				t.Errorf("IsSensitiveJob(%q) = %v, want %v", tt.jobID, got, tt.sensitive)
 			}
 		})
 	}

@@ -60,11 +60,11 @@ func RunPreflightChecks(ctx context.Context, workflowPath, repoRoot, runID, work
 			program.Send(tui.PreflightDoneMsg{Err: err})
 		}
 
-		// Load config and get allowed sensitive jobs for this repo
-		var allowedSensitiveJobs []string
+		// Load config and get job overrides for this repo
+		var jobOverrides map[string]string
 		if cfg, cfgErr := persistence.Load(); cfgErr == nil {
 			if repoSHA, shaErr := git.GetFirstCommitSHA(repoRoot); shaErr == nil && repoSHA != "" {
-				allowedSensitiveJobs = cfg.GetAllowedSensitiveJobs(repoSHA)
+				jobOverrides = cfg.GetJobOverrides(repoSHA)
 			}
 		}
 
@@ -93,7 +93,7 @@ func RunPreflightChecks(ctx context.Context, workflowPath, repoRoot, runID, work
 		}
 
 		program.Send(tui.PreflightUpdateMsg("Preparing workflows"))
-		tmpDir, cleanupWorkflows, err = workflow.PrepareWorkflows(workflowPath, workflowFile, allowedSensitiveJobs)
+		tmpDir, cleanupWorkflows, err = workflow.PrepareWorkflows(workflowPath, workflowFile, jobOverrides)
 		if err != nil {
 			sendError(fmt.Errorf("preparing workflows: %w", err))
 			return

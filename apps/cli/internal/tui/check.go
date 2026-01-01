@@ -488,7 +488,7 @@ func (m *CheckModel) renderCompletionView() string {
 	// Show hint for security-skipped jobs
 	if hasSecuritySkipped {
 		b.WriteString("\n")
-		b.WriteString(HintStyle.Render("Locked jobs skipped for safety. Allow with: detent allow --job <id>") + "\n")
+		b.WriteString(HintStyle.Render("Locked jobs skipped for safety. Manage with: detent workflows") + "\n")
 	}
 
 	return b.String()

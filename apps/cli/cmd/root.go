@@ -104,6 +104,7 @@ func init() {
 	rootCmd.AddCommand(configCmd)
 	rootCmd.AddCommand(allowCmd)
 	rootCmd.AddCommand(pruneCmd)
+	rootCmd.AddCommand(workflowsCmd)
 
 	// Persistent flags available to all commands
 	rootCmd.PersistentFlags().StringVarP(&workflowsDir, "workflows", "w", runner.WorkflowsDir, "workflows directory path")
