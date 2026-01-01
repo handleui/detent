@@ -40,7 +40,8 @@ func TestNewRecorder(t *testing.T) {
 		t.Fatalf("Failed to create repo dir: %v", err)
 	}
 
-	recorder, err := NewRecorder(repoDir, "CI", "abc123", "github")
+	testRunID := "testrun012345678"
+	recorder, err := NewRecorder(repoDir, "CI", "abc123", "github", testRunID)
 
 	if err != nil {
 		t.Fatalf("NewRecorder() error = %v", err)
@@ -57,8 +58,8 @@ func TestNewRecorder(t *testing.T) {
 	}()
 
 	// Verify recorder fields
-	if recorder.runID == "" {
-		t.Error("runID should not be empty")
+	if recorder.runID != testRunID {
+		t.Errorf("runID = %v, want %v", recorder.runID, testRunID)
 	}
 	if recorder.repoRoot != repoDir {
 		t.Errorf("repoRoot = %v, want %v", recorder.repoRoot, repoDir)
@@ -100,7 +101,7 @@ func TestNewRecorder(t *testing.T) {
 func TestRecorder_RecordFinding(t *testing.T) {
 	setupTestDetentHomeRecorder(t)
 	tmpDir := t.TempDir()
-	recorder, err := NewRecorder(tmpDir, "test", "abc123", "github")
+	recorder, err := NewRecorder(tmpDir, "test", "abc123", "github", "testrun012345678")
 	if err != nil {
 		t.Fatalf("Failed to create recorder: %v", err)
 	}
@@ -133,7 +134,7 @@ func TestRecorder_RecordFinding(t *testing.T) {
 func TestRecorder_RecordFinding_MultipleFindingsPersisted(t *testing.T) {
 	setupTestDetentHomeRecorder(t)
 	tmpDir := t.TempDir()
-	recorder, err := NewRecorder(tmpDir, "test", "abc123", "github")
+	recorder, err := NewRecorder(tmpDir, "test", "abc123", "github", "testrun012345678")
 	if err != nil {
 		t.Fatalf("Failed to create recorder: %v", err)
 	}
@@ -185,7 +186,7 @@ func TestRecorder_RecordFinding_MultipleFindingsPersisted(t *testing.T) {
 func TestRecorder_Finalize(t *testing.T) {
 	setupTestDetentHomeRecorder(t)
 	tmpDir := t.TempDir()
-	recorder, err := NewRecorder(tmpDir, "test", "abc123", "github")
+	recorder, err := NewRecorder(tmpDir, "test", "abc123", "github", "testrun012345678")
 	if err != nil {
 		t.Fatalf("Failed to create recorder: %v", err)
 	}
@@ -239,7 +240,7 @@ func TestRecorder_GetOutputPath(t *testing.T) {
 		t.Fatalf("Failed to create repo dir: %v", err)
 	}
 
-	recorder, err := NewRecorder(repoDir, "test", "abc123", "github")
+	recorder, err := NewRecorder(repoDir, "test", "abc123", "github", "testrun012345678")
 	if err != nil {
 		t.Fatalf("Failed to create recorder: %v", err)
 	}
@@ -306,7 +307,7 @@ func TestGenerateUUID(t *testing.T) {
 func TestRecorder_WorkflowContextPersistence(t *testing.T) {
 	setupTestDetentHomeRecorder(t)
 	tmpDir := t.TempDir()
-	recorder, err := NewRecorder(tmpDir, "test-workflow", "abc123def", "github")
+	recorder, err := NewRecorder(tmpDir, "test-workflow", "abc123def", "github", "testrun012345678")
 	if err != nil {
 		t.Fatalf("Failed to create recorder: %v", err)
 	}
@@ -346,7 +347,7 @@ func TestRecorder_StartTime(t *testing.T) {
 	tmpDir := t.TempDir()
 	before := time.Now()
 
-	recorder, err := NewRecorder(tmpDir, "test", "abc123", "github")
+	recorder, err := NewRecorder(tmpDir, "test", "abc123", "github", "testrun012345678")
 	if err != nil {
 		t.Fatalf("Failed to create recorder: %v", err)
 	}
@@ -364,7 +365,7 @@ func TestRecorder_StartTime(t *testing.T) {
 func TestRecorder_ErrorCategoryTracking(t *testing.T) {
 	setupTestDetentHomeRecorder(t)
 	tmpDir := t.TempDir()
-	recorder, err := NewRecorder(tmpDir, "test", "abc123", "github")
+	recorder, err := NewRecorder(tmpDir, "test", "abc123", "github", "testrun012345678")
 	if err != nil {
 		t.Fatalf("Failed to create recorder: %v", err)
 	}
@@ -407,7 +408,7 @@ func TestRecorder_ErrorCategoryTracking(t *testing.T) {
 func TestRecorder_RecordFinding_WithoutFile(t *testing.T) {
 	setupTestDetentHomeRecorder(t)
 	tmpDir := t.TempDir()
-	recorder, err := NewRecorder(tmpDir, "test", "abc123", "github")
+	recorder, err := NewRecorder(tmpDir, "test", "abc123", "github", "testrun012345678")
 	if err != nil {
 		t.Fatalf("Failed to create recorder: %v", err)
 	}
@@ -445,7 +446,7 @@ func TestRecorder_RecordFinding_PopulatesFileHash(t *testing.T) {
 		t.Fatalf("Failed to create test file: %v", err)
 	}
 
-	recorder, err := NewRecorder(tmpDir, "test", "abc123", "github")
+	recorder, err := NewRecorder(tmpDir, "test", "abc123", "github", "testrun012345678")
 	if err != nil {
 		t.Fatalf("Failed to create recorder: %v", err)
 	}
@@ -495,7 +496,7 @@ func TestRecorder_RecordFinding_MissingFileNoHash(t *testing.T) {
 	setupTestDetentHomeRecorder(t)
 	tmpDir := t.TempDir()
 
-	recorder, err := NewRecorder(tmpDir, "test", "abc123", "github")
+	recorder, err := NewRecorder(tmpDir, "test", "abc123", "github", "testrun012345678")
 	if err != nil {
 		t.Fatalf("Failed to create recorder: %v", err)
 	}
@@ -532,7 +533,7 @@ func TestRecorder_RecordFinding_PathTraversalBlocked(t *testing.T) {
 	}
 	defer os.Remove(outsideFile)
 
-	recorder, err := NewRecorder(tmpDir, "test", "abc123", "github")
+	recorder, err := NewRecorder(tmpDir, "test", "abc123", "github", "testrun012345678")
 	if err != nil {
 		t.Fatalf("Failed to create recorder: %v", err)
 	}

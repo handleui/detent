@@ -209,7 +209,7 @@ func (r *CheckRunner) Persist() error {
 		return fmt.Errorf("no result to persist (Run/RunWithTUI must be called first)")
 	}
 
-	persister := NewResultPersister(r.config.RepoRoot, r.config.WorkflowPath, r.worktreeInfo)
+	persister := NewResultPersister(r.config.RepoRoot, r.config.WorkflowPath, r.config.RunID, r.worktreeInfo)
 	return persister.Persist(r.result.Extracted, r.result.ExitCode)
 }
 

@@ -1,6 +1,7 @@
 package persistence
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -161,6 +162,352 @@ func TestSQLiteWriter_RecordRun(t *testing.T) {
 	}
 	if startedAt == 0 {
 		t.Error("started_at should not be zero")
+	}
+}
+
+// TestSQLiteWriter_RunExists tests the RunExists method
+func TestSQLiteWriter_RunExists(t *testing.T) {
+	setupTestDetentHome(t)
+	tmpDir := t.TempDir()
+	writer, err := NewSQLiteWriter(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create writer: %v", err)
+	}
+	defer func() { _ = writer.Close() }()
+
+	runID := "test-run-exists"
+
+	// Test: run doesn't exist yet
+	exists, err := writer.RunExists(runID)
+	if err != nil {
+		t.Fatalf("RunExists() error = %v", err)
+	}
+	if exists {
+		t.Error("RunExists() = true, want false for non-existent run")
+	}
+
+	// Record the run
+	if err := writer.RecordRun(runID, "CI", "abc123", "tree123", "github"); err != nil {
+		t.Fatalf("RecordRun() error = %v", err)
+	}
+
+	// Test: run now exists
+	exists, err = writer.RunExists(runID)
+	if err != nil {
+		t.Fatalf("RunExists() error = %v", err)
+	}
+	if !exists {
+		t.Error("RunExists() = false, want true for existing run")
+	}
+
+	// Test: different run ID doesn't exist
+	exists, err = writer.RunExists("non-existent-run")
+	if err != nil {
+		t.Fatalf("RunExists() error = %v", err)
+	}
+	if exists {
+		t.Error("RunExists() = true, want false for non-existent run")
+	}
+}
+
+// TestSQLiteWriter_RunExists_EmptyDatabase tests RunExists on fresh database
+func TestSQLiteWriter_RunExists_EmptyDatabase(t *testing.T) {
+	setupTestDetentHome(t)
+	tmpDir := t.TempDir()
+	writer, err := NewSQLiteWriter(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create writer: %v", err)
+	}
+	defer func() { _ = writer.Close() }()
+
+	// Test: empty database returns false, no error
+	exists, err := writer.RunExists("any-run-id")
+	if err != nil {
+		t.Fatalf("RunExists() error = %v", err)
+	}
+	if exists {
+		t.Error("RunExists() = true, want false for empty database")
+	}
+}
+
+// TestSQLiteWriter_RunExists_EmptyRunID tests RunExists with empty string runID
+func TestSQLiteWriter_RunExists_EmptyRunID(t *testing.T) {
+	setupTestDetentHome(t)
+	tmpDir := t.TempDir()
+	writer, err := NewSQLiteWriter(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create writer: %v", err)
+	}
+	defer func() { _ = writer.Close() }()
+
+	// Test: empty runID returns false, no error
+	exists, err := writer.RunExists("")
+	if err != nil {
+		t.Fatalf("RunExists('') error = %v", err)
+	}
+	if exists {
+		t.Error("RunExists('') = true, want false for empty runID")
+	}
+
+	// Record a run with empty ID (edge case - should work)
+	if err := writer.RecordRun("", "CI", "abc123", "tree123", "github"); err != nil {
+		t.Fatalf("RecordRun('') error = %v", err)
+	}
+
+	// Now it should exist
+	exists, err = writer.RunExists("")
+	if err != nil {
+		t.Fatalf("RunExists('') after record error = %v", err)
+	}
+	if !exists {
+		t.Error("RunExists('') = false, want true after recording")
+	}
+}
+
+// TestSQLiteWriter_RunExists_VeryLongRunID tests RunExists with very long runID
+func TestSQLiteWriter_RunExists_VeryLongRunID(t *testing.T) {
+	setupTestDetentHome(t)
+	tmpDir := t.TempDir()
+	writer, err := NewSQLiteWriter(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create writer: %v", err)
+	}
+	defer func() { _ = writer.Close() }()
+
+	// Create a very long runID (10KB)
+	longRunID := make([]byte, 10*1024)
+	for i := range longRunID {
+		longRunID[i] = 'a' + byte(i%26)
+	}
+	runID := string(longRunID)
+
+	// Test: long runID returns false initially
+	exists, err := writer.RunExists(runID)
+	if err != nil {
+		t.Fatalf("RunExists(longRunID) error = %v", err)
+	}
+	if exists {
+		t.Error("RunExists(longRunID) = true, want false for non-existent run")
+	}
+
+	// Record the run with long ID
+	if err := writer.RecordRun(runID, "CI", "abc123", "tree123", "github"); err != nil {
+		t.Fatalf("RecordRun(longRunID) error = %v", err)
+	}
+
+	// Now it should exist
+	exists, err = writer.RunExists(runID)
+	if err != nil {
+		t.Fatalf("RunExists(longRunID) after record error = %v", err)
+	}
+	if !exists {
+		t.Error("RunExists(longRunID) = false, want true after recording")
+	}
+}
+
+// TestSQLiteWriter_RunExists_SpecialCharacters tests RunExists with special characters in runID
+func TestSQLiteWriter_RunExists_SpecialCharacters(t *testing.T) {
+	setupTestDetentHome(t)
+	tmpDir := t.TempDir()
+	writer, err := NewSQLiteWriter(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create writer: %v", err)
+	}
+	defer func() { _ = writer.Close() }()
+
+	specialRunIDs := []string{
+		"run-with-dashes",
+		"run_with_underscores",
+		"run.with.dots",
+		"run/with/slashes",
+		"run\\with\\backslashes",
+		"run with spaces",
+		"run\twith\ttabs",
+		"run\nwith\nnewlines",
+		"run'with'quotes",
+		"run\"with\"doublequotes",
+		"run;with;semicolons",
+		"run--with--sql--comment",
+		"run/*with*/comment",
+		"run%like%wildcards",
+		"run\x00with\x00nulls",
+		"run🎉with🎉emoji",
+		"日本語runID",
+	}
+
+	for _, runID := range specialRunIDs {
+		t.Run(runID, func(t *testing.T) {
+			// Test: doesn't exist initially
+			exists, err := writer.RunExists(runID)
+			if err != nil {
+				t.Fatalf("RunExists(%q) error = %v", runID, err)
+			}
+			if exists {
+				t.Errorf("RunExists(%q) = true, want false", runID)
+			}
+
+			// Record the run
+			if err := writer.RecordRun(runID, "CI", "abc123", "tree123", "github"); err != nil {
+				t.Fatalf("RecordRun(%q) error = %v", runID, err)
+			}
+
+			// Now it should exist
+			exists, err = writer.RunExists(runID)
+			if err != nil {
+				t.Fatalf("RunExists(%q) after record error = %v", runID, err)
+			}
+			if !exists {
+				t.Errorf("RunExists(%q) = false, want true after recording", runID)
+			}
+		})
+	}
+}
+
+// TestSQLiteWriter_RunExists_Concurrent tests concurrent RunExists calls
+func TestSQLiteWriter_RunExists_Concurrent(t *testing.T) {
+	setupTestDetentHome(t)
+	tmpDir := t.TempDir()
+	writer, err := NewSQLiteWriter(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create writer: %v", err)
+	}
+	defer func() { _ = writer.Close() }()
+
+	// Create some runs
+	runIDs := make([]string, 100)
+	for i := 0; i < 100; i++ {
+		runIDs[i] = fmt.Sprintf("concurrent-run-%d", i)
+		if i%2 == 0 {
+			// Only record even-numbered runs
+			if err := writer.RecordRun(runIDs[i], "CI", "abc123", "tree123", "github"); err != nil {
+				t.Fatalf("RecordRun(%s) error = %v", runIDs[i], err)
+			}
+		}
+	}
+
+	// Run concurrent RunExists calls
+	var wg sync.WaitGroup
+	errors := make(chan error, 100)
+
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			runID := runIDs[idx]
+			expectedExists := idx%2 == 0
+
+			exists, err := writer.RunExists(runID)
+			if err != nil {
+				errors <- fmt.Errorf("RunExists(%s) error = %v", runID, err)
+				return
+			}
+			if exists != expectedExists {
+				errors <- fmt.Errorf("RunExists(%s) = %v, want %v", runID, exists, expectedExists)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	close(errors)
+
+	for err := range errors {
+		t.Error(err)
+	}
+}
+
+// TestSQLiteWriter_GetErrorsByRunID tests the full cache flow: record → retrieve
+func TestSQLiteWriter_GetErrorsByRunID(t *testing.T) {
+	setupTestDetentHome(t)
+	tmpDir := t.TempDir()
+	writer, err := NewSQLiteWriter(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create writer: %v", err)
+	}
+	defer func() { _ = writer.Close() }()
+
+	runID := "test-cache-flow"
+
+	// Record run
+	if err := writer.RecordRun(runID, "CI", "abc123", "tree123", "github"); err != nil {
+		t.Fatalf("RecordRun() error = %v", err)
+	}
+
+	// Record some errors
+	findings := []*FindingRecord{
+		{RunID: runID, FilePath: "src/main.go", Line: 10, Message: "unused variable", Severity: "error"},
+		{RunID: runID, FilePath: "src/main.go", Line: 20, Message: "missing return", Severity: "error"},
+		{RunID: runID, FilePath: "src/util.go", Line: 5, Message: "undefined func", Severity: "warning"},
+	}
+	if err := writer.RecordFindings(findings); err != nil {
+		t.Fatalf("RecordFindings() error = %v", err)
+	}
+	if err := writer.Flush(); err != nil {
+		t.Fatalf("Flush() error = %v", err)
+	}
+
+	// Retrieve errors by run ID
+	errors, err := writer.GetErrorsByRunID(runID)
+	if err != nil {
+		t.Fatalf("GetErrorsByRunID() error = %v", err)
+	}
+
+	if len(errors) != 3 {
+		t.Errorf("GetErrorsByRunID() returned %d errors, want 3", len(errors))
+	}
+
+	// Verify error details
+	foundMain10 := false
+	foundMain20 := false
+	foundUtil5 := false
+	for _, e := range errors {
+		if e.FilePath == "src/main.go" && e.LineNumber == 10 {
+			foundMain10 = true
+		}
+		if e.FilePath == "src/main.go" && e.LineNumber == 20 {
+			foundMain20 = true
+		}
+		if e.FilePath == "src/util.go" && e.LineNumber == 5 {
+			foundUtil5 = true
+		}
+	}
+	if !foundMain10 || !foundMain20 || !foundUtil5 {
+		t.Errorf("Missing expected errors: main10=%v main20=%v util5=%v", foundMain10, foundMain20, foundUtil5)
+	}
+
+	// Test: different run ID returns empty
+	otherErrors, err := writer.GetErrorsByRunID("other-run")
+	if err != nil {
+		t.Fatalf("GetErrorsByRunID(other) error = %v", err)
+	}
+	if len(otherErrors) != 0 {
+		t.Errorf("GetErrorsByRunID(other) returned %d errors, want 0", len(otherErrors))
+	}
+}
+
+// TestSQLiteWriter_GetErrorsByRunID_EmptyRun tests retrieving errors for run with no errors
+func TestSQLiteWriter_GetErrorsByRunID_EmptyRun(t *testing.T) {
+	setupTestDetentHome(t)
+	tmpDir := t.TempDir()
+	writer, err := NewSQLiteWriter(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create writer: %v", err)
+	}
+	defer func() { _ = writer.Close() }()
+
+	runID := "empty-run"
+
+	// Record run but no errors
+	if err := writer.RecordRun(runID, "CI", "abc123", "tree123", "github"); err != nil {
+		t.Fatalf("RecordRun() error = %v", err)
+	}
+
+	// Retrieve should return empty slice, no error
+	errors, err := writer.GetErrorsByRunID(runID)
+	if err != nil {
+		t.Fatalf("GetErrorsByRunID() error = %v", err)
+	}
+	if len(errors) != 0 {
+		t.Errorf("GetErrorsByRunID() returned %d errors, want 0", len(errors))
 	}
 }
 

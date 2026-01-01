@@ -93,13 +93,17 @@ func runHeal(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("opening spend database: %w", err)
 	}
 
-	errRecords, err := db.GetErrorsByRunID(repoCtx.RunID)
-	if err != nil {
-		return fmt.Errorf("loading errors: %w", err)
+	// Check if this run exists in the database (cache hit)
+	// If check fails, treat as cache miss (fail-safe) but log for debugging
+	runExists, cacheErr := db.RunExists(repoCtx.RunID)
+	if cacheErr != nil {
+		sentry.AddBreadcrumb("heal", fmt.Sprintf("cache check failed: %v", cacheErr))
+		runExists = false // fail-safe: treat as cache miss
 	}
+	sentry.AddBreadcrumb("heal", fmt.Sprintf("cache_hit=%v force=%v", runExists, healForceRun))
 
-	// If no cached errors or force flag, run check first
-	if len(errRecords) == 0 || healForceRun {
+	// If no cached run or force flag, run check first
+	if !runExists || healForceRun {
 		fmt.Fprintf(os.Stderr, "Running check to identify errors...\n")
 		if checkErr := runCheck(cmd, args); checkErr != nil {
 			// Check returns ErrFoundErrors when errors are found - that's expected for heal.
@@ -108,12 +112,15 @@ func runHeal(cmd *cobra.Command, args []string) error {
 				return checkErr
 			}
 		}
+	} else {
+		// Feedback on cache hit (shown before loading to give immediate feedback)
+		fmt.Fprintf(os.Stderr, "%s Using cached errors (--force to re-check)\n", tui.Bullet())
+	}
 
-		// Reload errors after check
-		errRecords, err = db.GetErrorsByRunID(repoCtx.RunID)
-		if err != nil {
-			return fmt.Errorf("reloading errors: %w", err)
-		}
+	// Load errors (from cache or fresh after check)
+	errRecords, err := db.GetErrorsByRunID(repoCtx.RunID)
+	if err != nil {
+		return fmt.Errorf("loading errors: %w", err)
 	}
 
 	if len(errRecords) == 0 {
@@ -199,8 +206,12 @@ func runHeal(cmd *cobra.Command, args []string) error {
 
 	fmt.Fprintf(os.Stderr, "%s Starting healing...\n", tui.Bullet())
 
-	// Compute repo ID for spend tracking
-	repoID, _ := persistence.ComputeRepoID(repoCtx.Path)
+	// Compute repo ID for spend tracking (non-critical, continue if fails)
+	repoID, repoIDErr := persistence.ComputeRepoID(repoCtx.Path)
+	if repoIDErr != nil {
+		sentry.AddBreadcrumb("heal", fmt.Sprintf("repo ID computation failed: %v", repoIDErr))
+		repoID = "" // spend tracking will use empty ID
+	}
 
 	result, err := healLoop.Run(cmd.Context(), prompt.BuildSystemPrompt(), userPrompt)
 	if err != nil {

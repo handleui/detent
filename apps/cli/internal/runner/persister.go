@@ -16,14 +16,17 @@ type ResultPersister struct {
 	repoRoot     string
 	workflowPath string
 	worktreeInfo *git.WorktreeInfo
+	runID        string
 }
 
 // NewResultPersister creates a new ResultPersister with the given configuration.
-func NewResultPersister(repoRoot, workflowPath string, worktreeInfo *git.WorktreeInfo) *ResultPersister {
+// runID should be the deterministic RunID from RunConfig (computed from codebase state).
+func NewResultPersister(repoRoot, workflowPath, runID string, worktreeInfo *git.WorktreeInfo) *ResultPersister {
 	return &ResultPersister{
 		repoRoot:     repoRoot,
 		workflowPath: workflowPath,
 		worktreeInfo: worktreeInfo,
+		runID:        runID,
 	}
 }
 
@@ -50,12 +53,13 @@ func (p *ResultPersister) Persist(extracted []*errors.ExtractedError, exitCode i
 	// Detect execution mode
 	execMode := git.DetectExecutionMode()
 
-	// Initialize persistence recorder
+	// Initialize persistence recorder with deterministic runID
 	recorder, err := persistence.NewRecorder(
 		p.repoRoot,
 		workflowName,
 		p.worktreeInfo.CommitSHA,
 		execMode,
+		p.runID,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to initialize persistence storage at %s/.detent: %w", p.repoRoot, err)

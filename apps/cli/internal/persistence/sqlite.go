@@ -661,6 +661,20 @@ func (w *SQLiteWriter) GetRunByID(runID string) (*RunRecord, error) {
 	return &run, nil
 }
 
+// RunExists checks if a run with the given ID exists in the database.
+// This is more efficient than GetRunByID when you only need to check existence.
+func (w *SQLiteWriter) RunExists(runID string) (bool, error) {
+	var exists int
+	err := w.db.QueryRow("SELECT 1 FROM runs WHERE run_id = ? LIMIT 1", runID).Scan(&exists)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("failed to check run existence: %w", err)
+	}
+	return true, nil
+}
+
 // GetErrorsByRunID retrieves all errors for a given run via the run_errors junction table.
 // This ensures we get ALL errors that appeared in the run, including deduplicated ones
 // that were first seen in previous runs.

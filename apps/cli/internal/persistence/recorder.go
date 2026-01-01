@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/detent/cli/internal/util"
 	"github.com/detentsh/core/errors"
 	"github.com/detentsh/core/git"
 )
@@ -25,13 +24,9 @@ type Recorder struct {
 	execMode     string
 }
 
-// NewRecorder creates a recorder for the given repository
-func NewRecorder(repoRoot, workflowName, commitSHA, execMode string) (*Recorder, error) {
-	runID, err := util.GenerateUUID()
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate run ID: %w", err)
-	}
-
+// NewRecorder creates a recorder for the given repository.
+// runID should be the deterministic RunID computed from the codebase state.
+func NewRecorder(repoRoot, workflowName, commitSHA, execMode, runID string) (*Recorder, error) {
 	sqlite, err := NewSQLiteWriter(repoRoot)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create SQLite writer: %w", err)
