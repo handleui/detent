@@ -35,7 +35,6 @@ func init() {
 }
 
 func runPrune(cmd *cobra.Command, _ []string) error {
-	fmt.Println() // Gap after header
 	start := time.Now()
 
 	ctx, cancel := context.WithTimeout(cmd.Context(), git.CleanupTimeout)
@@ -66,10 +65,10 @@ func runPrune(cmd *cobra.Command, _ []string) error {
 
 	duration := time.Since(start).Round(time.Millisecond)
 	if removed > 0 {
-		fmt.Fprintf(os.Stderr, "%s Cleaned %d worktree(s) in %s\n",
+		fmt.Fprintf(os.Stderr, "%s Cleaned %d worktree(s) in %s\n\n",
 			tui.SuccessStyle.Render("✓"), removed, duration)
 	} else {
-		fmt.Fprintf(os.Stderr, "%s No orphaned worktrees in %s\n",
+		fmt.Fprintf(os.Stderr, "%s No orphaned worktrees in %s\n\n",
 			tui.SuccessStyle.Render("✓"), duration)
 	}
 

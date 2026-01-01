@@ -822,3 +822,227 @@ func TestMatchesCommand_NilSafety(t *testing.T) {
 		}
 	})
 }
+
+// TestAllowedSensitiveJobs tests the allowed sensitive jobs management
+func TestAllowedSensitiveJobs(t *testing.T) {
+	repoSHA := "test-repo-sha"
+
+	t.Run("add job", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		t.Setenv(DetentHomeEnv, tmpDir)
+
+		cfg := createTestConfig(nil)
+		if err := cfg.AddAllowedSensitiveJob(repoSHA, "deploy"); err != nil {
+			t.Fatalf("AddAllowedSensitiveJob() error = %v", err)
+		}
+
+		jobs := cfg.GetAllowedSensitiveJobs(repoSHA)
+		if len(jobs) != 1 || jobs[0] != "deploy" {
+			t.Errorf("GetAllowedSensitiveJobs() = %v, want [deploy]", jobs)
+		}
+	})
+
+	t.Run("add duplicate job is idempotent", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		t.Setenv(DetentHomeEnv, tmpDir)
+
+		cfg := createTestConfig(nil)
+		_ = cfg.AddAllowedSensitiveJob(repoSHA, "deploy")
+		_ = cfg.AddAllowedSensitiveJob(repoSHA, "deploy")
+
+		jobs := cfg.GetAllowedSensitiveJobs(repoSHA)
+		if len(jobs) != 1 {
+			t.Errorf("GetAllowedSensitiveJobs() len = %d, want 1 (no duplicates)", len(jobs))
+		}
+	})
+
+	t.Run("remove job", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		t.Setenv(DetentHomeEnv, tmpDir)
+
+		cfg := &Config{
+			global: &GlobalConfig{
+				AllowedSensitiveJobs: map[string][]string{
+					repoSHA: {"deploy", "release"},
+				},
+			},
+		}
+
+		if err := cfg.RemoveAllowedSensitiveJob(repoSHA, "deploy"); err != nil {
+			t.Fatalf("RemoveAllowedSensitiveJob() error = %v", err)
+		}
+
+		jobs := cfg.GetAllowedSensitiveJobs(repoSHA)
+		if len(jobs) != 1 || jobs[0] != "release" {
+			t.Errorf("GetAllowedSensitiveJobs() = %v, want [release]", jobs)
+		}
+	})
+
+	t.Run("check if job is allowed", func(t *testing.T) {
+		cfg := &Config{
+			global: &GlobalConfig{
+				AllowedSensitiveJobs: map[string][]string{
+					repoSHA: {"deploy", "release"},
+				},
+			},
+		}
+
+		if !cfg.IsSensitiveJobAllowed(repoSHA, "deploy") {
+			t.Error("Expected 'deploy' to be allowed")
+		}
+		if !cfg.IsSensitiveJobAllowed(repoSHA, "release") {
+			t.Error("Expected 'release' to be allowed")
+		}
+		if cfg.IsSensitiveJobAllowed(repoSHA, "unknown") {
+			t.Error("Expected 'unknown' to not be allowed")
+		}
+	})
+
+	t.Run("check job with empty config", func(t *testing.T) {
+		cfg := createTestConfig(nil)
+
+		if cfg.IsSensitiveJobAllowed(repoSHA, "deploy") {
+			t.Error("Expected 'deploy' to not be allowed with empty config")
+		}
+	})
+
+	t.Run("get empty for unknown repo", func(t *testing.T) {
+		cfg := createTestConfig(nil)
+		jobs := cfg.GetAllowedSensitiveJobs("unknown-sha")
+		if len(jobs) != 0 {
+			t.Errorf("GetAllowedSensitiveJobs() = %v, want empty", jobs)
+		}
+	})
+
+	t.Run("multiple repos with different jobs", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		t.Setenv(DetentHomeEnv, tmpDir)
+
+		cfg := createTestConfig(nil)
+		_ = cfg.AddAllowedSensitiveJob("repo1", "deploy-prod")
+		_ = cfg.AddAllowedSensitiveJob("repo2", "deploy-staging")
+
+		jobs1 := cfg.GetAllowedSensitiveJobs("repo1")
+		jobs2 := cfg.GetAllowedSensitiveJobs("repo2")
+
+		if len(jobs1) != 1 || jobs1[0] != "deploy-prod" {
+			t.Errorf("GetAllowedSensitiveJobs('repo1') = %v, want [deploy-prod]", jobs1)
+		}
+		if len(jobs2) != 1 || jobs2[0] != "deploy-staging" {
+			t.Errorf("GetAllowedSensitiveJobs('repo2') = %v, want [deploy-staging]", jobs2)
+		}
+
+		if cfg.IsSensitiveJobAllowed("repo1", "deploy-staging") {
+			t.Error("Expected 'deploy-staging' to not be allowed for repo1")
+		}
+		if cfg.IsSensitiveJobAllowed("repo2", "deploy-prod") {
+			t.Error("Expected 'deploy-prod' to not be allowed for repo2")
+		}
+	})
+
+	t.Run("add multiple jobs to same repo", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		t.Setenv(DetentHomeEnv, tmpDir)
+
+		cfg := createTestConfig(nil)
+		_ = cfg.AddAllowedSensitiveJob(repoSHA, "deploy")
+		_ = cfg.AddAllowedSensitiveJob(repoSHA, "release")
+		_ = cfg.AddAllowedSensitiveJob(repoSHA, "publish")
+
+		jobs := cfg.GetAllowedSensitiveJobs(repoSHA)
+		if len(jobs) != 3 {
+			t.Errorf("GetAllowedSensitiveJobs() len = %d, want 3", len(jobs))
+		}
+	})
+
+	t.Run("remove nonexistent job", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		t.Setenv(DetentHomeEnv, tmpDir)
+
+		cfg := &Config{
+			global: &GlobalConfig{
+				AllowedSensitiveJobs: map[string][]string{
+					repoSHA: {"deploy"},
+				},
+			},
+		}
+
+		if err := cfg.RemoveAllowedSensitiveJob(repoSHA, "nonexistent"); err != nil {
+			t.Fatalf("RemoveAllowedSensitiveJob() error = %v", err)
+		}
+
+		jobs := cfg.GetAllowedSensitiveJobs(repoSHA)
+		if len(jobs) != 1 || jobs[0] != "deploy" {
+			t.Errorf("GetAllowedSensitiveJobs() = %v, want [deploy]", jobs)
+		}
+	})
+
+	t.Run("remove from nil config", func(t *testing.T) {
+		cfg := &Config{global: nil}
+
+		err := cfg.RemoveAllowedSensitiveJob(repoSHA, "any")
+		if err != nil {
+			t.Fatalf("RemoveAllowedSensitiveJob() error = %v", err)
+		}
+	})
+
+	t.Run("remove from nil AllowedSensitiveJobs map", func(t *testing.T) {
+		cfg := &Config{global: &GlobalConfig{}}
+
+		err := cfg.RemoveAllowedSensitiveJob(repoSHA, "any")
+		if err != nil {
+			t.Fatalf("RemoveAllowedSensitiveJob() error = %v", err)
+		}
+	})
+
+	t.Run("add empty job ID returns error", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		t.Setenv(DetentHomeEnv, tmpDir)
+
+		cfg := createTestConfig(nil)
+		err := cfg.AddAllowedSensitiveJob(repoSHA, "")
+		if err == nil {
+			t.Error("Expected error when adding empty job ID")
+		}
+	})
+
+	t.Run("persists to disk", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		t.Setenv(DetentHomeEnv, tmpDir)
+
+		cfg := createTestConfig(nil)
+		if err := cfg.AddAllowedSensitiveJob(repoSHA, "deploy"); err != nil {
+			t.Fatalf("AddAllowedSensitiveJob() error = %v", err)
+		}
+
+		configPath := filepath.Join(tmpDir, "detent.json")
+		if _, err := os.Stat(configPath); os.IsNotExist(err) {
+			t.Error("Config file was not created")
+		}
+
+		loadedCfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if !loadedCfg.IsSensitiveJobAllowed(repoSHA, "deploy") {
+			t.Error("Loaded config should have allowed sensitive job")
+		}
+	})
+}
+
+// TestIsSensitiveJobAllowed_NilSafety tests nil safety of IsSensitiveJobAllowed
+func TestIsSensitiveJobAllowed_NilSafety(t *testing.T) {
+	t.Run("nil global config", func(t *testing.T) {
+		cfg := &Config{global: nil}
+		if cfg.IsSensitiveJobAllowed("repo", "job") {
+			t.Error("Expected false for nil global config")
+		}
+	})
+
+	t.Run("nil AllowedSensitiveJobs map", func(t *testing.T) {
+		cfg := &Config{global: &GlobalConfig{}}
+		if cfg.IsSensitiveJobAllowed("repo", "job") {
+			t.Error("Expected false for nil AllowedSensitiveJobs map")
+		}
+	})
+}

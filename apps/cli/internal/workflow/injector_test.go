@@ -1,11 +1,35 @@
 package workflow
 
 import (
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/detent/cli/internal/ci"
 )
+
+// extractManifestJSON extracts the JSON content from a base64-encoded manifest marker.
+// The marker format is: echo '::detent::manifest::v2::b64::{base64}'
+// Returns the decoded JSON string or empty string if not found or invalid.
+func extractManifestJSON(manifestRun string) string {
+	const prefix = "::detent::manifest::v2::b64::"
+	idx := strings.Index(manifestRun, prefix)
+	if idx < 0 {
+		return ""
+	}
+	encoded := manifestRun[idx+len(prefix):]
+	// Remove trailing single quote and anything after
+	if quoteIdx := strings.Index(encoded, "'"); quoteIdx >= 0 {
+		encoded = encoded[:quoteIdx]
+	}
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return ""
+	}
+	return string(decoded)
+}
 
 // TestInjectContinueOnError tests injecting continue-on-error to jobs
 func TestInjectContinueOnError(t *testing.T) {
@@ -457,14 +481,15 @@ func TestInjectJobMarkers(t *testing.T) {
 				if !strings.Contains(manifestStep.Run, "::detent::manifest::v2::") {
 					t.Errorf("Alpha should have manifest step, got %q", manifestStep.Run)
 				}
-				// Manifest should contain all jobs in JSON format
-				if !strings.Contains(manifestStep.Run, `"id":"alpha"`) {
+				// Manifest should contain all jobs in JSON format (decode base64 first)
+				manifestJSON := extractManifestJSON(manifestStep.Run)
+				if !strings.Contains(manifestJSON, `"id":"alpha"`) {
 					t.Error("Manifest should contain alpha job")
 				}
-				if !strings.Contains(manifestStep.Run, `"id":"beta"`) {
+				if !strings.Contains(manifestJSON, `"id":"beta"`) {
 					t.Error("Manifest should contain beta job")
 				}
-				if !strings.Contains(manifestStep.Run, `"id":"zebra"`) {
+				if !strings.Contains(manifestJSON, `"id":"zebra"`) {
 					t.Error("Manifest should contain zebra job")
 				}
 
@@ -509,16 +534,17 @@ func TestInjectJobMarkers(t *testing.T) {
 					t.Error("Reusable job should not have steps added")
 				}
 
-				// Manifest should include both jobs (v2 JSON format)
+				// Manifest should include both jobs (v2 JSON format, decode base64 first)
 				manifestStep := regularJob.Steps[0]
-				if !strings.Contains(manifestStep.Run, `"id":"regular"`) {
+				manifestJSON := extractManifestJSON(manifestStep.Run)
+				if !strings.Contains(manifestJSON, `"id":"regular"`) {
 					t.Error("Manifest should include regular job")
 				}
-				if !strings.Contains(manifestStep.Run, `"id":"reusable"`) {
+				if !strings.Contains(manifestJSON, `"id":"reusable"`) {
 					t.Error("Manifest should include reusable job")
 				}
 				// Reusable job should have "uses" field in manifest
-				if !strings.Contains(manifestStep.Run, `"uses":`) {
+				if !strings.Contains(manifestJSON, `"uses":`) {
 					t.Error("Manifest should include reusable workflow uses field")
 				}
 			},
@@ -606,12 +632,13 @@ func TestInjectJobMarkers(t *testing.T) {
 					}
 				}
 
-				// Manifest should only include valid job (v2 JSON format)
+				// Manifest should only include valid job (v2 JSON format, decode base64 first)
 				manifestStep := validJob.Steps[0]
-				if !strings.Contains(manifestStep.Run, `"id":"valid_job"`) {
+				manifestJSON := extractManifestJSON(manifestStep.Run)
+				if !strings.Contains(manifestJSON, `"id":"valid_job"`) {
 					t.Error("Manifest should include valid_job")
 				}
-				if strings.Contains(manifestStep.Run, "exploit") || strings.Contains(manifestStep.Run, "rm") {
+				if strings.Contains(manifestJSON, "exploit") || strings.Contains(manifestJSON, "rm") {
 					t.Error("Manifest should NOT include invalid job IDs")
 				}
 			},
@@ -903,7 +930,7 @@ jobs:
 		t.Run(tt.name, func(t *testing.T) {
 			srcDir, specificWorkflow := tt.setup(t)
 
-			tmpDir, cleanup, err := PrepareWorkflows(srcDir, specificWorkflow)
+			tmpDir, cleanup, err := PrepareWorkflows(srcDir, specificWorkflow, nil)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("PrepareWorkflows() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -981,7 +1008,7 @@ func TestPrepareWorkflows_PathValidation(t *testing.T) {
 				t.Fatalf("Failed to create workflow: %v", err)
 			}
 
-			_, cleanup, err := PrepareWorkflows(dir, tt.specificWorkflow)
+			_, cleanup, err := PrepareWorkflows(dir, tt.specificWorkflow, nil)
 			if cleanup != nil {
 				defer cleanup()
 			}
@@ -1040,7 +1067,7 @@ func TestPrepareWorkflows_ErrorWrapping(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			srcDir, specificWorkflow := tt.setup(t)
-			_, cleanup, err := PrepareWorkflows(srcDir, specificWorkflow)
+			_, cleanup, err := PrepareWorkflows(srcDir, specificWorkflow, nil)
 			if cleanup != nil {
 				defer cleanup()
 			}
@@ -1066,7 +1093,7 @@ func TestPrepareWorkflows_CleanupOnError(t *testing.T) {
 		t.Fatalf("Failed to create invalid workflow: %v", err)
 	}
 
-	tmpDir, cleanup, err := PrepareWorkflows(dir, "")
+	tmpDir, cleanup, err := PrepareWorkflows(dir, "", nil)
 	if err == nil {
 		t.Fatal("Expected error for invalid YAML")
 	}
@@ -1100,7 +1127,7 @@ jobs:
 		t.Fatalf("Failed to create workflow: %v", err)
 	}
 
-	tmpDir, cleanup, err := PrepareWorkflows(dir, "")
+	tmpDir, cleanup, err := PrepareWorkflows(dir, "", nil)
 	if err != nil {
 		t.Fatalf("PrepareWorkflows() failed: %v", err)
 	}
@@ -1274,7 +1301,7 @@ jobs:
 				t.Fatalf("Failed to create workflow: %v", err)
 			}
 
-			tmpDir, cleanup, err := PrepareWorkflows(dir, "")
+			tmpDir, cleanup, err := PrepareWorkflows(dir, "", nil)
 			if cleanup != nil {
 				defer cleanup()
 			}
@@ -1346,7 +1373,7 @@ jobs:
 		t.Fatalf("Failed to create workflow: %v", err)
 	}
 
-	tmpDir, cleanup, err := PrepareWorkflows(dir, "")
+	tmpDir, cleanup, err := PrepareWorkflows(dir, "", nil)
 	if err != nil {
 		t.Fatalf("PrepareWorkflows() failed: %v", err)
 	}
@@ -1520,10 +1547,10 @@ func TestBuildCombinedManifest(t *testing.T) {
 // TestFindFirstJobAcrossWorkflows tests finding the first job across multiple workflows.
 func TestFindFirstJobAcrossWorkflows(t *testing.T) {
 	tests := []struct {
-		name         string
-		workflows    map[string]*Workflow
-		wantPath     string
-		wantJobID    string
+		name      string
+		workflows map[string]*Workflow
+		wantPath  string
+		wantJobID string
 	}{
 		{
 			name:      "empty workflows",
@@ -1532,7 +1559,7 @@ func TestFindFirstJobAcrossWorkflows(t *testing.T) {
 			wantJobID: "",
 		},
 		{
-			name: "single workflow with jobs",
+			name: "single workflow with jobs - no dependencies",
 			workflows: map[string]*Workflow{
 				"/path/to/ci.yml": {
 					Jobs: map[string]*Job{
@@ -1542,24 +1569,51 @@ func TestFindFirstJobAcrossWorkflows(t *testing.T) {
 				},
 			},
 			wantPath:  "/path/to/ci.yml",
-			wantJobID: "lint", // Alphabetically first
+			wantJobID: "lint", // Alphabetically first among jobs without needs
 		},
 		{
-			name: "multiple workflows - first workflow path wins",
+			name: "prefer job without needs over alphabetically earlier job with needs",
 			workflows: map[string]*Workflow{
 				"/path/to/ci.yml": {
 					Jobs: map[string]*Job{
-						"test": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "test"}}},
+						"build": {RunsOn: "ubuntu-latest", Needs: []any{"lint", "test"}, Steps: []*Step{{Run: "build"}}},
+						"lint":  {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "lint"}}},
+						"test":  {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "test"}}},
+					},
+				},
+			},
+			wantPath:  "/path/to/ci.yml",
+			wantJobID: "lint", // lint has no needs, build does
+		},
+		{
+			name: "prefer job without needs - string needs format",
+			workflows: map[string]*Workflow{
+				"/path/to/ci.yml": {
+					Jobs: map[string]*Job{
+						"deploy": {RunsOn: "ubuntu-latest", Needs: "build", Steps: []*Step{{Run: "deploy"}}},
+						"build":  {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "build"}}},
+					},
+				},
+			},
+			wantPath:  "/path/to/ci.yml",
+			wantJobID: "build", // build has no needs
+		},
+		{
+			name: "multiple workflows - prefer workflow with job without needs",
+			workflows: map[string]*Workflow{
+				"/path/to/ci.yml": {
+					Jobs: map[string]*Job{
+						"build": {RunsOn: "ubuntu-latest", Needs: []any{"lint"}, Steps: []*Step{{Run: "build"}}},
 					},
 				},
 				"/path/to/release.yml": {
 					Jobs: map[string]*Job{
-						"build": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "build"}}},
+						"release": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "release"}}},
 					},
 				},
 			},
-			wantPath:  "/path/to/ci.yml", // Alphabetically first path
-			wantJobID: "test",
+			wantPath:  "/path/to/release.yml",
+			wantJobID: "release", // release has no needs, build does
 		},
 		{
 			name: "skip reusable workflow jobs",
@@ -1575,21 +1629,17 @@ func TestFindFirstJobAcrossWorkflows(t *testing.T) {
 			wantJobID: "build", // deploy skipped because it's a reusable workflow
 		},
 		{
-			name: "workflow with only reusable jobs skipped",
+			name: "fallback to job with needs if all have needs",
 			workflows: map[string]*Workflow{
-				"/path/to/deploy.yml": {
+				"/path/to/ci.yml": {
 					Jobs: map[string]*Job{
-						"deploy": {Uses: "org/repo/.github/workflows/deploy.yml@main"},
-					},
-				},
-				"/path/to/test.yml": {
-					Jobs: map[string]*Job{
-						"test": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "test"}}},
+						"deploy": {RunsOn: "ubuntu-latest", Needs: []any{"build"}, Steps: []*Step{{Run: "deploy"}}},
+						"build":  {RunsOn: "ubuntu-latest", Needs: []any{"test"}, Steps: []*Step{{Run: "build"}}},
 					},
 				},
 			},
-			wantPath:  "/path/to/test.yml",
-			wantJobID: "test",
+			wantPath:  "/path/to/ci.yml",
+			wantJobID: "build", // Alphabetically first fallback
 		},
 	}
 
@@ -1679,4 +1729,1513 @@ func TestInjectJobMarkersWithManifest(t *testing.T) {
 			t.Error("build job should have job-end marker")
 		}
 	})
+}
+
+// TestIsSensitiveJob tests detection of sensitive jobs that should not get if: always()
+func TestIsSensitiveJob(t *testing.T) {
+	tests := []struct {
+		name      string
+		jobID     string
+		job       *Job
+		sensitive bool
+	}{
+		// Job name detection
+		{
+			name:      "release job by name",
+			jobID:     "release",
+			job:       &Job{Name: "Release", Steps: []*Step{{Run: "echo test"}}},
+			sensitive: true,
+		},
+		{
+			name:      "publish job by name",
+			jobID:     "publish",
+			job:       &Job{Steps: []*Step{{Run: "echo test"}}},
+			sensitive: true,
+		},
+		{
+			name:      "deploy job by ID",
+			jobID:     "deploy-prod",
+			job:       &Job{Steps: []*Step{{Run: "echo test"}}},
+			sensitive: true,
+		},
+		{
+			name:      "production job",
+			jobID:     "production-deploy",
+			job:       &Job{Steps: []*Step{{Run: "echo test"}}},
+			sensitive: true,
+		},
+		{
+			name:      "staging job",
+			jobID:     "staging",
+			job:       &Job{Steps: []*Step{{Run: "echo test"}}},
+			sensitive: true,
+		},
+		{
+			name:      "ship job",
+			jobID:     "ship-to-users",
+			job:       &Job{Steps: []*Step{{Run: "echo test"}}},
+			sensitive: true,
+		},
+		{
+			name:      "upload job",
+			jobID:     "upload-artifacts",
+			job:       &Job{Steps: []*Step{{Run: "echo test"}}},
+			sensitive: true,
+		},
+		// Action detection
+		{
+			name:      "changesets action",
+			jobID:     "version",
+			job:       &Job{Steps: []*Step{{Uses: "changesets/action@v1"}}},
+			sensitive: true,
+		},
+		{
+			name:      "goreleaser action",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Uses: "goreleaser/goreleaser-action@v5"}}},
+			sensitive: true,
+		},
+		{
+			name:      "docker build-push action",
+			jobID:     "build-image",
+			job:       &Job{Steps: []*Step{{Uses: "docker/build-push-action@v5"}}},
+			sensitive: true,
+		},
+		{
+			name:      "docker login action",
+			jobID:     "docker-build",
+			job:       &Job{Steps: []*Step{{Uses: "docker/login-action@v3"}}},
+			sensitive: true,
+		},
+		{
+			name:      "pypi publish action",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Uses: "pypa/gh-action-pypi-publish@v1"}}},
+			sensitive: true,
+		},
+		{
+			name:      "github pages deploy action",
+			jobID:     "docs",
+			job:       &Job{Steps: []*Step{{Uses: "JamesIves/github-pages-deploy-action@v4"}}},
+			sensitive: true,
+		},
+		{
+			name:      "generic deploy action pattern",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Uses: "some-org/custom-deploy@v1"}}},
+			sensitive: true,
+		},
+		{
+			name:      "generic publish action pattern",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Uses: "some-org/npm-publish@v1"}}},
+			sensitive: true,
+		},
+		{
+			name:      "generic release action pattern",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Uses: "some-org/create-release@v1"}}},
+			sensitive: true,
+		},
+		// Command detection
+		{
+			name:      "npm publish command",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Run: "npm publish --access public"}}},
+			sensitive: true,
+		},
+		{
+			name:      "yarn publish command",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Run: "yarn publish"}}},
+			sensitive: true,
+		},
+		{
+			name:      "pnpm publish command",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Run: "pnpm publish --no-git-checks"}}},
+			sensitive: true,
+		},
+		{
+			name:      "docker push command",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Run: "docker push myimage:latest"}}},
+			sensitive: true,
+		},
+		{
+			name:      "docker buildx push command",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Run: "docker buildx push myimage"}}},
+			sensitive: true,
+		},
+		{
+			name:      "git push tags command",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Run: "git push --tags"}}},
+			sensitive: true,
+		},
+		{
+			name:      "kubectl apply command",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Run: "kubectl apply -f deployment.yaml"}}},
+			sensitive: true,
+		},
+		{
+			name:      "helm upgrade command",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Run: "helm upgrade myrelease ./chart"}}},
+			sensitive: true,
+		},
+		{
+			name:      "terraform apply command",
+			jobID:     "infra",
+			job:       &Job{Steps: []*Step{{Run: "terraform apply -auto-approve"}}},
+			sensitive: true,
+		},
+		{
+			name:      "vercel prod command",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Run: "vercel --prod"}}},
+			sensitive: true,
+		},
+		{
+			name:      "cargo publish command",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Run: "cargo publish"}}},
+			sensitive: true,
+		},
+		{
+			name:      "twine upload command",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Run: "twine upload dist/*"}}},
+			sensitive: true,
+		},
+		{
+			name:      "mvn deploy command",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Run: "mvn deploy"}}},
+			sensitive: true,
+		},
+		{
+			name:      "gradle publish command",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Run: "gradle publish"}}},
+			sensitive: true,
+		},
+		{
+			name:      "aws s3 sync command",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Run: "aws s3 sync ./dist s3://mybucket"}}},
+			sensitive: true,
+		},
+		{
+			name:      "gcloud app deploy command",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Run: "gcloud app deploy"}}},
+			sensitive: true,
+		},
+		{
+			name:      "gh release create command",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Run: "gh release create v1.0.0"}}},
+			sensitive: true,
+		},
+		// Safe jobs
+		{
+			name:      "safe test job",
+			jobID:     "test",
+			job:       &Job{Steps: []*Step{{Run: "go test ./..."}}},
+			sensitive: false,
+		},
+		{
+			name:      "safe build job",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Run: "go build ./..."}}},
+			sensitive: false,
+		},
+		{
+			name:      "safe lint job",
+			jobID:     "lint",
+			job:       &Job{Steps: []*Step{{Run: "golangci-lint run"}}},
+			sensitive: false,
+		},
+		{
+			name:      "safe checkout action",
+			jobID:     "test",
+			job:       &Job{Steps: []*Step{{Uses: "actions/checkout@v4"}}},
+			sensitive: false,
+		},
+		{
+			name:      "safe setup-go action",
+			jobID:     "test",
+			job:       &Job{Steps: []*Step{{Uses: "actions/setup-go@v5"}}},
+			sensitive: false,
+		},
+		// === Destructive Operations ===
+		// Terraform destroy
+		{
+			name:      "terraform destroy command",
+			jobID:     "cleanup",
+			job:       &Job{Steps: []*Step{{Run: "terraform destroy -auto-approve"}}},
+			sensitive: true,
+		},
+		// kubectl delete
+		{
+			name:      "kubectl delete command",
+			jobID:     "cleanup",
+			job:       &Job{Steps: []*Step{{Run: "kubectl delete -f deployment.yaml"}}},
+			sensitive: true,
+		},
+		{
+			name:      "kubectl delete pods command",
+			jobID:     "maintenance",
+			job:       &Job{Steps: []*Step{{Run: "kubectl delete pods --all"}}},
+			sensitive: true,
+		},
+		// helm uninstall
+		{
+			name:      "helm uninstall command",
+			jobID:     "teardown",
+			job:       &Job{Steps: []*Step{{Run: "helm uninstall myrelease"}}},
+			sensitive: true,
+		},
+		{
+			name:      "helm delete command",
+			jobID:     "teardown",
+			job:       &Job{Steps: []*Step{{Run: "helm delete myrelease"}}},
+			sensitive: true,
+		},
+		// pulumi destroy
+		{
+			name:      "pulumi destroy command",
+			jobID:     "cleanup",
+			job:       &Job{Steps: []*Step{{Run: "pulumi destroy --yes"}}},
+			sensitive: true,
+		},
+		// Database migrations - prisma
+		{
+			name:      "prisma migrate deploy command",
+			jobID:     "db",
+			job:       &Job{Steps: []*Step{{Run: "prisma migrate deploy"}}},
+			sensitive: true,
+		},
+		{
+			name:      "prisma db push command",
+			jobID:     "db",
+			job:       &Job{Steps: []*Step{{Run: "prisma db push"}}},
+			sensitive: true,
+		},
+		{
+			name:      "prisma migrate reset command",
+			jobID:     "db",
+			job:       &Job{Steps: []*Step{{Run: "prisma migrate reset --force"}}},
+			sensitive: true,
+		},
+		// Database migrations - alembic
+		{
+			name:      "alembic upgrade command",
+			jobID:     "db",
+			job:       &Job{Steps: []*Step{{Run: "alembic upgrade head"}}},
+			sensitive: true,
+		},
+		{
+			name:      "alembic downgrade command",
+			jobID:     "db",
+			job:       &Job{Steps: []*Step{{Run: "alembic downgrade -1"}}},
+			sensitive: true,
+		},
+		// Database migrations - flyway
+		{
+			name:      "flyway migrate command",
+			jobID:     "db",
+			job:       &Job{Steps: []*Step{{Run: "flyway migrate"}}},
+			sensitive: true,
+		},
+		{
+			name:      "flyway repair command",
+			jobID:     "db",
+			job:       &Job{Steps: []*Step{{Run: "flyway repair"}}},
+			sensitive: true,
+		},
+		// === Cloud Platforms ===
+		// Railway
+		{
+			name:      "railway deploy command",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Run: "railway deploy"}}},
+			sensitive: true,
+		},
+		{
+			name:      "railway up command",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Run: "railway up"}}},
+			sensitive: true,
+		},
+		{
+			name:      "railway action",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Uses: "railwayapp/railway-action@v1"}}},
+			sensitive: true,
+		},
+		// Fly.io
+		{
+			name:      "flyctl deploy command",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Run: "flyctl deploy"}}},
+			sensitive: true,
+		},
+		{
+			name:      "fly deploy command",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Run: "fly deploy --remote-only"}}},
+			sensitive: true,
+		},
+		{
+			name:      "fly launch command",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Run: "fly launch --now"}}},
+			sensitive: true,
+		},
+		{
+			name:      "flyctl action",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Uses: "superfly/flyctl-actions@v1"}}},
+			sensitive: true,
+		},
+		// Heroku
+		{
+			name:      "heroku deploy command",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Run: "heroku deploy"}}},
+			sensitive: true,
+		},
+		{
+			name:      "heroku container release command",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Run: "heroku container:release web"}}},
+			sensitive: true,
+		},
+		{
+			name:      "git push heroku command",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Run: "git push heroku main"}}},
+			sensitive: true,
+		},
+		{
+			name:      "heroku deploy action",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Uses: "akhileshns/heroku-deploy@v3"}}},
+			sensitive: true,
+		},
+		// Cloudflare Workers
+		{
+			name:      "wrangler deploy command",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Run: "wrangler deploy"}}},
+			sensitive: true,
+		},
+		{
+			name:      "wrangler publish command",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Run: "wrangler publish"}}},
+			sensitive: true,
+		},
+		{
+			name:      "npx wrangler deploy command",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Run: "npx wrangler deploy"}}},
+			sensitive: true,
+		},
+		{
+			name:      "wrangler action",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Uses: "cloudflare/wrangler-action@v3"}}},
+			sensitive: true,
+		},
+		// Firebase
+		{
+			name:      "firebase deploy command",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Run: "firebase deploy"}}},
+			sensitive: true,
+		},
+		{
+			name:      "firebase hosting channel deploy command",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Run: "firebase hosting:channel:deploy preview"}}},
+			sensitive: true,
+		},
+		{
+			name:      "firebase action",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Uses: "w9jds/firebase-action@v12"}}},
+			sensitive: true,
+		},
+		{
+			name:      "firebase hosting deploy action",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Uses: "FirebaseExtended/action-hosting-deploy@v0"}}},
+			sensitive: true,
+		},
+		// === Package Managers ===
+		// Ruby - gem push
+		{
+			name:      "gem push command",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Run: "gem push mypackage-1.0.0.gem"}}},
+			sensitive: true,
+		},
+		{
+			name:      "gem release command",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Run: "gem release"}}},
+			sensitive: true,
+		},
+		{
+			name:      "rake release command",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Run: "rake release"}}},
+			sensitive: true,
+		},
+		{
+			name:      "bundle exec rake release command",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Run: "bundle exec rake release"}}},
+			sensitive: true,
+		},
+		// .NET - dotnet nuget push
+		{
+			name:      "dotnet nuget push command",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Run: "dotnet nuget push *.nupkg"}}},
+			sensitive: true,
+		},
+		{
+			name:      "nuget push command",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Run: "nuget push MyPackage.1.0.0.nupkg"}}},
+			sensitive: true,
+		},
+		// Python - poetry publish
+		{
+			name:      "poetry publish command",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Run: "poetry publish --build"}}},
+			sensitive: true,
+		},
+		{
+			name:      "twine upload command",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Run: "twine upload dist/*"}}},
+			sensitive: true,
+		},
+		// Rust - cargo publish
+		{
+			name:      "cargo publish command",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Run: "cargo publish --token $CARGO_TOKEN"}}},
+			sensitive: true,
+		},
+		// === Verify NO false positives for safe jobs ===
+		{
+			name:      "safe test job with go test command",
+			jobID:     "test",
+			job:       &Job{Steps: []*Step{{Run: "go test -v ./..."}}},
+			sensitive: false,
+		},
+		{
+			name:      "safe build job with go build command",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Run: "go build -o ./bin/app ./cmd/app"}}},
+			sensitive: false,
+		},
+		{
+			name:      "safe lint job with golangci-lint command",
+			jobID:     "lint",
+			job:       &Job{Steps: []*Step{{Run: "golangci-lint run ./..."}}},
+			sensitive: false,
+		},
+		{
+			name:      "safe typecheck job with tsc command",
+			jobID:     "typecheck",
+			job:       &Job{Steps: []*Step{{Run: "tsc --noEmit"}}},
+			sensitive: false,
+		},
+		{
+			name:      "safe format job with prettier command",
+			jobID:     "format",
+			job:       &Job{Steps: []*Step{{Run: "prettier --check src/"}}},
+			sensitive: false,
+		},
+		{
+			name:      "safe test job with npm test command",
+			jobID:     "test",
+			job:       &Job{Steps: []*Step{{Run: "npm test"}}},
+			sensitive: false,
+		},
+		{
+			name:      "safe test job with pytest command",
+			jobID:     "test",
+			job:       &Job{Steps: []*Step{{Run: "pytest tests/"}}},
+			sensitive: false,
+		},
+		{
+			name:      "safe build job with docker build (no push)",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Run: "docker build -t myapp:test ."}}},
+			sensitive: false,
+		},
+		{
+			name:      "safe terraform plan job",
+			jobID:     "plan",
+			job:       &Job{Steps: []*Step{{Run: "terraform plan -out=tfplan"}}},
+			sensitive: false,
+		},
+		{
+			name:      "safe kubectl get job",
+			jobID:     "check",
+			job:       &Job{Steps: []*Step{{Run: "kubectl get pods"}}},
+			sensitive: false,
+		},
+		{
+			name:      "safe helm lint job",
+			jobID:     "lint",
+			job:       &Job{Steps: []*Step{{Run: "helm lint ./chart"}}},
+			sensitive: false,
+		},
+		{
+			name:      "safe cargo test job",
+			jobID:     "test",
+			job:       &Job{Steps: []*Step{{Run: "cargo test --all"}}},
+			sensitive: false,
+		},
+		{
+			name:      "safe cargo build job",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Run: "cargo build --release"}}},
+			sensitive: false,
+		},
+		{
+			name:      "safe dotnet build job",
+			jobID:     "build",
+			job:       &Job{Steps: []*Step{{Run: "dotnet build --configuration Release"}}},
+			sensitive: false,
+		},
+		{
+			name:      "safe dotnet test job",
+			jobID:     "test",
+			job:       &Job{Steps: []*Step{{Run: "dotnet test"}}},
+			sensitive: false,
+		},
+		{
+			name:      "safe poetry install job",
+			jobID:     "setup",
+			job:       &Job{Steps: []*Step{{Run: "poetry install"}}},
+			sensitive: false,
+		},
+		{
+			name:      "safe prisma generate job",
+			jobID:     "setup",
+			job:       &Job{Steps: []*Step{{Run: "prisma generate"}}},
+			sensitive: false,
+		},
+		{
+			name:      "safe prisma validate job",
+			jobID:     "validate",
+			job:       &Job{Steps: []*Step{{Run: "prisma validate"}}},
+			sensitive: false,
+		},
+		// === Additional edge cases ===
+		{
+			name:      "liquibase update command",
+			jobID:     "db",
+			job:       &Job{Steps: []*Step{{Run: "liquibase update"}}},
+			sensitive: true,
+		},
+		{
+			name:      "knex migrate latest command",
+			jobID:     "db",
+			job:       &Job{Steps: []*Step{{Run: "knex migrate:latest"}}},
+			sensitive: true,
+		},
+		{
+			name:      "sequelize db migrate command",
+			jobID:     "db",
+			job:       &Job{Steps: []*Step{{Run: "sequelize db:migrate"}}},
+			sensitive: true,
+		},
+		{
+			name:      "typeorm migration run command",
+			jobID:     "db",
+			job:       &Job{Steps: []*Step{{Run: "typeorm migration:run"}}},
+			sensitive: true,
+		},
+		{
+			name:      "goose up command",
+			jobID:     "db",
+			job:       &Job{Steps: []*Step{{Run: "goose up"}}},
+			sensitive: true,
+		},
+		{
+			name:      "dbmate up command",
+			jobID:     "db",
+			job:       &Job{Steps: []*Step{{Run: "dbmate up"}}},
+			sensitive: true,
+		},
+		{
+			name:      "atlas migrate apply command",
+			jobID:     "db",
+			job:       &Job{Steps: []*Step{{Run: "atlas migrate apply"}}},
+			sensitive: true,
+		},
+		{
+			name:      "nil job",
+			jobID:     "test",
+			job:       nil,
+			sensitive: false,
+		},
+		{
+			name:      "job with nil steps",
+			jobID:     "test",
+			job:       &Job{Steps: nil},
+			sensitive: false,
+		},
+		{
+			name:      "job with nil step",
+			jobID:     "test",
+			job:       &Job{Steps: []*Step{nil, {Run: "echo test"}}},
+			sensitive: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isSensitiveJob(tt.jobID, tt.job)
+			if got != tt.sensitive {
+				t.Errorf("isSensitiveJob(%q) = %v, want %v", tt.jobID, got, tt.sensitive)
+			}
+		})
+	}
+}
+
+// TestInjectAlwaysForDependentJobs tests injecting if: always() for jobs with dependencies
+func TestInjectAlwaysForDependentJobs(t *testing.T) {
+	tests := []struct {
+		name     string
+		workflow *Workflow
+		validate func(*testing.T, *Workflow)
+	}{
+		{
+			name: "inject always() for safe job with single dependency",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"lint": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "lint"}}},
+					"build": {
+						RunsOn: "ubuntu-latest",
+						Needs:  "lint",
+						Steps:  []*Step{{Run: "go build"}},
+					},
+				},
+			},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				if wf.Jobs["build"].If != "always()" {
+					t.Errorf("build should have if: always(), got %q", wf.Jobs["build"].If)
+				}
+				if wf.Jobs["lint"].If != "" {
+					t.Errorf("lint should not have if condition, got %q", wf.Jobs["lint"].If)
+				}
+			},
+		},
+		{
+			name: "inject always() for safe job with multiple dependencies",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"lint":  {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "lint"}}},
+					"test":  {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "test"}}},
+					"build": {
+						RunsOn: "ubuntu-latest",
+						Needs:  []any{"lint", "test"},
+						Steps:  []*Step{{Run: "go build"}},
+					},
+				},
+			},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				if wf.Jobs["build"].If != "always()" {
+					t.Errorf("build should have if: always(), got %q", wf.Jobs["build"].If)
+				}
+			},
+		},
+		{
+			name: "preserve and combine existing if condition",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"lint": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "lint"}}},
+					"test": {
+						RunsOn: "ubuntu-latest",
+						Needs:  "lint",
+						If:     "github.event_name == 'push'",
+						Steps:  []*Step{{Run: "test"}},
+					},
+				},
+			},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				expected := "always() && (github.event_name == 'push')"
+				if wf.Jobs["test"].If != expected {
+					t.Errorf("test if = %q, want %q", wf.Jobs["test"].If, expected)
+				}
+			},
+		},
+		{
+			name: "skip jobs without dependencies",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"standalone": {
+						RunsOn: "ubuntu-latest",
+						Steps:  []*Step{{Run: "test"}},
+					},
+				},
+			},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				if wf.Jobs["standalone"].If != "" {
+					t.Errorf("standalone should not have if condition, got %q", wf.Jobs["standalone"].If)
+				}
+			},
+		},
+		{
+			name: "skip reusable workflows",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"build": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "build"}}},
+					"reusable": {
+						Uses:  "./.github/workflows/reusable.yml",
+						Needs: "build",
+					},
+				},
+			},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				if wf.Jobs["reusable"].If != "" {
+					t.Errorf("reusable workflow should not get if condition, got %q", wf.Jobs["reusable"].If)
+				}
+			},
+		},
+		{
+			name: "skip release job even with dependency",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"test": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "test"}}},
+					"release": {
+						RunsOn: "ubuntu-latest",
+						Needs:  "test",
+						Steps:  []*Step{{Uses: "changesets/action@v1"}},
+					},
+				},
+			},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				if wf.Jobs["release"].If != "" {
+					t.Errorf("release should NOT get always(), got %q", wf.Jobs["release"].If)
+				}
+			},
+		},
+		{
+			name: "skip deploy job with npm publish",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"build": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "build"}}},
+					"publish": {
+						RunsOn: "ubuntu-latest",
+						Needs:  "build",
+						Steps:  []*Step{{Run: "npm publish"}},
+					},
+				},
+			},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				if wf.Jobs["publish"].If != "" {
+					t.Errorf("publish should NOT get always(), got %q", wf.Jobs["publish"].If)
+				}
+			},
+		},
+		{
+			name: "skip job by name even with safe steps",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"test": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "test"}}},
+					"deploy": {
+						RunsOn: "ubuntu-latest",
+						Needs:  "test",
+						Steps:  []*Step{{Run: "echo deploying"}}, // Safe step but job name is sensitive
+					},
+				},
+			},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				if wf.Jobs["deploy"].If != "" {
+					t.Errorf("deploy should NOT get always() due to name, got %q", wf.Jobs["deploy"].If)
+				}
+			},
+		},
+		{
+			name:     "nil workflow",
+			workflow: nil,
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				// Should not panic
+			},
+		},
+		{
+			name: "workflow with nil jobs map",
+			workflow: &Workflow{
+				Name: "Test",
+				Jobs: nil,
+			},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				// Should not panic
+			},
+		},
+		{
+			name: "workflow with nil job",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"test":  {RunsOn: "ubuntu-latest", Needs: "build", Steps: []*Step{{Run: "test"}}},
+					"build": nil,
+				},
+			},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				// Valid job should get always()
+				if wf.Jobs["test"].If != "always()" {
+					t.Errorf("test should have always(), got %q", wf.Jobs["test"].If)
+				}
+			},
+		},
+		{
+			name: "mixed safe and sensitive jobs",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"lint": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "lint"}}},
+					"test": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "test"}}},
+					"build": {
+						RunsOn: "ubuntu-latest",
+						Needs:  []any{"lint", "test"},
+						Steps:  []*Step{{Run: "go build"}},
+					},
+					"release": {
+						RunsOn: "ubuntu-latest",
+						Needs:  "build",
+						Steps:  []*Step{{Uses: "goreleaser/goreleaser-action@v5"}},
+					},
+				},
+			},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				// build should get always() (safe job with deps)
+				if wf.Jobs["build"].If != "always()" {
+					t.Errorf("build should have always(), got %q", wf.Jobs["build"].If)
+				}
+				// release should NOT get always() (sensitive action)
+				if wf.Jobs["release"].If != "" {
+					t.Errorf("release should NOT get always(), got %q", wf.Jobs["release"].If)
+				}
+				// lint and test should have no if (no deps)
+				if wf.Jobs["lint"].If != "" {
+					t.Errorf("lint should not have if, got %q", wf.Jobs["lint"].If)
+				}
+				if wf.Jobs["test"].If != "" {
+					t.Errorf("test should not have if, got %q", wf.Jobs["test"].If)
+				}
+			},
+		},
+		// === Destructive operations should NOT get always() ===
+		{
+			name: "skip terraform destroy job",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"plan": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "terraform plan"}}},
+					"destroy": {
+						RunsOn: "ubuntu-latest",
+						Needs:  "plan",
+						Steps:  []*Step{{Run: "terraform destroy -auto-approve"}},
+					},
+				},
+			},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				if wf.Jobs["destroy"].If != "" {
+					t.Errorf("destroy should NOT get always() for terraform destroy, got %q", wf.Jobs["destroy"].If)
+				}
+			},
+		},
+		{
+			name: "skip kubectl delete job",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"build": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "go build"}}},
+					"cleanup": {
+						RunsOn: "ubuntu-latest",
+						Needs:  "build",
+						Steps:  []*Step{{Run: "kubectl delete -f deployment.yaml"}},
+					},
+				},
+			},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				if wf.Jobs["cleanup"].If != "" {
+					t.Errorf("cleanup should NOT get always() for kubectl delete, got %q", wf.Jobs["cleanup"].If)
+				}
+			},
+		},
+		{
+			name: "skip helm uninstall job",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"build": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "go build"}}},
+					"teardown": {
+						RunsOn: "ubuntu-latest",
+						Needs:  "build",
+						Steps:  []*Step{{Run: "helm uninstall myrelease"}},
+					},
+				},
+			},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				if wf.Jobs["teardown"].If != "" {
+					t.Errorf("teardown should NOT get always() for helm uninstall, got %q", wf.Jobs["teardown"].If)
+				}
+			},
+		},
+		{
+			name: "skip pulumi destroy job",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"preview": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "pulumi preview"}}},
+					"destroy": {
+						RunsOn: "ubuntu-latest",
+						Needs:  "preview",
+						Steps:  []*Step{{Run: "pulumi destroy --yes"}},
+					},
+				},
+			},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				if wf.Jobs["destroy"].If != "" {
+					t.Errorf("destroy should NOT get always() for pulumi destroy, got %q", wf.Jobs["destroy"].If)
+				}
+			},
+		},
+		// === Database migrations should NOT get always() ===
+		{
+			name: "skip prisma migrate deploy job",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"build": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "npm run build"}}},
+					"migrate": {
+						RunsOn: "ubuntu-latest",
+						Needs:  "build",
+						Steps:  []*Step{{Run: "prisma migrate deploy"}},
+					},
+				},
+			},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				if wf.Jobs["migrate"].If != "" {
+					t.Errorf("migrate should NOT get always() for prisma migrate, got %q", wf.Jobs["migrate"].If)
+				}
+			},
+		},
+		{
+			name: "skip alembic upgrade job",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"test": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "pytest"}}},
+					"migrate": {
+						RunsOn: "ubuntu-latest",
+						Needs:  "test",
+						Steps:  []*Step{{Run: "alembic upgrade head"}},
+					},
+				},
+			},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				if wf.Jobs["migrate"].If != "" {
+					t.Errorf("migrate should NOT get always() for alembic upgrade, got %q", wf.Jobs["migrate"].If)
+				}
+			},
+		},
+		{
+			name: "skip flyway migrate job",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"build": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "mvn package"}}},
+					"migrate": {
+						RunsOn: "ubuntu-latest",
+						Needs:  "build",
+						Steps:  []*Step{{Run: "flyway migrate"}},
+					},
+				},
+			},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				if wf.Jobs["migrate"].If != "" {
+					t.Errorf("migrate should NOT get always() for flyway migrate, got %q", wf.Jobs["migrate"].If)
+				}
+			},
+		},
+		// === Cloud platforms should NOT get always() ===
+		{
+			name: "skip railway deploy job",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"build": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "npm run build"}}},
+					"deploy": {
+						RunsOn: "ubuntu-latest",
+						Needs:  "build",
+						Steps:  []*Step{{Run: "railway deploy"}},
+					},
+				},
+			},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				if wf.Jobs["deploy"].If != "" {
+					t.Errorf("deploy should NOT get always() for railway deploy, got %q", wf.Jobs["deploy"].If)
+				}
+			},
+		},
+		{
+			name: "skip flyctl deploy job",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"test": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "go test"}}},
+					"deploy": {
+						RunsOn: "ubuntu-latest",
+						Needs:  "test",
+						Steps:  []*Step{{Run: "flyctl deploy"}},
+					},
+				},
+			},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				if wf.Jobs["deploy"].If != "" {
+					t.Errorf("deploy should NOT get always() for flyctl deploy, got %q", wf.Jobs["deploy"].If)
+				}
+			},
+		},
+		{
+			name: "skip heroku deploy job",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"build": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "bundle exec rails test"}}},
+					"deploy": {
+						RunsOn: "ubuntu-latest",
+						Needs:  "build",
+						Steps:  []*Step{{Run: "git push heroku main"}},
+					},
+				},
+			},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				if wf.Jobs["deploy"].If != "" {
+					t.Errorf("deploy should NOT get always() for heroku deploy, got %q", wf.Jobs["deploy"].If)
+				}
+			},
+		},
+		{
+			name: "skip wrangler deploy job",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"build": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "npm run build"}}},
+					"deploy": {
+						RunsOn: "ubuntu-latest",
+						Needs:  "build",
+						Steps:  []*Step{{Run: "wrangler deploy"}},
+					},
+				},
+			},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				if wf.Jobs["deploy"].If != "" {
+					t.Errorf("deploy should NOT get always() for wrangler deploy, got %q", wf.Jobs["deploy"].If)
+				}
+			},
+		},
+		{
+			name: "skip firebase deploy job",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"build": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "npm run build"}}},
+					"deploy": {
+						RunsOn: "ubuntu-latest",
+						Needs:  "build",
+						Steps:  []*Step{{Run: "firebase deploy"}},
+					},
+				},
+			},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				if wf.Jobs["deploy"].If != "" {
+					t.Errorf("deploy should NOT get always() for firebase deploy, got %q", wf.Jobs["deploy"].If)
+				}
+			},
+		},
+		// === Package managers should NOT get always() ===
+		{
+			name: "skip gem push job",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"test": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "bundle exec rspec"}}},
+					"publish": {
+						RunsOn: "ubuntu-latest",
+						Needs:  "test",
+						Steps:  []*Step{{Run: "gem push mypackage-1.0.0.gem"}},
+					},
+				},
+			},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				if wf.Jobs["publish"].If != "" {
+					t.Errorf("publish should NOT get always() for gem push, got %q", wf.Jobs["publish"].If)
+				}
+			},
+		},
+		{
+			name: "skip dotnet nuget push job",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"build": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "dotnet build"}}},
+					"publish": {
+						RunsOn: "ubuntu-latest",
+						Needs:  "build",
+						Steps:  []*Step{{Run: "dotnet nuget push *.nupkg"}},
+					},
+				},
+			},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				if wf.Jobs["publish"].If != "" {
+					t.Errorf("publish should NOT get always() for dotnet nuget push, got %q", wf.Jobs["publish"].If)
+				}
+			},
+		},
+		{
+			name: "skip poetry publish job",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"test": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "pytest"}}},
+					"publish": {
+						RunsOn: "ubuntu-latest",
+						Needs:  "test",
+						Steps:  []*Step{{Run: "poetry publish --build"}},
+					},
+				},
+			},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				if wf.Jobs["publish"].If != "" {
+					t.Errorf("publish should NOT get always() for poetry publish, got %q", wf.Jobs["publish"].If)
+				}
+			},
+		},
+		{
+			name: "skip cargo publish job",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"test": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "cargo test"}}},
+					"publish": {
+						RunsOn: "ubuntu-latest",
+						Needs:  "test",
+						Steps:  []*Step{{Run: "cargo publish"}},
+					},
+				},
+			},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				if wf.Jobs["publish"].If != "" {
+					t.Errorf("publish should NOT get always() for cargo publish, got %q", wf.Jobs["publish"].If)
+				}
+			},
+		},
+		// === Safe jobs with dependencies SHOULD get always() ===
+		{
+			name: "safe test job with go test gets always()",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"build": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "go build"}}},
+					"test": {
+						RunsOn: "ubuntu-latest",
+						Needs:  "build",
+						Steps:  []*Step{{Run: "go test ./..."}},
+					},
+				},
+			},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				if wf.Jobs["test"].If != "always()" {
+					t.Errorf("test should get always() for go test, got %q", wf.Jobs["test"].If)
+				}
+			},
+		},
+		{
+			name: "safe lint job with golangci-lint gets always()",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"build": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "go build"}}},
+					"lint": {
+						RunsOn: "ubuntu-latest",
+						Needs:  "build",
+						Steps:  []*Step{{Run: "golangci-lint run ./..."}},
+					},
+				},
+			},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				if wf.Jobs["lint"].If != "always()" {
+					t.Errorf("lint should get always() for golangci-lint, got %q", wf.Jobs["lint"].If)
+				}
+			},
+		},
+		{
+			name: "safe typecheck job with tsc gets always()",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"install": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "npm install"}}},
+					"typecheck": {
+						RunsOn: "ubuntu-latest",
+						Needs:  "install",
+						Steps:  []*Step{{Run: "tsc --noEmit"}},
+					},
+				},
+			},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				if wf.Jobs["typecheck"].If != "always()" {
+					t.Errorf("typecheck should get always() for tsc, got %q", wf.Jobs["typecheck"].If)
+				}
+			},
+		},
+		{
+			name: "safe terraform plan job gets always()",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"init": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "terraform init"}}},
+					"plan": {
+						RunsOn: "ubuntu-latest",
+						Needs:  "init",
+						Steps:  []*Step{{Run: "terraform plan -out=tfplan"}},
+					},
+				},
+			},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				if wf.Jobs["plan"].If != "always()" {
+					t.Errorf("plan should get always() for terraform plan, got %q", wf.Jobs["plan"].If)
+				}
+			},
+		},
+		{
+			name: "safe kubectl get job gets always()",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"auth": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "kubectl config use-context prod"}}},
+					"check": {
+						RunsOn: "ubuntu-latest",
+						Needs:  "auth",
+						Steps:  []*Step{{Run: "kubectl get pods"}},
+					},
+				},
+			},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				if wf.Jobs["check"].If != "always()" {
+					t.Errorf("check should get always() for kubectl get, got %q", wf.Jobs["check"].If)
+				}
+			},
+		},
+		{
+			name: "safe helm lint job gets always()",
+			workflow: &Workflow{
+				Jobs: map[string]*Job{
+					"build": {RunsOn: "ubuntu-latest", Steps: []*Step{{Run: "go build"}}},
+					"lint": {
+						RunsOn: "ubuntu-latest",
+						Needs:  "build",
+						Steps:  []*Step{{Run: "helm lint ./chart"}},
+					},
+				},
+			},
+			validate: func(t *testing.T, wf *Workflow) {
+				t.Helper()
+				if wf.Jobs["lint"].If != "always()" {
+					t.Errorf("lint should get always() for helm lint, got %q", wf.Jobs["lint"].If)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			InjectAlwaysForDependentJobs(tt.workflow, nil)
+			tt.validate(t, tt.workflow)
+		})
+	}
+}
+
+// TestSanitizeForShellEcho_Unicode verifies sanitizeForShellEcho handles Unicode correctly
+func TestSanitizeForShellEcho_Unicode(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"simple ascii", "Build project"},
+		{"unicode chinese", "构建项目"},
+		{"unicode japanese", "ビルド"},
+		{"unicode emoji", "Build 🚀 Deploy"},
+		{"mixed unicode", "Test 日本語 步骤"},
+		{"newline attack", "test\n; rm -rf /"},
+		{"single quote attack", "test'; rm -rf /; echo '"},
+		{"carriage return attack", "test\r; rm -rf /"},
+		{"tab injection", "test\t; rm -rf /"},
+		{"null byte attack", "test\x00rm -rf /"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := sanitizeForShellEcho(tt.input)
+
+			// Result should not contain unescaped newlines
+			if strings.Contains(result, "\n") {
+				t.Errorf("sanitizeForShellEcho(%q) contains newline", tt.input)
+			}
+
+			// Result should not contain carriage returns
+			if strings.Contains(result, "\r") {
+				t.Errorf("sanitizeForShellEcho(%q) contains carriage return", tt.input)
+			}
+
+			// Result should not contain tabs
+			if strings.Contains(result, "\t") {
+				t.Errorf("sanitizeForShellEcho(%q) contains tab", tt.input)
+			}
+
+			// Result should not contain null bytes
+			if strings.Contains(result, "\x00") {
+				t.Errorf("sanitizeForShellEcho(%q) contains null byte", tt.input)
+			}
+
+			// Single quotes should be properly escaped as '\''
+			// Each original quote ' becomes '\'' (end-quote, backslash-quote, start-quote = 3 quotes)
+			escapedQuoteCount := strings.Count(result, "'\\''")
+			totalQuoteCount := strings.Count(result, "'")
+			expectedEscapeCount := strings.Count(tt.input, "'")
+			if escapedQuoteCount != expectedEscapeCount {
+				t.Errorf("sanitizeForShellEcho(%q): expected %d escaped quotes, got %d", tt.input, expectedEscapeCount, escapedQuoteCount)
+			}
+			// After escaping, total quotes = original_quotes * 3 (each ' becomes '\'')
+			expectedTotalQuotes := expectedEscapeCount * 3
+			if totalQuoteCount != expectedTotalQuotes {
+				t.Errorf("sanitizeForShellEcho(%q): expected %d total quotes, got %d", tt.input, expectedTotalQuotes, totalQuoteCount)
+			}
+		})
+	}
+}
+
+// TestTopologicalSortManifest_CircularDependencies verifies topological sort handles cycles gracefully
+func TestTopologicalSortManifest_CircularDependencies(t *testing.T) {
+	// Create jobs with circular dependencies: a -> b -> c -> a
+	jobInfoMap := map[string]*ci.ManifestJob{
+		"a": {ID: "a", Name: "Job A", Needs: []string{"c"}},
+		"b": {ID: "b", Name: "Job B", Needs: []string{"a"}},
+		"c": {ID: "c", Name: "Job C", Needs: []string{"b"}},
+		"d": {ID: "d", Name: "Job D", Needs: []string{}}, // No deps, should be first
+	}
+
+	result := topologicalSortManifest(jobInfoMap)
+
+	// All jobs should still be included (cycles are handled gracefully)
+	if len(result) != 4 {
+		t.Errorf("expected 4 jobs, got %d", len(result))
+	}
+
+	// Job D should be first (no dependencies)
+	if result[0].ID != "d" {
+		t.Errorf("expected job 'd' first, got %q", result[0].ID)
+	}
+
+	// Verify all jobs are present in result
+	resultSet := make(map[string]bool)
+	for _, job := range result {
+		resultSet[job.ID] = true
+	}
+	for _, expectedJob := range []string{"a", "b", "c", "d"} {
+		if !resultSet[expectedJob] {
+			t.Errorf("expected job %q in result", expectedJob)
+		}
+	}
+}
+
+// TestInjectJobMarkers_SpecialStepNames verifies markers handle special characters in step names
+func TestInjectJobMarkers_SpecialStepNames(t *testing.T) {
+	wf := &Workflow{
+		Jobs: map[string]*Job{
+			"test": {
+				RunsOn: "ubuntu-latest",
+				Steps: []*Step{
+					{Name: "Build with 日本語"},
+					{Name: "Test\nwith\nnewlines"},
+					{Name: "Deploy'; echo 'pwned"},
+				},
+			},
+		},
+	}
+
+	InjectJobMarkers(wf)
+
+	job := wf.Jobs["test"]
+	// Expected steps: manifest + job-start + (step-marker + original) * 3 + job-end = 1 + 1 + 6 + 1 = 9
+	if len(job.Steps) != 9 {
+		t.Errorf("expected 9 steps, got %d", len(job.Steps))
+	}
+
+	// Find and verify step marker steps
+	for i, step := range job.Steps {
+		if strings.HasPrefix(step.Name, "detent: step") {
+			// Marker steps should have safe echo commands
+			if strings.Contains(step.Run, "\n") && !strings.HasPrefix(step.Run, "echo") {
+				t.Errorf("step %d: marker step has unsafe newline in non-echo content: %s", i, step.Run)
+			}
+			// Verify the echo command doesn't contain unescaped dangerous characters
+			// The Run field should be: echo '::detent::step-start::test::N::sanitized_name'
+			if !strings.HasPrefix(step.Run, "echo '::detent::step-start::") {
+				t.Errorf("step %d: unexpected marker format: %s", i, step.Run)
+			}
+			// Extract the step name part and verify it's safe
+			// Format: echo '::detent::step-start::jobID::index::stepName'
+			parts := strings.Split(step.Run, "::")
+			if len(parts) >= 5 {
+				stepName := strings.TrimSuffix(parts[4], "'")
+				// Step name should not contain raw newlines
+				if strings.Contains(stepName, "\n") {
+					t.Errorf("step %d: step name contains unescaped newline: %q", i, stepName)
+				}
+			}
+		}
+	}
+
+	// Verify original steps are preserved
+	originalStepIndices := []int{3, 5, 7} // After manifest, job-start, and marker steps
+	expectedNames := []string{"Build with 日本語", "Test\nwith\nnewlines", "Deploy'; echo 'pwned"}
+	for j, idx := range originalStepIndices {
+		if idx >= len(job.Steps) {
+			t.Errorf("expected step at index %d, but only have %d steps", idx, len(job.Steps))
+			continue
+		}
+		if job.Steps[idx].Name != expectedNames[j] {
+			t.Errorf("original step %d: expected name %q, got %q", j, expectedNames[j], job.Steps[idx].Name)
+		}
+	}
 }

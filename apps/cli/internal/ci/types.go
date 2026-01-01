@@ -5,11 +5,12 @@ type JobStatus string
 
 // JobStatus values representing the possible states of a tracked job.
 const (
-	JobPending JobStatus = "pending"
-	JobRunning JobStatus = "running"
-	JobSuccess JobStatus = "success"
-	JobFailed  JobStatus = "failed"
-	JobSkipped JobStatus = "skipped"
+	JobPending         JobStatus = "pending"
+	JobRunning         JobStatus = "running"
+	JobSuccess         JobStatus = "success"
+	JobFailed          JobStatus = "failed"
+	JobSkipped         JobStatus = "skipped"
+	JobSkippedSecurity JobStatus = "skipped_security" // Skipped by Detent to prevent accidental production releases
 )
 
 // JobEvent represents a job lifecycle event parsed from CI output.
@@ -41,11 +42,12 @@ type StepEvent struct {
 
 // ManifestJob contains information about a single job in the manifest.
 type ManifestJob struct {
-	ID    string   `json:"id"`              // Job ID (key in jobs map)
-	Name  string   `json:"name"`            // Display name
-	Steps []string `json:"steps,omitempty"` // Step names in order (empty for uses: jobs)
-	Needs []string `json:"needs,omitempty"` // Job IDs this job depends on
-	Uses  string   `json:"uses,omitempty"`  // Reusable workflow reference (if present, no steps)
+	ID        string   `json:"id"`                  // Job ID (key in jobs map)
+	Name      string   `json:"name"`                // Display name
+	Steps     []string `json:"steps,omitempty"`     // Step names in order (empty for uses: jobs)
+	Needs     []string `json:"needs,omitempty"`     // Job IDs this job depends on
+	Uses      string   `json:"uses,omitempty"`      // Reusable workflow reference (if present, no steps)
+	Sensitive bool     `json:"sensitive,omitempty"` // True if job may publish, release, or deploy
 }
 
 // ManifestInfo contains the full manifest for a workflow run.

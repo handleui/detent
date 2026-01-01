@@ -7,6 +7,7 @@ import (
 
 	"github.com/detent/cli/internal/debug"
 	"github.com/detent/cli/internal/git"
+	"github.com/detent/cli/internal/persistence"
 	"github.com/detent/cli/internal/preflight"
 	"github.com/detent/cli/internal/tui"
 	"github.com/detent/cli/internal/workflow"
@@ -100,7 +101,9 @@ func (p *WorkflowPreparer) runPreflightChecks(ctx context.Context, verbose bool)
 	}
 
 	// Best-effort cleanup of orphaned worktrees from previous runs (SIGKILL recovery)
-	_, _ = git.CleanupOrphanedWorktrees(ctx, p.config.RepoRoot)
+	if _, err := git.CleanupOrphanedWorktrees(ctx, p.config.RepoRoot); err != nil {
+		debug.Log("Failed to cleanup orphaned worktrees: %v", err)
+	}
 
 	return nil
 }
@@ -132,6 +135,14 @@ func (p *WorkflowPreparer) runValidationChecks(ctx context.Context, verbose bool
 
 // prepareWorkflowsAndWorktree prepares workflow files and creates worktree in parallel.
 func (p *WorkflowPreparer) prepareWorkflowsAndWorktree(ctx context.Context, verbose bool) (*PrepareResult, error) {
+	// Load config and get allowed sensitive jobs for this repo (before goroutines)
+	var allowedSensitiveJobs []string
+	if cfg, cfgErr := persistence.Load(); cfgErr == nil {
+		if repoSHA, shaErr := git.GetFirstCommitSHA(p.config.RepoRoot); shaErr == nil && repoSHA != "" {
+			allowedSensitiveJobs = cfg.GetAllowedSensitiveJobs(repoSHA)
+		}
+	}
+
 	type workflowResult struct {
 		tmpDir           string
 		cleanupWorkflows func()
@@ -147,9 +158,8 @@ func (p *WorkflowPreparer) prepareWorkflowsAndWorktree(ctx context.Context, verb
 	workflowChan := make(chan workflowResult, 1)
 	worktreeChan := make(chan worktreeResult, 1)
 
-	// Prepare workflows in parallel
 	go func() {
-		tmpDir, cleanupWorkflows, err := workflow.PrepareWorkflows(p.config.WorkflowPath, p.config.WorkflowFile)
+		tmpDir, cleanupWorkflows, err := workflow.PrepareWorkflows(p.config.WorkflowPath, p.config.WorkflowFile, allowedSensitiveJobs)
 		workflowChan <- workflowResult{
 			tmpDir:           tmpDir,
 			cleanupWorkflows: cleanupWorkflows,
@@ -157,7 +167,6 @@ func (p *WorkflowPreparer) prepareWorkflowsAndWorktree(ctx context.Context, verb
 		}
 	}()
 
-	// Prepare worktree in parallel (ephemeral, cleaned up after use)
 	go func() {
 		worktreePath, pathErr := git.CreateEphemeralWorktreePath(p.config.RunID)
 		if pathErr != nil {
@@ -172,11 +181,9 @@ func (p *WorkflowPreparer) prepareWorkflowsAndWorktree(ctx context.Context, verb
 		}
 	}()
 
-	// Collect results
 	workflowRes := <-workflowChan
 	worktreeRes := <-worktreeChan
 
-	// Handle errors with proper cleanup
 	if workflowRes.err != nil {
 		if worktreeRes.cleanupWorktree != nil {
 			worktreeRes.cleanupWorktree()
@@ -203,7 +210,6 @@ func (p *WorkflowPreparer) prepareWorkflowsAndWorktree(ctx context.Context, verb
 		p.printStatus("Creating workspace", true)
 	}
 
-	// Extract job info from workflows
 	jobs, _ := workflow.ExtractJobInfoFromDir(p.config.WorkflowPath)
 	p.initDebugLogging(jobs)
 

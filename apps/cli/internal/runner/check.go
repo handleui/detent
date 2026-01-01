@@ -111,7 +111,6 @@ func (r *CheckRunner) PrepareWithTUI(ctx context.Context) error {
 	return nil
 }
 
-// storePreparationResult stores the preparation result in the runner.
 func (r *CheckRunner) storePreparationResult(result *PrepareResult) {
 	r.tmpDir = result.TmpDir
 	r.worktreeInfo = result.WorktreeInfo
@@ -176,7 +175,6 @@ func (r *CheckRunner) RunWithTUI(ctx context.Context, logChan chan string, progr
 		return false, err
 	}
 
-	// Use pre-processed errors from executor (processed in goroutine before TUI exit)
 	r.startTime = execResult.StartTime
 	r.result = &RunResult{
 		ActResult:            execResult.ActResult,
@@ -191,7 +189,6 @@ func (r *CheckRunner) RunWithTUI(ctx context.Context, logChan chan string, progr
 		ExitCode:             execResult.ActResult.ExitCode,
 	}
 
-	// Print completion output after TUI exits (job statuses + error summary)
 	if execResult.CompletionOutput != "" {
 		fmt.Fprint(os.Stderr, execResult.CompletionOutput)
 	}
@@ -219,9 +216,7 @@ func (r *CheckRunner) Persist() error {
 // Cleanup releases all resources allocated during Prepare.
 // Order matters: workflow temp files should be removed before the git worktree
 // to ensure consistent state during cleanup.
-// If changes were stashed during preflight, they are restored here.
 func (r *CheckRunner) Cleanup() {
-	// Close debug log first
 	debug.Close()
 
 	if r.cleanupWorkflows != nil {

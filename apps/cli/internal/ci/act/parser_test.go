@@ -390,6 +390,60 @@ func TestParser_Manifest(t *testing.T) {
 		}
 	})
 
+	t.Run("parses v2 manifest with base64 encoding", func(t *testing.T) {
+		parser := New()
+
+		// V2 manifest with base64-encoded JSON (security-hardened format)
+		// Base64 of: {"v":2,"jobs":[{"id":"test","name":"Test","steps":["Checkout","Run tests"]}]}
+		b64Manifest := `::detent::manifest::v2::b64::eyJ2IjoyLCJqb2JzIjpbeyJpZCI6InRlc3QiLCJuYW1lIjoiVGVzdCIsInN0ZXBzIjpbIkNoZWNrb3V0IiwiUnVuIHRlc3RzIl19XX0=`
+		event, ok := parser.ParseLine(b64Manifest)
+
+		if !ok {
+			t.Error("ParseLine() ok = false for v2 base64 manifest, want true")
+		}
+
+		manifestEvent, isManifest := event.(*ci.ManifestEvent)
+		if !isManifest {
+			t.Fatalf("ParseLine() event type = %T, want *ci.ManifestEvent", event)
+		}
+
+		manifest := manifestEvent.Manifest
+		if manifest == nil {
+			t.Fatal("ManifestEvent.Manifest = nil, want non-nil")
+		}
+
+		if manifest.Version != 2 {
+			t.Errorf("Manifest.Version = %d, want 2", manifest.Version)
+		}
+
+		if len(manifest.Jobs) != 1 {
+			t.Fatalf("Manifest.Jobs len = %d, want 1", len(manifest.Jobs))
+		}
+
+		job0 := manifest.Jobs[0]
+		if job0.ID != "test" {
+			t.Errorf("Jobs[0].ID = %q, want %q", job0.ID, "test")
+		}
+		if job0.Name != "Test" {
+			t.Errorf("Jobs[0].Name = %q, want %q", job0.Name, "Test")
+		}
+		if len(job0.Steps) != 2 {
+			t.Errorf("Jobs[0].Steps len = %d, want 2", len(job0.Steps))
+		}
+	})
+
+	t.Run("rejects invalid base64 in manifest", func(t *testing.T) {
+		parser := New()
+
+		// Invalid base64 (contains invalid character !)
+		invalidB64Manifest := `::detent::manifest::v2::b64::!!!invalid-base64!!!`
+		_, ok := parser.ParseLine(invalidB64Manifest)
+
+		if ok {
+			t.Error("ParseLine() ok = true for invalid base64, want false")
+		}
+	})
+
 	t.Run("only first manifest is stored", func(t *testing.T) {
 		parser := New()
 

@@ -49,7 +49,7 @@ func tryLockWithRetry(lock lockfile.Lockfile) error {
 	for range lockRetryAttempts {
 		lastErr = lock.TryLock()
 		if lastErr == nil {
-			return nil // Lock acquired
+			return nil
 		}
 
 		// Check if error is temporary (ErrBusy, ErrNotExist)
@@ -88,7 +88,7 @@ func unlockWithLogging(lock lockfile.Lockfile, worktreeDir string) {
 // If worktreeDir already exists and is a valid worktree at the same commit, it is reused.
 // Returns worktree info, cleanup function, and error.
 //
-// Note: This requires a clean worktree. Call ValidateCleanWorktree() before this.
+// Note: Uncommitted changes are synced via SyncDirtyFiles.
 func PrepareWorktree(ctx context.Context, repoRoot, worktreeDir string) (*WorktreeInfo, func(), error) {
 	cmd := exec.CommandContext(ctx, "git", "-c", "core.hooksPath=/dev/null", "rev-parse", "HEAD")
 	cmd.Dir = repoRoot
@@ -264,13 +264,11 @@ func copyFile(src, dst string) error {
 	}
 	defer func() { _ = srcFile.Close() }()
 
-	// Get source file info for permissions
 	srcInfo, err := srcFile.Stat()
 	if err != nil {
 		return err
 	}
 
-	// Create destination directory with restrictive permissions
 	dstDir := filepath.Dir(dst)
 	if mkdirErr := os.MkdirAll(dstDir, 0o700); mkdirErr != nil {
 		return mkdirErr
@@ -283,7 +281,6 @@ func copyFile(src, dst string) error {
 	}
 	defer func() { _ = dstFile.Close() }()
 
-	// Copy contents
 	_, err = io.Copy(dstFile, srcFile)
 	return err
 }
@@ -419,17 +416,16 @@ func safeRemoveDir(path string) error {
 	info, err := os.Lstat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil // Already gone
+			return nil
 		}
 		return err
 	}
 
-	// Only remove actual directories, never symlinks
 	if info.Mode()&os.ModeSymlink != 0 {
-		return nil // Don't remove symlinks
+		return nil
 	}
 	if !info.IsDir() {
-		return nil // Don't remove non-directories
+		return nil
 	}
 
 	return os.RemoveAll(path)

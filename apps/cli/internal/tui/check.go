@@ -66,7 +66,7 @@ type CheckModel struct {
 func NewCheckModel(cancelFunc func()) CheckModel {
 	// Initialize shimmer with waiting message
 	// Base color is grey (#585858) so shimmer wave can lighten to white
-	shim := shimmer.New("Waiting for workflow...", "#585858")
+	shim := shimmer.New("Waiting for workflow", "#585858")
 	shim = shim.SetLoading(true)
 
 	return CheckModel{
@@ -249,9 +249,7 @@ func (m *CheckModel) renderWaitingView() string {
 	b.WriteString(SecondaryStyle.Render(header) + "\n\n")
 	b.WriteString("  " + m.shimmer.View() + "\n")
 
-	// Show helpful context during startup
-	b.WriteString("\n")
-	b.WriteString(MutedStyle.Render("  Preparing Docker containers...") + "\n")
+	// Show helpful message after a few seconds
 	if elapsed > 5 {
 		b.WriteString(MutedStyle.Render("  This may take a moment on first run.") + "\n")
 	}
@@ -259,7 +257,7 @@ func (m *CheckModel) renderWaitingView() string {
 	return b.String()
 }
 
-// renderStepList renders the job and step list with shimmer on current step
+// renderStepList renders the job list during execution (compact - no step expansion)
 func (m *CheckModel) renderStepList() string {
 	var b strings.Builder
 
@@ -270,20 +268,56 @@ func (m *CheckModel) renderStepList() string {
 	jobs := m.tracker.GetJobs()
 
 	for _, job := range jobs {
-		// Render job line
-		jobLine := m.renderJob(job)
+		// Render job line (with current step shown inline for running jobs)
+		jobLine := m.renderJobCompact(job)
 		b.WriteString("  " + jobLine + "\n")
-
-		// Render steps for running or completed jobs (expanded view)
-		if (job.Status == ci.JobRunning || job.Status == ci.JobSuccess || job.Status == ci.JobFailed) && len(job.Steps) > 0 && !job.IsReusable {
-			for _, step := range job.Steps {
-				stepLine := m.renderStep(job, step)
-				b.WriteString("    " + stepLine + "\n")
-			}
-		}
 	}
 
 	return b.String()
+}
+
+// renderJobCompact renders a job line with current step inline (for running view)
+func (m *CheckModel) renderJobCompact(job *TrackedJob) string {
+	if job.IsReusable {
+		return m.renderReusableJob(job)
+	}
+
+	var icon string
+	var text string
+
+	switch job.Status {
+	case ci.JobPending:
+		icon = MutedStyle.Render("·")
+		text = MutedStyle.Render(job.Name)
+
+	case ci.JobRunning:
+		icon = SecondaryStyle.Render("·")
+		// Show current step name inline with shimmer
+		if job.CurrentStep >= 0 && job.CurrentStep < len(job.Steps) {
+			stepName := job.Steps[job.CurrentStep].Name
+			text = m.shimmer.View() + MutedStyle.Render(" · "+stepName)
+		} else {
+			text = m.shimmer.View()
+		}
+
+	case ci.JobSuccess:
+		icon = SuccessStyle.Render("✓")
+		text = PrimaryStyle.Render(job.Name)
+
+	case ci.JobFailed:
+		icon = ErrorStyle.Render("✗")
+		text = PrimaryStyle.Render(job.Name)
+
+	case ci.JobSkipped:
+		icon = SecondaryStyle.Render("⏭")
+		text = SecondaryStyle.Render(job.Name)
+
+	case ci.JobSkippedSecurity:
+		icon = SecondaryStyle.Render("🔒")
+		text = SecondaryStyle.Render(job.Name)
+	}
+
+	return fmt.Sprintf("%s %s", icon, text)
 }
 
 // renderJob renders a single job line
@@ -317,6 +351,10 @@ func (m *CheckModel) renderJob(job *TrackedJob) string {
 	case ci.JobSkipped:
 		icon = SecondaryStyle.Render("⏭")
 		text = SecondaryStyle.Render(job.Name)
+
+	case ci.JobSkippedSecurity:
+		icon = SecondaryStyle.Render("🔒")
+		text = SecondaryStyle.Render(job.Name)
 	}
 
 	return fmt.Sprintf("%s %s", icon, text)
@@ -346,6 +384,10 @@ func (m *CheckModel) renderReusableJob(job *TrackedJob) string {
 
 	case ci.JobSkipped:
 		icon = SecondaryStyle.Render("⟲")
+		text = SecondaryStyle.Render(job.Name + " (reusable)")
+
+	case ci.JobSkippedSecurity:
+		icon = SecondaryStyle.Render("🔒")
 		text = SecondaryStyle.Render(job.Name + " (reusable)")
 	}
 
@@ -405,8 +447,8 @@ func (m *CheckModel) renderCompletionView() string {
 			line := m.renderJob(job)
 			b.WriteString("  " + line + "\n")
 
-			// Show all steps for all jobs in completion view (not just failed)
-			if len(job.Steps) > 0 && !job.IsReusable {
+			// Only expand steps for failed jobs (keeps output compact)
+			if job.Status == ci.JobFailed && len(job.Steps) > 0 && !job.IsReusable {
 				for _, step := range job.Steps {
 					stepLine := m.renderStep(job, step)
 					b.WriteString("    " + stepLine + "\n")
@@ -415,6 +457,17 @@ func (m *CheckModel) renderCompletionView() string {
 		}
 	}
 	b.WriteString("\n")
+
+	// Check for security-skipped jobs
+	hasSecuritySkipped := false
+	if m.tracker != nil {
+		for _, job := range m.tracker.GetJobs() {
+			if job.Status == ci.JobSkippedSecurity {
+				hasSecuritySkipped = true
+				break
+			}
+		}
+	}
 
 	hasIssues := m.errors != nil && m.errors.Total > 0
 	workflowFailed := m.exitCode != 0
@@ -430,6 +483,12 @@ func (m *CheckModel) renderCompletionView() string {
 	default:
 		headerStyle := SuccessStyle.Bold(true)
 		b.WriteString(headerStyle.Render(fmt.Sprintf("✓ Check passed in %s\n", m.duration)))
+	}
+
+	// Show hint for security-skipped jobs
+	if hasSecuritySkipped {
+		b.WriteString("\n")
+		b.WriteString(HintStyle.Render("Locked jobs skipped for safety. Allow with: detent allow --job <id>") + "\n")
 	}
 
 	return b.String()

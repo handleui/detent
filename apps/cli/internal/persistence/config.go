@@ -49,14 +49,15 @@ type TrustedRepo struct {
 // GlobalConfig is the user's global settings (~/.detent/detent.json).
 // This is the raw structure that gets persisted to disk.
 type GlobalConfig struct {
-	Schema           string                 `json:"$schema,omitempty"`
-	APIKey           string                 `json:"api_key,omitempty"`
-	Model            string                 `json:"model,omitempty"`
-	BudgetPerRunUSD  *float64               `json:"budget_per_run_usd,omitempty"`
-	BudgetMonthlyUSD *float64               `json:"budget_monthly_usd,omitempty"`
-	TimeoutMins      *int                   `json:"timeout_mins,omitempty"`
-	TrustedRepos     map[string]TrustedRepo `json:"trusted_repos,omitempty"`
-	AllowedCommands  map[string][]string    `json:"allowed_commands,omitempty"` // key is first commit SHA
+	Schema               string                 `json:"$schema,omitempty"`
+	APIKey               string                 `json:"api_key,omitempty"`
+	Model                string                 `json:"model,omitempty"`
+	BudgetPerRunUSD      *float64               `json:"budget_per_run_usd,omitempty"`
+	BudgetMonthlyUSD     *float64               `json:"budget_monthly_usd,omitempty"`
+	TimeoutMins          *int                   `json:"timeout_mins,omitempty"`
+	TrustedRepos         map[string]TrustedRepo `json:"trusted_repos,omitempty"`
+	AllowedCommands      map[string][]string    `json:"allowed_commands,omitempty"`       // key is first commit SHA
+	AllowedSensitiveJobs map[string][]string    `json:"allowed_sensitive_jobs,omitempty"` // key is first commit SHA, value is job IDs allowed to run
 }
 
 // Config is the merged, resolved config used by the application.
@@ -600,6 +601,76 @@ func (c *Config) RemoveAllowedCommand(repoSHA, cmd string) error {
 		}
 	}
 	return nil
+}
+
+// --- Allowed Sensitive Jobs helpers ---
+
+// GetAllowedSensitiveJobs returns the allowed sensitive job IDs for a repo by its first commit SHA.
+func (c *Config) GetAllowedSensitiveJobs(repoSHA string) []string {
+	if c.global == nil || c.global.AllowedSensitiveJobs == nil {
+		return nil
+	}
+	return c.global.AllowedSensitiveJobs[repoSHA]
+}
+
+// IsSensitiveJobAllowed checks if a sensitive job ID is in the repo's allowlist.
+func (c *Config) IsSensitiveJobAllowed(repoSHA, jobID string) bool {
+	jobs := c.GetAllowedSensitiveJobs(repoSHA)
+	for _, allowed := range jobs {
+		if allowed == jobID {
+			return true
+		}
+	}
+	return false
+}
+
+// AddAllowedSensitiveJob adds a job ID to a repo's sensitive jobs allowlist and saves.
+// This allows a job that would normally be skipped for security to run with if: always().
+func (c *Config) AddAllowedSensitiveJob(repoSHA, jobID string) error {
+	if jobID == "" {
+		return fmt.Errorf("job ID cannot be empty")
+	}
+
+	if c.global == nil {
+		c.global = &GlobalConfig{}
+	}
+	if c.global.AllowedSensitiveJobs == nil {
+		c.global.AllowedSensitiveJobs = make(map[string][]string)
+	}
+
+	// Check if already exists
+	for _, existing := range c.global.AllowedSensitiveJobs[repoSHA] {
+		if existing == jobID {
+			return nil
+		}
+	}
+	c.global.AllowedSensitiveJobs[repoSHA] = append(c.global.AllowedSensitiveJobs[repoSHA], jobID)
+	return c.SaveGlobal()
+}
+
+// RemoveAllowedSensitiveJob removes a job ID from a repo's sensitive jobs allowlist and saves.
+func (c *Config) RemoveAllowedSensitiveJob(repoSHA, jobID string) error {
+	if c.global == nil || c.global.AllowedSensitiveJobs == nil {
+		return nil
+	}
+
+	jobs := c.global.AllowedSensitiveJobs[repoSHA]
+	for i, existing := range jobs {
+		if existing == jobID {
+			c.global.AllowedSensitiveJobs[repoSHA] = append(jobs[:i], jobs[i+1:]...)
+			return c.SaveGlobal()
+		}
+	}
+	return nil
+}
+
+// SetAllowedSensitiveJobs sets the allowed sensitive jobs map without saving.
+// Use SaveGlobal() after to persist changes.
+func (c *Config) SetAllowedSensitiveJobs(jobs map[string][]string) {
+	if c.global == nil {
+		c.global = &GlobalConfig{}
+	}
+	c.global.AllowedSensitiveJobs = jobs
 }
 
 // MaskAPIKey returns a masked version of an API key for safe display.

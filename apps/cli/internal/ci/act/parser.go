@@ -1,6 +1,7 @@
 package act
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"regexp"
 	"strconv"
@@ -61,7 +62,8 @@ func (p *Parser) ParseLineJobEvent(line string) (*ci.JobEvent, bool) {
 
 // parseDetentMarker parses detent markers injected by InjectJobMarkers.
 // Formats:
-//   - ::detent::manifest::v2::{json}        (v2 manifest with full job/step info)
+//   - ::detent::manifest::v2::b64::{base64} (v2 manifest, base64-encoded JSON, security-hardened)
+//   - ::detent::manifest::v2::{json}        (v2 manifest, raw JSON, legacy format)
 //   - ::detent::manifest::job1,job2,job3    (v1 manifest, job IDs only)
 //   - ::detent::job-start::job-id
 //   - ::detent::job-end::job-id::success|failure|cancelled
@@ -138,8 +140,14 @@ func (p *Parser) parseManifest(parts []string) (any, bool) {
 		return nil, false
 	}
 
-	// Check for v2 format: "v2::{json}"
+	// Check for v2 base64 format: "v2::b64::{base64}" (security-hardened)
 	if parts[0] == "v2" && len(parts) >= 2 {
+		// Check for base64 encoding indicator
+		subParts := strings.SplitN(parts[1], "::", 2)
+		if len(subParts) >= 2 && subParts[0] == "b64" {
+			return p.parseManifestV2Base64(subParts[1])
+		}
+		// Legacy v2 format: "v2::{json}" (kept for backward compatibility)
 		return p.parseManifestV2(parts[1])
 	}
 
@@ -178,7 +186,7 @@ func (p *Parser) parseManifestV1(content string) (any, bool) {
 	return &ci.ManifestEvent{Manifest: p.manifest}, true
 }
 
-// parseManifestV2 parses the v2 JSON manifest.
+// parseManifestV2 parses the v2 JSON manifest (legacy format, kept for compatibility).
 func (p *Parser) parseManifestV2(jsonContent string) (any, bool) {
 	var manifest ci.ManifestInfo
 	if err := json.Unmarshal([]byte(jsonContent), &manifest); err != nil {
@@ -196,6 +204,16 @@ func (p *Parser) parseManifestV2(jsonContent string) (any, bool) {
 	}
 
 	return &ci.ManifestEvent{Manifest: &manifest}, true
+}
+
+// parseManifestV2Base64 parses the v2 manifest from base64-encoded JSON.
+// This is the security-hardened format that prevents shell injection.
+func (p *Parser) parseManifestV2Base64(encodedContent string) (any, bool) {
+	decoded, err := base64.StdEncoding.DecodeString(encodedContent)
+	if err != nil {
+		return nil, false
+	}
+	return p.parseManifestV2(string(decoded))
 }
 
 // parseStepStart parses step-start marker content.

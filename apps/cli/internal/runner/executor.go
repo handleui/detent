@@ -244,7 +244,9 @@ func (e *ActExecutor) buildActConfig(logChan chan string) *act.RunConfig {
 	}
 }
 
-// sendToTUI sends a message to the TUI program in a non-blocking manner.
+// sendToTUI sends a message to the TUI program.
+// program.Send blocks only if the program hasn't started yet, and becomes
+// a no-op after termination, making it safe to call directly without a goroutine.
 func sendToTUI(program *tea.Program, msg tea.Msg) {
-	go program.Send(msg)
+	program.Send(msg)
 }
