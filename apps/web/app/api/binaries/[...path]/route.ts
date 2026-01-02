@@ -3,9 +3,9 @@ import { NextResponse } from "next/server";
 
 const MANIFEST_PATH = "releases/manifest.json";
 
-type RouteParams = {
+interface RouteParams {
   params: Promise<{ path: string[] }>;
-};
+}
 
 const getLatestVersion = async (): Promise<string | null> => {
   const { blobs } = await list({ prefix: MANIFEST_PATH });

@@ -18,7 +18,9 @@ export default async function Page({
 }: PageProps): Promise<ReactElement> {
   const { slug } = await params;
   const page = source.getPage(slug);
-  if (!page) notFound();
+  if (!page) {
+    notFound();
+  }
 
   const { body: MDX, toc } = page.data as DocPageData;
 
