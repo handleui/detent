@@ -1,9 +1,6 @@
 app = "detent-parser"
 primary_region = "iad"
 
-[build]
-  dockerfile = "apps/parser/Dockerfile"
-
 [http_service]
   internal_port = 8080
   force_https = true

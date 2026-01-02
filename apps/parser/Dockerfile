@@ -1,20 +1,19 @@
-FROM golang:1.22-alpine AS builder
+FROM golang:1.25-alpine AS builder
 WORKDIR /app
 
-# Copy workspace and module files
-COPY go.work go.work.sum ./
 COPY packages/core/go.mod packages/core/go.sum ./packages/core/
 COPY apps/parser/go.mod ./apps/parser/
 
-# Download dependencies using workspace
+WORKDIR /app/apps/parser
+ENV GOWORK=off
 RUN go mod download -x
 
-# Copy source
+WORKDIR /app
 COPY packages/core ./packages/core
 COPY apps/parser ./apps/parser
 
-# Build
-RUN cd apps/parser && CGO_ENABLED=0 go build -o /parser .
+WORKDIR /app/apps/parser
+RUN CGO_ENABLED=0 go build -o /parser .
 
 FROM alpine:3.19
 RUN apk add --no-cache ca-certificates
