@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/detent/cli/internal/util"
 )
 
 const dockerCheckTimeout = 5 * time.Second
@@ -56,4 +58,21 @@ func IsAvailable(ctx context.Context) error {
 	}
 
 	return fmt.Errorf("docker check failed: %w", err)
+}
+
+// IsAvailableWithRetry checks Docker availability with retry logic.
+// Only retries ErrDockerNotRunning (daemon might be starting).
+// Does not retry ErrDockerNotInstalled or ErrDockerPermission.
+func IsAvailableWithRetry(ctx context.Context) error {
+	return util.Retry(ctx, IsAvailable,
+		util.WithMaxAttempts(3),
+		util.WithInitialDelay(200*time.Millisecond),
+		util.WithMaxDelay(2*time.Second),
+		util.WithBackoffMultiplier(2.0),
+		util.WithJitterFactor(0.1),
+		util.WithRetryCondition(func(err error) bool {
+			// Only retry if daemon might be starting
+			return errors.Is(err, ErrDockerNotRunning)
+		}),
+	)
 }

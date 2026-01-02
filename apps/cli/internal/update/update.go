@@ -1,6 +1,7 @@
 package update
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Masterminds/semver/v3"
+	"github.com/detent/cli/internal/util"
 	"github.com/detent/cli/internal/persistence"
 )
 
@@ -121,6 +123,27 @@ func fetchLatestVersion() (string, error) {
 	return m.Latest, nil
 }
 
+// fetchLatestVersionWithRetry wraps fetchLatestVersion with retry logic.
+func fetchLatestVersionWithRetry() (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	var result string
+	err := util.Retry(ctx, func(_ context.Context) error {
+		var fetchErr error
+		result, fetchErr = fetchLatestVersion()
+		return fetchErr
+	},
+		util.WithMaxAttempts(3),
+		util.WithInitialDelay(500*time.Millisecond),
+		util.WithMaxDelay(5*time.Second),
+		util.WithBackoffMultiplier(2.0),
+		util.WithJitterFactor(0.2),
+	)
+
+	return result, err
+}
+
 // Check returns the latest version and whether an update is available.
 // Uses a 24h cache to avoid repeated network calls. Silent on errors.
 func Check(currentVersion string) (latestVersion string, hasUpdate bool) {
@@ -134,7 +157,7 @@ func Check(currentVersion string) (latestVersion string, hasUpdate bool) {
 		return compareVersions(currentVersion, c.LatestVersion)
 	}
 
-	latest, err := fetchLatestVersion()
+	latest, err := fetchLatestVersionWithRetry()
 	if err != nil {
 		if c != nil {
 			return compareVersions(currentVersion, c.LatestVersion)

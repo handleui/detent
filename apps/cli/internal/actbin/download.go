@@ -13,6 +13,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
+
+	"github.com/detent/cli/internal/util"
 )
 
 // ProgressFunc is called during download with bytes downloaded and total bytes.
@@ -272,4 +275,31 @@ func writeExecutable(r io.Reader, destPath string, maxSize int64) error {
 	}
 
 	return nil
+}
+
+// DownloadWithRetry downloads and installs the act binary with retry logic.
+// Retries on network errors and 5xx status codes.
+// Does not retry ErrUnsupportedPlatform.
+func DownloadWithRetry(ctx context.Context, onProgress ProgressFunc) error {
+	return util.Retry(ctx, func(ctx context.Context) error {
+		return Download(ctx, onProgress)
+	},
+		util.WithMaxAttempts(5),
+		util.WithInitialDelay(1*time.Second),
+		util.WithMaxDelay(30*time.Second),
+		util.WithBackoffMultiplier(2.0),
+		util.WithJitterFactor(0.25),
+		util.WithRetryCondition(func(err error) bool {
+			// Don't retry unsupported platform
+			return !errors.Is(err, ErrUnsupportedPlatform)
+		}),
+	)
+}
+
+// EnsureInstalledWithRetry checks if act is installed and downloads it with retry if not.
+func EnsureInstalledWithRetry(ctx context.Context, onProgress ProgressFunc) error {
+	if IsInstalled() {
+		return nil
+	}
+	return DownloadWithRetry(ctx, onProgress)
 }

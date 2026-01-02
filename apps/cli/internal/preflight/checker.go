@@ -81,12 +81,12 @@ func RunPreflightChecks(ctx context.Context, workflowPath, repoRoot, runID, work
 		}
 
 		program.Send(tui.PreflightUpdateMsg("Checking prerequisites"))
-		err = actbin.EnsureInstalled(ctx, nil)
+		err = actbin.EnsureInstalledWithRetry(ctx, nil)
 		if err != nil {
 			sendError(err)
 			return
 		}
-		err = docker.IsAvailable(ctx)
+		err = docker.IsAvailableWithRetry(ctx)
 		if err != nil {
 			sendError(fmt.Errorf("docker not available: %w", err))
 			return
