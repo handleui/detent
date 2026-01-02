@@ -1,6 +1,6 @@
-# detent
+# Detent
 
-Run GitHub Actions locally. When they fail, Claude fixes them.
+Run your CI/CD locally, catch-all and get a green check in one go
 
 ## Install
 
@@ -45,7 +45,7 @@ Linux (x64, arm64) · macOS (Intel, Apple Silicon) · Windows (x64)
 
 ## Links
 
-[Releases](https://github.com/detent-dev/detent/releases) · [Issues](https://github.com/detent-dev/detent/issues)
+[Github Releases](https://github.com/handleui/detent/releases) · [Issues](https://github.com/handleui/detent/issues)
 
 ## License
 
