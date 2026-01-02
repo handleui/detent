@@ -5,7 +5,7 @@ Always use Context7 for library/API documentation, code generation, or configura
 
 ## Commands (Critical)
 - **Build**: `bun run build` (Turborepo - NEVER use `go build` directly)
-- **Run CLI**: `detent` (shell alias - NEVER use `./dist/dt`)
+- **Run CLI**: `detent <command>` (alias - NEVER use `./dist/dt`). AI runs verbose (no TUI). Use `--force` to skip cache.
 - **Lint/Fix**: `bun run lint` / `bun run fix`
 - **Types**: `bun run check-types`
 - **Go lint**: `cd apps/cli && golangci-lint run ./...`
@@ -16,7 +16,7 @@ Always use Context7 for library/API documentation, code generation, or configura
 
 ## Project Structure
 - Turborepo monorepo: `apps/cli` (Go), `apps/web` (Next.js)
-- Shared packages: `packages/*` (ui, typescript-config)
+- Shared packages: `packages/*` (ui, parsing business logic, typescript-config)
 - Formatter: Biome via ultracite (`bun run fix` auto-fixes)
 
 ## Style Deviations from Defaults

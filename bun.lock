@@ -23,6 +23,10 @@
         "@vercel/blob": "^2.0.0",
       },
     },
+    "apps/parser": {
+      "name": "@detent/parser",
+      "version": "0.1.0",
+    },
     "apps/web": {
       "name": "@detent/web",
       "version": "0.2.0",
@@ -135,6 +139,8 @@
     "@detent/cli": ["@detent/cli@workspace:apps/cli"],
 
     "@detent/core": ["@detent/core@workspace:packages/core"],
+
+    "@detent/parser": ["@detent/parser@workspace:apps/parser"],
 
     "@detent/typescript-config": ["@detent/typescript-config@workspace:packages/typescript-config"],
 
