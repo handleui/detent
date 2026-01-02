@@ -1,41 +1,52 @@
-# Detent
+# detent
 
-Detent is a CI, cli tool to one-shot issues across your Github Actions, it only works locally right now haha
+Run GitHub Actions locally. When they fail, Claude fixes them.
 
-## Installation
+## Install
 
 ```bash
-npm install -g @detent/cli
+curl -fsSL https://detent.dev/install.sh | bash
 ```
 
-After installation, the `dt` command will be available globally.
+Installs `dt` to `~/.local/bin`. Update with `dt update`.
+
+## Requirements
+
+- Docker
+- Anthropic API key (for `heal` command)
 
 ## Usage
 
 ```bash
-dt --help
-dt --version
+dt check       # run workflows locally, extract errors
+dt heal        # auto-fix errors with Claude
+dt workflows   # enable/disable jobs
+dt config      # manage settings
 ```
 
-## How It Works
+## Setup
 
-Detent streamlines your CI/CD development workflow:
+```bash
+export ANTHROPIC_API_KEY=sk-...
+# or
+dt config set api-key sk-...
+```
 
-1. **Local Execution**: Runs GitHub Actions workflows on your local machine
-2. **Error Detection**: Automatically parses and extracts errors from workflow outputs
-3. **Smart Categorization**: Intelligently groups and categorizes error types
-4. **AI Troubleshooting**: Prompts Claude in parallel with multiple iterations to diagnose and suggest fixes
-5. **Iterative Refinement**: Continues troubleshooting across multiple rounds until issues are resolved
+## Workflow
 
-### Binary Distribution
+1. `dt check` — see CI errors locally
+2. `dt heal` — let Claude fix them
+3. `dt check` — verify fixes
+4. Push
 
-This npm package automatically downloads the appropriate pre-built Go binary for your platform during installation:
+## Platforms
 
-- Linux: amd64, arm64
-- macOS: amd64 (Intel), arm64 (Apple Silicon)
-- Windows: amd64
+Linux (x64, arm64) · macOS (Intel, Apple Silicon) · Windows (x64)
 
-## Troubleshooting
+## Links
 
-If the installation fails, you can manually download the binary from:
-https://github.com/handleui/detent/releases
+[Releases](https://github.com/detent-dev/detent/releases) · [Issues](https://github.com/detent-dev/detent/issues)
+
+## License
+
+MIT
