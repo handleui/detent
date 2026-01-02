@@ -213,15 +213,17 @@ func (p *Parser) parseGoError(file string, lineNum, col int, message, rawLine st
 	severity := determineLintSeverity(linterName, codePrefix)
 
 	err := &errors.ExtractedError{
-		Message:  message,
-		File:     file,
-		Line:     lineNum,
-		Column:   col,
-		Severity: severity,
-		Raw:      rawLine,
-		Category: category,
-		Source:   source,
-		RuleID:   ruleID,
+		Message:     message,
+		File:        file,
+		Line:        lineNum,
+		Column:      col,
+		Severity:    severity,
+		Raw:         rawLine,
+		Category:    category,
+		Source:      source,
+		RuleID:      ruleID,
+		LineKnown:   lineNum > 0,
+		ColumnKnown: col > 0,
 	}
 
 	ctx.ApplyWorkflowContext(err)
@@ -234,11 +236,13 @@ func (p *Parser) parseModuleError(matches []string, rawLine string, ctx *parser.
 	message := matches[1]
 
 	err := &errors.ExtractedError{
-		Message:  message,
-		Severity: "error",
-		Raw:      rawLine,
-		Category: errors.CategoryCompile,
-		Source:   errors.SourceGo,
+		Message:     message,
+		Severity:    "error",
+		Raw:         rawLine,
+		Category:    errors.CategoryCompile,
+		Source:      errors.SourceGo,
+		LineKnown:   false, // Module errors don't have line numbers
+		ColumnKnown: false, // Module errors don't have column numbers
 	}
 
 	ctx.ApplyWorkflowContext(err)
@@ -455,15 +459,21 @@ func (p *Parser) finishPanic(ctx *parser.ParseContext) *errors.ExtractedError {
 		return nil
 	}
 
+	// Check if truncation occurred
+	truncated := p.panic.stackLines >= maxStackTraceLines || p.panic.stackTrace.Len() >= maxStackTraceBytes
+
 	err := &errors.ExtractedError{
-		Message:    "panic: " + p.panic.message,
-		File:       p.panic.file,
-		Line:       p.panic.line,
-		Severity:   "error",
-		Raw:        strings.TrimSuffix(p.panic.stackTrace.String(), "\n"),
-		StackTrace: strings.TrimSuffix(p.panic.stackTrace.String(), "\n"),
-		Category:   errors.CategoryRuntime,
-		Source:     errors.SourceGo,
+		Message:             "panic: " + p.panic.message,
+		File:                p.panic.file,
+		Line:                p.panic.line,
+		Severity:            "error",
+		Raw:                 strings.TrimSuffix(p.panic.stackTrace.String(), "\n"),
+		StackTrace:          strings.TrimSuffix(p.panic.stackTrace.String(), "\n"),
+		Category:            errors.CategoryRuntime,
+		Source:              errors.SourceGo,
+		LineKnown:           p.panic.file != "" && p.panic.line > 0,
+		ColumnKnown:         false, // Panics don't include column info
+		StackTraceTruncated: truncated,
 	}
 
 	ctx.ApplyWorkflowContext(err)
@@ -485,15 +495,21 @@ func (p *Parser) finishTestFailure(ctx *parser.ParseContext) *errors.ExtractedEr
 
 	stackTrace := strings.TrimSuffix(p.test.stackTrace.String(), "\n")
 
+	// Check if truncation occurred
+	truncated := p.test.stackLineCount >= maxStackTraceLines || p.test.stackTrace.Len() >= maxStackTraceBytes
+
 	err := &errors.ExtractedError{
-		Message:    message,
-		File:       p.test.file,
-		Line:       p.test.line,
-		Severity:   "error",
-		Raw:        "--- FAIL: " + p.test.testName,
-		StackTrace: stackTrace,
-		Category:   errors.CategoryTest,
-		Source:     errors.SourceGoTest,
+		Message:             message,
+		File:                p.test.file,
+		Line:                p.test.line,
+		Severity:            "error",
+		Raw:                 "--- FAIL: " + p.test.testName,
+		StackTrace:          stackTrace,
+		Category:            errors.CategoryTest,
+		Source:              errors.SourceGoTest,
+		LineKnown:           p.test.file != "" && p.test.line > 0,
+		ColumnKnown:         false, // Test failures don't include column info
+		StackTraceTruncated: truncated,
 	}
 
 	ctx.ApplyWorkflowContext(err)

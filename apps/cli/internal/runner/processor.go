@@ -2,6 +2,7 @@ package runner
 
 import (
 	"strings"
+	"time"
 
 	"github.com/detentsh/core/act"
 	actparser "github.com/detentsh/core/ci/act"
@@ -58,8 +59,33 @@ func (p *ErrorProcessor) Process(actResult *act.RunResult) *ProcessedErrors {
 	extract.ReportUnknownPatterns(extracted)
 
 	errors.ApplySeverity(extracted)
+
+	// Extract source code snippets for AI consumption
+	snippetsSucceeded, snippetsFailed := errors.ExtractSnippetsForErrors(extracted, p.repoRoot)
+
 	grouped := errors.GroupByFileWithBase(extracted, p.repoRoot)
 	groupedComprehensive := errors.GroupComprehensive(extracted, p.repoRoot)
+
+	// Build AI context metadata
+	errorsWithLocation := 0
+	errorsWithRuleID := 0
+	for _, err := range extracted {
+		if err.File != "" && err.Line > 0 {
+			errorsWithLocation++
+		}
+		if err.RuleID != "" {
+			errorsWithRuleID++
+		}
+	}
+
+	groupedComprehensive.AIContext = &errors.AIContext{
+		ExtractedAt:        time.Now().UTC().Format(time.RFC3339),
+		SnippetsIncluded:   true,
+		SnippetsFailed:     snippetsFailed,
+		ErrorsWithLocation: errorsWithLocation,
+		ErrorsWithSnippet:  snippetsSucceeded,
+		ErrorsWithRuleID:   errorsWithRuleID,
+	}
 
 	return &ProcessedErrors{
 		Extracted:            extracted,

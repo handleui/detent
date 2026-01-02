@@ -52,6 +52,14 @@ func (w *WorkflowContext) Clone() *WorkflowContext {
 	}
 }
 
+// CodeSnippet contains source code context around an error location
+type CodeSnippet struct {
+	Lines     []string `json:"lines"`      // Lines of source code context
+	StartLine int      `json:"start_line"` // First line number in snippet (1-indexed in original file)
+	ErrorLine int      `json:"error_line"` // Position of error line within Lines slice (1-indexed, e.g., 1 = Lines[0])
+	Language  string   `json:"language"`   // Language identifier: "go", "typescript", "python", etc.
+}
+
 // ExtractedError represents a single error extracted from act output
 type ExtractedError struct {
 	Message         string           `json:"message"`
@@ -66,6 +74,14 @@ type ExtractedError struct {
 	WorkflowContext *WorkflowContext `json:"workflow_context,omitempty"` // Job/step info
 	Source          string           `json:"source,omitempty"`           // "eslint", "typescript", "go", etc.
 	UnknownPattern  bool             `json:"unknown_pattern,omitempty"`  // True if matched by generic fallback parser (for Sentry reporting)
+
+	// AI-optimized fields for enhanced context
+	CodeSnippet         *CodeSnippet `json:"code_snippet,omitempty"`          // Source code context around error
+	Suggestions         []string     `json:"suggestions,omitempty"`           // Fix suggestions from tools (Rust notes, TS hints)
+	LineKnown           bool         `json:"line_known"`                      // True if Line is a real value, false if Line=0 means unknown
+	ColumnKnown         bool         `json:"column_known"`                    // True if Column is a real value, false if Column=0 means unknown
+	StackTraceTruncated bool         `json:"stack_trace_truncated,omitempty"` // True if stack trace was truncated due to size limits
+	MessageTruncated    bool         `json:"message_truncated,omitempty"`     // True if message was truncated due to size limits
 }
 
 // GroupedErrors groups errors by file path for organized output
@@ -158,6 +174,28 @@ type ErrorStats struct {
 	UniqueRules  int                   `json:"unique_rules"`
 }
 
+// AIContext provides metadata for AI consumption of error data
+type AIContext struct {
+	// Run metadata
+	CommitSHA string `json:"commit_sha,omitempty"`
+	TreeHash  string `json:"tree_hash,omitempty"`
+	RepoRoot  string `json:"repo_root,omitempty"`
+
+	// Extraction metadata
+	ExtractedAt   string `json:"extracted_at"`   // ISO8601 timestamp
+	CacheHit      bool   `json:"cache_hit"`      // True if results from cache
+	ParserVersion string `json:"parser_version"` // For debugging/compatibility
+
+	// Snippet availability metrics
+	SnippetsIncluded bool `json:"snippets_included"` // True if snippet extraction was attempted
+	SnippetsFailed   int  `json:"snippets_failed"`   // Count of files that couldn't be read
+
+	// Error quality metrics
+	ErrorsWithLocation int `json:"errors_with_location"` // Errors that have file+line
+	ErrorsWithSnippet  int `json:"errors_with_snippet"`  // Errors that have code context
+	ErrorsWithRuleID   int `json:"errors_with_rule_id"`  // Errors with identifiable rules
+}
+
 // ComprehensiveErrorGroup supports multiple grouping strategies for AI consumption
 type ComprehensiveErrorGroup struct {
 	ByFile     map[string][]*ExtractedError        `json:"by_file"`
@@ -166,6 +204,7 @@ type ComprehensiveErrorGroup struct {
 	NoFile     []*ExtractedError                   `json:"no_file"`
 	Total      int                                 `json:"total"`
 	Stats      ErrorStats                          `json:"stats"`
+	AIContext  *AIContext                          `json:"ai_context,omitempty"`
 }
 
 // GroupComprehensive creates comprehensive grouping with all strategies and statistics.

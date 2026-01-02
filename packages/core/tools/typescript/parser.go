@@ -68,15 +68,17 @@ func (p *Parser) Parse(line string, ctx *parser.ParseContext) *errors.ExtractedE
 	}
 
 	extractedErr := &errors.ExtractedError{
-		Message:  match[5],       // Group 5: error message
-		File:     match[1],       // Group 1: file path
-		Line:     lineNum,        // Group 2: line number
-		Column:   colNum,         // Group 3: column number
-		RuleID:   match[4],       // Group 4: TS error code (may be empty)
-		Severity: "error",        // TypeScript compiler errors are always errors
-		Category: errors.CategoryTypeCheck,
-		Source:   errors.SourceTypeScript,
-		Raw:      line,
+		Message:     match[5],       // Group 5: error message
+		File:        match[1],       // Group 1: file path
+		Line:        lineNum,        // Group 2: line number
+		Column:      colNum,         // Group 3: column number
+		RuleID:      match[4],       // Group 4: TS error code (may be empty)
+		Severity:    "error",        // TypeScript compiler errors are always errors
+		Category:    errors.CategoryTypeCheck,
+		Source:      errors.SourceTypeScript,
+		Raw:         line,
+		LineKnown:   lineNum > 0,    // TypeScript always provides line numbers
+		ColumnKnown: colNum > 0,     // TypeScript always provides column numbers
 	}
 
 	ctx.ApplyWorkflowContext(extractedErr)

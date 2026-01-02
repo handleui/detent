@@ -236,17 +236,33 @@ func (p *Parser) buildError(ctx *parser.ParseContext) *errors.ExtractedError {
 
 	stackTrace := strings.TrimSuffix(p.contextLines.String(), "\n")
 
+	// Build suggestions from notes and helps
+	var suggestions []string
+	for _, note := range p.notes {
+		suggestions = append(suggestions, "note: "+note)
+	}
+	for _, help := range p.helps {
+		suggestions = append(suggestions, "help: "+help)
+	}
+
+	// Check if truncation occurred
+	truncated := p.contextCount >= maxContextLines || p.contextLines.Len() >= maxContextBytes
+
 	err := &errors.ExtractedError{
-		Message:    p.errorMessage,
-		File:       p.errorFile,
-		Line:       p.errorLine,
-		Column:     p.errorColumn,
-		Severity:   severity,
-		Raw:        stackTrace,
-		StackTrace: stackTrace,
-		RuleID:     ruleID,
-		Category:   category,
-		Source:     errors.SourceRust,
+		Message:             p.errorMessage,
+		File:                p.errorFile,
+		Line:                p.errorLine,
+		Column:              p.errorColumn,
+		Severity:            severity,
+		Raw:                 stackTrace,
+		StackTrace:          stackTrace,
+		RuleID:              ruleID,
+		Category:            category,
+		Source:              errors.SourceRust,
+		Suggestions:         suggestions,
+		LineKnown:           p.errorLine > 0,
+		ColumnKnown:         p.errorColumn > 0,
+		StackTraceTruncated: truncated,
 	}
 
 	ctx.ApplyWorkflowContext(err)

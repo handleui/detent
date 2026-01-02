@@ -205,13 +205,15 @@ func (p *Parser) parsePytestFailed(matches []string, rawLine string, ctx *parser
 	fullMessage := TruncateMessage("Test failed: " + testName + " - " + message)
 
 	err := &errors.ExtractedError{
-		Message:  fullMessage,
-		File:     file,
-		Severity: "error",
-		Raw:      rawLine,
-		Category: errors.CategoryTest,
-		Source:   errors.SourcePython,
-		RuleID:   testName,
+		Message:     fullMessage,
+		File:        file,
+		Severity:    "error",
+		Raw:         rawLine,
+		Category:    errors.CategoryTest,
+		Source:      errors.SourcePython,
+		RuleID:      testName,
+		LineKnown:   false, // Pytest FAILED lines don't include line numbers
+		ColumnKnown: false, // Pytest FAILED lines don't include column numbers
 	}
 
 	ctx.ApplyWorkflowContext(err)
@@ -224,12 +226,14 @@ func (p *Parser) parsePytestError(matches []string, rawLine string, ctx *parser.
 	message := matches[2]
 
 	err := &errors.ExtractedError{
-		Message:  "Collection error: " + message,
-		File:     file,
-		Severity: "error",
-		Raw:      rawLine,
-		Category: errors.CategoryTest,
-		Source:   errors.SourcePython,
+		Message:     "Collection error: " + message,
+		File:        file,
+		Severity:    "error",
+		Raw:         rawLine,
+		Category:    errors.CategoryTest,
+		Source:      errors.SourcePython,
+		LineKnown:   false, // Pytest ERROR collection lines don't include line numbers
+		ColumnKnown: false, // Pytest ERROR collection lines don't include column numbers
 	}
 
 	ctx.ApplyWorkflowContext(err)
@@ -262,14 +266,16 @@ func (p *Parser) parseMypy(matches []string, rawLine string, ctx *parser.ParseCo
 	message = TruncateMessage(message)
 
 	err := &errors.ExtractedError{
-		Message:  message,
-		File:     file,
-		Line:     lineNum,
-		Severity: mappedSeverity,
-		Raw:      rawLine,
-		Category: errors.CategoryTypeCheck,
-		Source:   errors.SourcePython,
-		RuleID:   ruleID,
+		Message:     message,
+		File:        file,
+		Line:        lineNum,
+		Severity:    mappedSeverity,
+		Raw:         rawLine,
+		Category:    errors.CategoryTypeCheck,
+		Source:      errors.SourcePython,
+		RuleID:      ruleID,
+		LineKnown:   lineNum > 0,
+		ColumnKnown: false, // mypy doesn't provide column numbers
 	}
 
 	ctx.ApplyWorkflowContext(err)
@@ -288,15 +294,17 @@ func (p *Parser) parseRuffFlake8(matches []string, rawLine string, ctx *parser.P
 	message = TruncateMessage(message)
 
 	err := &errors.ExtractedError{
-		Message:  message,
-		File:     file,
-		Line:     lineNum,
-		Column:   col,
-		Severity: severity,
-		Raw:      rawLine,
-		Category: errors.CategoryLint,
-		Source:   errors.SourcePython,
-		RuleID:   code,
+		Message:     message,
+		File:        file,
+		Line:        lineNum,
+		Column:      col,
+		Severity:    severity,
+		Raw:         rawLine,
+		Category:    errors.CategoryLint,
+		Source:      errors.SourcePython,
+		RuleID:      code,
+		LineKnown:   lineNum > 0,
+		ColumnKnown: col > 0,
 	}
 
 	ctx.ApplyWorkflowContext(err)
@@ -314,14 +322,16 @@ func (p *Parser) parseRuffFlake8NoCol(matches []string, rawLine string, ctx *par
 	message = TruncateMessage(message)
 
 	err := &errors.ExtractedError{
-		Message:  message,
-		File:     file,
-		Line:     lineNum,
-		Severity: severity,
-		Raw:      rawLine,
-		Category: errors.CategoryLint,
-		Source:   errors.SourcePython,
-		RuleID:   code,
+		Message:     message,
+		File:        file,
+		Line:        lineNum,
+		Severity:    severity,
+		Raw:         rawLine,
+		Category:    errors.CategoryLint,
+		Source:      errors.SourcePython,
+		RuleID:      code,
+		LineKnown:   lineNum > 0,
+		ColumnKnown: false, // This format doesn't include column
 	}
 
 	ctx.ApplyWorkflowContext(err)
@@ -343,15 +353,17 @@ func (p *Parser) parsePylint(matches []string, rawLine string, ctx *parser.Parse
 	// Use the named rule ID (e.g., "missing-module-docstring") as rule ID
 	// but include the code in the message for context
 	err := &errors.ExtractedError{
-		Message:  message,
-		File:     file,
-		Line:     lineNum,
-		Column:   col,
-		Severity: severity,
-		Raw:      rawLine,
-		Category: errors.CategoryLint,
-		Source:   errors.SourcePython,
-		RuleID:   ruleID,
+		Message:     message,
+		File:        file,
+		Line:        lineNum,
+		Column:      col,
+		Severity:    severity,
+		Raw:         rawLine,
+		Category:    errors.CategoryLint,
+		Source:      errors.SourcePython,
+		RuleID:      ruleID,
+		LineKnown:   lineNum > 0,
+		ColumnKnown: col > 0,
 	}
 
 	ctx.ApplyWorkflowContext(err)
@@ -364,11 +376,13 @@ func (p *Parser) parseStandaloneException(matches []string, rawLine string, ctx 
 	message := TruncateMessage(matches[2])
 
 	err := &errors.ExtractedError{
-		Message:  exceptionType + ": " + message,
-		Severity: "error",
-		Raw:      rawLine,
-		Category: errors.CategoryRuntime,
-		Source:   errors.SourcePython,
+		Message:     exceptionType + ": " + message,
+		Severity:    "error",
+		Raw:         rawLine,
+		Category:    errors.CategoryRuntime,
+		Source:      errors.SourcePython,
+		LineKnown:   false, // Standalone exception lines don't include location
+		ColumnKnown: false, // Standalone exception lines don't include location
 	}
 
 	ctx.ApplyWorkflowContext(err)
@@ -381,11 +395,13 @@ func (p *Parser) parseStandaloneSyntaxError(matches []string, rawLine string, ct
 	message := TruncateMessage(matches[2])
 
 	err := &errors.ExtractedError{
-		Message:  errorType + ": " + message,
-		Severity: "error",
-		Raw:      rawLine,
-		Category: errors.CategoryCompile,
-		Source:   errors.SourcePython,
+		Message:     errorType + ": " + message,
+		Severity:    "error",
+		Raw:         rawLine,
+		Category:    errors.CategoryCompile,
+		Source:      errors.SourcePython,
+		LineKnown:   false, // Standalone SyntaxError lines don't include location
+		ColumnKnown: false, // Standalone SyntaxError lines don't include location
 	}
 
 	ctx.ApplyWorkflowContext(err)
@@ -566,6 +582,8 @@ func (p *Parser) finishTraceback(ctx *parser.ParseContext) *errors.ExtractedErro
 		message = "Python exception"
 	}
 
+	// Check if message will be truncated
+	messageTruncated := len(message) > maxMessageLength
 	message = TruncateMessage(message)
 
 	// Determine category
@@ -574,16 +592,23 @@ func (p *Parser) finishTraceback(ctx *parser.ParseContext) *errors.ExtractedErro
 		category = errors.CategoryCompile
 	}
 
+	// Check if stack trace was truncated due to resource limits
+	stackTraceTruncated := p.traceback.frameCount >= maxTracebackFrames || p.traceback.stackTrace.Len() >= maxTracebackBytes
+
 	err := &errors.ExtractedError{
-		Message:    message,
-		File:       p.traceback.file,
-		Line:       p.traceback.line,
-		Column:     p.traceback.column,
-		Severity:   "error",
-		Raw:        stackTrace,
-		StackTrace: stackTrace,
-		Category:   category,
-		Source:     errors.SourcePython,
+		Message:             message,
+		File:                p.traceback.file,
+		Line:                p.traceback.line,
+		Column:              p.traceback.column,
+		Severity:            "error",
+		Raw:                 stackTrace,
+		StackTrace:          stackTrace,
+		Category:            category,
+		Source:              errors.SourcePython,
+		LineKnown:           p.traceback.file != "" && p.traceback.line > 0,
+		ColumnKnown:         p.traceback.column > 0,
+		StackTraceTruncated: stackTraceTruncated,
+		MessageTruncated:    messageTruncated,
 	}
 
 	ctx.ApplyWorkflowContext(err)
