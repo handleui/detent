@@ -11,6 +11,7 @@ import (
 	"github.com/detentsh/core/tools/generic"
 	"github.com/detentsh/core/tools/golang"
 	"github.com/detentsh/core/tools/parser"
+	"github.com/detentsh/core/tools/python"
 	"github.com/detentsh/core/tools/rust"
 	"github.com/detentsh/core/tools/typescript"
 )
@@ -55,6 +56,9 @@ var extensionToParserID = map[string]string{
 	".cjs":  "eslint",
 	".rs":   "rust",
 	".toml": "rust", // Cargo.toml errors
+	".py":   "python",
+	".pyi":  "python", // Type stubs
+	".pyw":  "python", // Windows Python
 }
 
 // Register adds a parser to the registry.
@@ -208,13 +212,13 @@ func DefaultRegistry() *Registry {
 	// Priority 90: Language-specific parsers with precise formats
 	r.Register(golang.NewParser())
 	r.Register(typescript.NewParser())
+	r.Register(python.NewParser())
 
 	// Priority 85: Tool-specific parsers (ESLint, Rust, linters)
 	r.Register(eslint.NewParser())
 	r.Register(rust.NewParser())
 
 	// Future parsers to be added:
-	// r.Register(python.NewParser())     // Priority ~85
 	// r.Register(nodejs.NewParser())     // Priority ~80
 
 	// Priority 10: Generic fallback parser (last resort, flags unknown patterns for Sentry)
@@ -264,6 +268,22 @@ var toolPatterns = []ToolPattern{
 	{regexp.MustCompile(`(?:^|\s|/)rustc\b`), "rust", "rustc"},
 	{regexp.MustCompile(`(?:^|\s|/)clippy-driver\b`), "rust", "clippy"},
 	{regexp.MustCompile(`(?:^|\s|/)rustfmt\b`), "rust", "rustfmt"},
+
+	// Python tools
+	{regexp.MustCompile(`(?:^|\s)python3?\s+-m\s+pytest\b`), "python", "pytest"},
+	{regexp.MustCompile(`(?:^|\s|/)pytest\b`), "python", "pytest"},
+	{regexp.MustCompile(`(?:^|\s)python3?\s+-m\s+mypy\b`), "python", "mypy"},
+	{regexp.MustCompile(`(?:^|\s|/)mypy\b`), "python", "mypy"},
+	{regexp.MustCompile(`(?:^|\s)python3?\s+-m\s+pylint\b`), "python", "pylint"},
+	{regexp.MustCompile(`(?:^|\s|/)pylint\b`), "python", "pylint"},
+	{regexp.MustCompile(`(?:^|\s)python3?\s+-m\s+flake8\b`), "python", "flake8"},
+	{regexp.MustCompile(`(?:^|\s|/)flake8\b`), "python", "flake8"},
+	{regexp.MustCompile(`(?:^|\s|/)ruff\s+(check|format)\b`), "python", "ruff"},
+	{regexp.MustCompile(`(?:^|\s|/)ruff\b`), "python", "ruff"},
+	{regexp.MustCompile(`(?:^|\s)python3?\s+`), "python", "python"},
+	{regexp.MustCompile(`(?:^|\s)pip3?\s+install\b`), "python", "pip"},
+	{regexp.MustCompile(`(?:^|\s|/)uv\s+(run|pip|sync)\b`), "python", "uv"},
+	{regexp.MustCompile(`(?:^|\s|/)poetry\s+(install|run|build)\b`), "python", "poetry"},
 }
 
 // DetectedTool represents a tool detected from a run command.
