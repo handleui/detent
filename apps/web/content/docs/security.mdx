@@ -1,10 +1,13 @@
-# Security
+---
+title: Security
+description: How detent releases are secured
+---
 
 Detent takes supply chain security seriously. Every release is cryptographically signed and verified.
 
 ## How releases are secured
 
-### 1. Checksum verification
+### Checksum verification
 
 Every binary download is verified against SHA-256 checksums before installation. The install script automatically:
 
@@ -15,7 +18,7 @@ Every binary download is verified against SHA-256 checksums before installation.
 
 If checksums don't match, installation is aborted.
 
-### 2. Cosign signatures (keyless)
+### Cosign signatures (keyless)
 
 All releases are signed using [Sigstore Cosign](https://docs.sigstore.dev/cosign/overview/) with keyless signing via GitHub Actions OIDC.
 
@@ -59,4 +62,4 @@ Replace `v1.0.0` with your target version.
 
 ## Reporting vulnerabilities
 
-If you discover a security vulnerability, please report it responsibly by emailing security@detent.dev (or open a private security advisory on GitHub).
+If you discover a security vulnerability, please report it responsibly by emailing security@detent.sh or help@detent.sh. You can also open a private security advisory on GitHub.
