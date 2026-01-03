@@ -1,5 +1,11 @@
 # @detent/cli
 
+## 0.10.0
+
+### Minor Changes
+
+- 32ebefb: Add clean command for orphaned worktree and old data cleanup with retention policy
+
 ## 0.9.0
 
 ### Minor Changes
