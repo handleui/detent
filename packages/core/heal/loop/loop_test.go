@@ -1011,6 +1011,125 @@ func TestRun_CostCalculation(t *testing.T) {
 	}
 }
 
+// TestRun_VerboseMode tests that verbose mode logs tool calls.
+func TestRun_VerboseMode(t *testing.T) {
+	toolCallResponse := mockResponse("tool_use", []map[string]any{
+		toolUseContent("toolu_1", "read_file", map[string]any{"path": "test.txt"}),
+	}, 100, 50)
+
+	finalResponse := mockResponse("end_turn", []map[string]any{
+		textContent("Done!"),
+	}, 150, 30)
+
+	server := mockServer(t, []map[string]any{toolCallResponse, finalResponse})
+	defer server.Close()
+
+	client := createTestClient(server.URL)
+	registry := createEmptyRegistry()
+	registry.Register(&mockTool{
+		name:        "read_file",
+		description: "Reads a file",
+		schema:      map[string]any{"properties": map[string]any{"path": map[string]any{"type": "string"}}},
+	})
+
+	config := Config{
+		Timeout:             time.Minute,
+		Model:               anthropic.ModelClaudeSonnet4_5,
+		BudgetPerRunUSD:     1.0,
+		RemainingMonthlyUSD: -1,
+		Verbose:             true, // Enable verbose mode
+	}
+
+	loop := New(client, registry, config)
+	result, err := loop.Run(context.Background(), "System prompt", "Read the file")
+
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if !result.Success {
+		t.Error("expected Success to be true")
+	}
+	if result.ToolCalls != 1 {
+		t.Errorf("expected 1 tool call, got %d", result.ToolCalls)
+	}
+}
+
+// TestRun_VerboseToolWithoutKeyParam tests verbose mode with a tool that has no key param.
+func TestRun_VerboseToolWithoutKeyParam(t *testing.T) {
+	toolCallResponse := mockResponse("tool_use", []map[string]any{
+		toolUseContent("toolu_1", "run_check", map[string]any{"category": "lint"}),
+	}, 100, 50)
+
+	finalResponse := mockResponse("end_turn", []map[string]any{
+		textContent("Done!"),
+	}, 150, 30)
+
+	server := mockServer(t, []map[string]any{toolCallResponse, finalResponse})
+	defer server.Close()
+
+	client := createTestClient(server.URL)
+	registry := createEmptyRegistry()
+	registry.Register(&mockTool{
+		name:        "run_check",
+		description: "Run checks",
+		schema:      map[string]any{"properties": map[string]any{"category": map[string]any{"type": "string"}}},
+	})
+
+	config := Config{
+		Timeout:             time.Minute,
+		Model:               anthropic.ModelClaudeSonnet4_5,
+		BudgetPerRunUSD:     1.0,
+		RemainingMonthlyUSD: -1,
+		Verbose:             true,
+	}
+
+	loop := New(client, registry, config)
+	result, err := loop.Run(context.Background(), "System prompt", "Run check")
+
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if !result.Success {
+		t.Error("expected Success to be true")
+	}
+}
+
+// TestRun_VerboseToolWithUnknownTool tests verbose mode with unknown tool.
+func TestRun_VerboseToolWithUnknownTool(t *testing.T) {
+	toolCallResponse := mockResponse("tool_use", []map[string]any{
+		toolUseContent("toolu_1", "some_unknown_tool", map[string]any{"foo": "bar"}),
+	}, 100, 50)
+
+	finalResponse := mockResponse("end_turn", []map[string]any{
+		textContent("Done!"),
+	}, 150, 30)
+
+	server := mockServer(t, []map[string]any{toolCallResponse, finalResponse})
+	defer server.Close()
+
+	client := createTestClient(server.URL)
+	registry := createEmptyRegistry()
+
+	config := Config{
+		Timeout:             time.Minute,
+		Model:               anthropic.ModelClaudeSonnet4_5,
+		BudgetPerRunUSD:     1.0,
+		RemainingMonthlyUSD: -1,
+		Verbose:             true,
+	}
+
+	loop := New(client, registry, config)
+	result, err := loop.Run(context.Background(), "System prompt", "Test")
+
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	// Should still complete (model recovers from unknown tool error)
+	if !result.Success {
+		t.Error("expected Success to be true")
+	}
+}
+
 // TestRun_BudgetCheckOrder tests that per-run budget is checked before monthly.
 func TestRun_BudgetCheckOrder(t *testing.T) {
 	// Both budgets would be exceeded, but per-run should be reported first

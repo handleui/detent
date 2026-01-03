@@ -50,6 +50,97 @@ func PruneWorktreeMetadata(ctx context.Context, repoRoot string) error {
 	return nil
 }
 
+// isOrphanedWorktree checks if a worktree directory is orphaned and eligible for removal.
+// Returns true if the worktree should be cleaned up.
+// repoRoot filters to a specific repo (empty string = all repos).
+// force=true removes all unlocked worktrees regardless of age.
+func isOrphanedWorktree(match, repoRoot string, force bool) bool {
+	// Skip workflow temp directories (detent-workflows-*)
+	if isWorkflowTempDir(match) {
+		return false
+	}
+
+	// SECURITY: Use Lstat to detect symlinks without following them
+	info, err := os.Lstat(match)
+	if err != nil {
+		return false // Already gone or inaccessible
+	}
+
+	// SECURITY: Skip symlinks - never follow them to prevent escape attacks
+	if info.Mode()&os.ModeSymlink != 0 {
+		return false
+	}
+
+	// SECURITY: Must be a directory
+	if !info.IsDir() {
+		return false
+	}
+
+	// If filtering by repo, check if this worktree belongs to it
+	if repoRoot != "" && !isWorktreeForRepo(match, repoRoot) {
+		return false
+	}
+
+	// Check if worktree is actively in use via lockfile
+	lockPath := filepath.Join(match, LockFileName)
+	if _, statErr := os.Stat(lockPath); statErr == nil {
+		// Lock file exists - try to acquire it to check if owner is alive
+		lock, lockErr := lockfile.New(lockPath)
+		if lockErr != nil {
+			return false // Can't create lock handle, skip this worktree
+		}
+
+		tryErr := lock.TryLock()
+		switch {
+		case tryErr == nil:
+			// Lock acquired - owner process is dead, safe to remove
+			// Unlock before removal (best effort)
+			_ = lock.Unlock()
+			return true
+		case errors.Is(tryErr, lockfile.ErrBusy):
+			// Lock is held by a running process - skip this worktree
+			return false
+		case errors.Is(tryErr, lockfile.ErrDeadOwner), errors.Is(tryErr, lockfile.ErrInvalidPid):
+			// Dead owner or invalid PID - library auto-cleaned, safe to remove
+			return true
+		default:
+			// Unknown error (filesystem issue, etc.) - skip to be safe
+			return false
+		}
+	}
+
+	// No lock file (old worktree without lock support)
+	if !force {
+		// Use age threshold
+		if time.Since(info.ModTime()) < orphanAgeThreshold {
+			return false
+		}
+	}
+	// force=true with no lock file: remove regardless of age
+
+	return true
+}
+
+// CountOrphanedTempDirs counts orphaned detent worktree directories that would be removed.
+// This is the dry-run equivalent of CleanOrphanedTempDirs.
+// Parameters have the same meaning as CleanOrphanedTempDirs.
+func CountOrphanedTempDirs(repoRoot string, force bool) (int, error) {
+	pattern := filepath.Join(os.TempDir(), detentDirPrefix+"*")
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return 0, fmt.Errorf("finding orphaned worktrees: %w", err)
+	}
+
+	count := 0
+	for _, match := range matches {
+		if isOrphanedWorktree(match, repoRoot, force) {
+			count++
+		}
+	}
+
+	return count, nil
+}
+
 // CleanOrphanedTempDirs finds and removes orphaned detent worktree directories in the temp folder.
 // Uses lockfile-based detection to determine if a worktree is actively in use.
 //
@@ -69,67 +160,12 @@ func CleanOrphanedTempDirs(repoRoot string, force bool) (int, error) {
 
 	removed := 0
 	for _, match := range matches {
-		// Skip workflow temp directories (detent-workflows-*)
-		if isWorkflowTempDir(match) {
+		if !isOrphanedWorktree(match, repoRoot, force) {
 			continue
 		}
-
-		// SECURITY: Use Lstat to detect symlinks without following them
-		info, err := os.Lstat(match)
-		if err != nil {
-			continue // Already gone or inaccessible
-		}
-
-		// SECURITY: Skip symlinks - never follow them to prevent escape attacks
-		if info.Mode()&os.ModeSymlink != 0 {
-			continue
-		}
-
-		// SECURITY: Must be a directory
-		if !info.IsDir() {
-			continue
-		}
-
-		// If filtering by repo, check if this worktree belongs to it
-		if repoRoot != "" && !isWorktreeForRepo(match, repoRoot) {
-			continue
-		}
-
-		// Check if worktree is actively in use via lockfile
-		lockPath := filepath.Join(match, LockFileName)
-		if _, statErr := os.Stat(lockPath); statErr == nil {
-			// Lock file exists - try to acquire it to check if owner is alive
-			lock, lockErr := lockfile.New(lockPath)
-			if lockErr != nil {
-				continue // Can't create lock handle, skip this worktree
-			}
-
-			tryErr := lock.TryLock()
-			switch {
-			case tryErr == nil:
-				// Lock acquired - owner process is dead, safe to remove
-				// Unlock before removal (best effort)
-				_ = lock.Unlock()
-			case errors.Is(tryErr, lockfile.ErrBusy):
-				// Lock is held by a running process - skip this worktree
-				continue
-			case errors.Is(tryErr, lockfile.ErrDeadOwner), errors.Is(tryErr, lockfile.ErrInvalidPid):
-				// Dead owner or invalid PID - library auto-cleaned, safe to remove
-				// Fall through to removal
-			default:
-				// Unknown error (filesystem issue, etc.) - skip to be safe
-				continue
-			}
-		} else if !force {
-			// No lock file (old worktree without lock support) - use age threshold
-			if time.Since(info.ModTime()) < orphanAgeThreshold {
-				continue
-			}
-		}
-		// force=true with no lock file: remove regardless of age
 
 		// SECURITY: Re-check it's still a directory before removal
-		// This is defense-in-depth against race between Lstat and RemoveAll
+		// This is defense-in-depth against race between check and RemoveAll
 		recheck, err := os.Lstat(match)
 		if err != nil || recheck.Mode()&os.ModeSymlink != 0 || !recheck.IsDir() {
 			continue
@@ -152,8 +188,22 @@ func isWorkflowTempDir(path string) bool {
 
 // isWorktreeForRepo checks if the worktree at path belongs to the given repository.
 // Git worktrees have a .git file that points back to the main repository.
+// SECURITY: Uses Lstat to verify .git is a regular file, not a symlink.
 func isWorktreeForRepo(worktreePath, repoRoot string) bool {
 	gitPath := filepath.Join(worktreePath, ".git")
+
+	// SECURITY: Verify .git is a regular file, not a symlink
+	info, err := os.Lstat(gitPath)
+	if err != nil {
+		return false // Can't stat
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return false // Symlink - refuse to follow
+	}
+	if !info.Mode().IsRegular() {
+		return false // Not a regular file (could be a directory in non-worktree)
+	}
+
 	// #nosec G304 - worktreePath comes from glob pattern matching detent-* in temp dir
 	content, err := os.ReadFile(gitPath)
 	if err != nil {

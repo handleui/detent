@@ -95,6 +95,18 @@ func cleanWorktrees(ctx context.Context, repoRoot string) (int, error) {
 	ctx, cancel := context.WithTimeout(ctx, git.CleanupTimeout)
 	defer cancel()
 
+	// In dry-run mode, only count what would be removed
+	if cleanDryRun {
+		var count int
+		var err error
+		if cleanAll {
+			count, err = git.CountOrphanedTempDirs("", cleanForce)
+		} else {
+			count, err = git.CountOrphanedTempDirs(repoRoot, cleanForce)
+		}
+		return count, err
+	}
+
 	// Prune git worktree metadata
 	if pruneErr := git.PruneWorktreeMetadata(ctx, repoRoot); pruneErr != nil {
 		fmt.Fprintf(os.Stderr, "%s Failed to prune metadata: %s\n",

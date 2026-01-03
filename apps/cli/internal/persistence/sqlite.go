@@ -1473,6 +1473,10 @@ func (w *SQLiteWriter) Path() string {
 // Returns the holder ID on success, or ErrHealLockHeld if the lock is already held.
 // The lock automatically expires after the specified timeout for crash recovery.
 func (w *SQLiteWriter) AcquireHealLock(repoPath string, timeout time.Duration) (string, error) {
+	if timeout <= 0 {
+		return "", fmt.Errorf("timeout must be positive")
+	}
+
 	now := time.Now()
 	expiresAt := now.Add(timeout)
 
@@ -1492,8 +1496,8 @@ func (w *SQLiteWriter) AcquireHealLock(repoPath string, timeout time.Duration) (
 	}
 	defer func() { _ = tx.Rollback() }() // No-op if committed
 
-	// First, clean up any expired locks
-	_, err = tx.Exec("DELETE FROM heal_locks WHERE expires_at < ?", now.Unix())
+	// Clean up only this repo's expired lock (not all repos for better performance)
+	_, err = tx.Exec("DELETE FROM heal_locks WHERE repo_path = ? AND expires_at < ?", repoPath, now.Unix())
 	if err != nil {
 		return "", fmt.Errorf("failed to clean expired locks: %w", err)
 	}
@@ -1519,7 +1523,13 @@ func (w *SQLiteWriter) AcquireHealLock(repoPath string, timeout time.Duration) (
 			if existingPID.Valid {
 				pidInfo = fmt.Sprintf(" (pid: %d)", existingPID.Int64)
 			}
-			return "", fmt.Errorf("%w: held by %s%s", ErrHealLockHeld, existingHolder[:8], pidInfo)
+			holderPreview := existingHolder
+			if len(holderPreview) > 8 {
+				holderPreview = holderPreview[:8]
+			} else if holderPreview == "" {
+				holderPreview = "unknown"
+			}
+			return "", fmt.Errorf("%w: held by %s%s", ErrHealLockHeld, holderPreview, pidInfo)
 		}
 		return "", fmt.Errorf("failed to acquire lock: %w", err)
 	}
@@ -1559,6 +1569,8 @@ func (w *SQLiteWriter) ReleaseHealLock(repoPath, holderID string) error {
 
 // IsHealLockHeld checks if a valid (non-expired) heal lock exists for a repository.
 // Returns true if locked, along with the holder ID.
+// WARNING: For informational purposes only. Do NOT use to decide whether to acquire
+// a lock - use AcquireHealLock directly which handles races atomically.
 func (w *SQLiteWriter) IsHealLockHeld(repoPath string) (bool, string, error) {
 	now := time.Now().Unix()
 

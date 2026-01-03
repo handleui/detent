@@ -1508,7 +1508,7 @@ func TestSQLiteWriter_AcquireHealLock_AlreadyHeld(t *testing.T) {
 	if err == nil {
 		t.Fatal("Expected error for second acquisition")
 	}
-	if !errorContains(err, ErrHealLockHeld) {
+	if !errors.Is(err, ErrHealLockHeld) {
 		t.Errorf("Expected ErrHealLockHeld, got: %v", err)
 	}
 }
@@ -1682,19 +1682,15 @@ func TestSQLiteWriter_AcquireHealLock_DifferentRepos(t *testing.T) {
 	defer func() { _ = writer.ReleaseHealLock(repo2, holder2) }()
 
 	// Both locks should be held
-	held1, _, _ := writer.IsHealLockHeld(repo1)
-	held2, _, _ := writer.IsHealLockHeld(repo2)
+	held1, _, err := writer.IsHealLockHeld(repo1)
+	if err != nil {
+		t.Fatalf("IsHealLockHeld(repo1) error = %v", err)
+	}
+	held2, _, err := writer.IsHealLockHeld(repo2)
+	if err != nil {
+		t.Fatalf("IsHealLockHeld(repo2) error = %v", err)
+	}
 	if !held1 || !held2 {
 		t.Error("Both repo locks should be held")
 	}
 }
-
-// errorContains checks if err wraps or contains target error
-func errorContains(err, target error) bool {
-	if err == nil {
-		return false
-	}
-	// Use errors.Is for proper error chain checking
-	return errors.Is(err, target)
-}
-
