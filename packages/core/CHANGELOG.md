@@ -1,5 +1,11 @@
 # @detent/core
 
+## 0.9.0
+
+### Minor Changes
+
+- 32ebefb: Add retry logic for transient errors and error serialization for orchestrator views
+
 ## 0.8.0
 
 ### Minor Changes
