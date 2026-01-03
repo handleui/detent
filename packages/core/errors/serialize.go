@@ -1,3 +1,5 @@
+// Package errors provides error extraction, categorization, and serialization
+// for workflow execution results.
 package errors
 
 import "strings"
@@ -5,25 +7,30 @@ import "strings"
 // OrchestratorError is a lightweight error view for the orchestrator.
 // It excludes CodeSnippet, StackTrace, and other detail fields to minimize tokens.
 type OrchestratorError struct {
-	File        string        `json:"file,omitempty"`
-	Line        int           `json:"line,omitempty"`
-	Message     string        `json:"message"`
-	Severity    string        `json:"severity"`
-	Category    ErrorCategory `json:"category"`
-	Source      string        `json:"source"`
-	RuleID      string        `json:"rule_id,omitempty"`
-	WorkflowJob string        `json:"workflow_job,omitempty"`
+	File        string        `json:"file,omitempty"`         // Source file path
+	Line        int           `json:"line,omitempty"`         // Line number (1-indexed)
+	Message     string        `json:"message"`                // Error message
+	Severity    string        `json:"severity"`               // "error" or "warning"
+	Category    ErrorCategory `json:"category"`               // Error category (lint, type-check, etc.)
+	Source      string        `json:"source"`                 // Tool that produced the error (eslint, typescript, etc.)
+	RuleID      string        `json:"rule_id,omitempty"`      // Rule identifier (e.g., "no-var", "TS2749")
+	WorkflowJob string        `json:"workflow_job,omitempty"` // GitHub Actions job name
 }
 
 // OrchestratorView is the lightweight structure for the Haiku orchestrator.
+// It contains a minimal representation of errors suitable for high-level routing decisions.
 type OrchestratorView struct {
-	Errors []OrchestratorError `json:"errors"`
-	Stats  ErrorStats          `json:"stats"`
+	Errors []OrchestratorError `json:"errors"` // Lightweight error list
+	Stats  ErrorStats          `json:"stats"`  // Aggregated statistics
 }
 
 // ForOrchestrator returns a lightweight view suitable for the Haiku orchestrator.
 // It strips CodeSnippet, StackTrace, Suggestions, and other detail fields.
+// Returns nil if the receiver is nil.
 func (g *ComprehensiveErrorGroup) ForOrchestrator() *OrchestratorView {
+	if g == nil {
+		return nil
+	}
 	allErrors := g.flatten()
 	orchestratorErrors := make([]OrchestratorError, 0, len(allErrors))
 
@@ -53,7 +60,14 @@ func (g *ComprehensiveErrorGroup) ForOrchestrator() *OrchestratorView {
 
 // ForAgent filters errors and returns full detail for a specific agent.
 // The filter function determines which errors to include.
+// Returns nil if the receiver is nil, or empty slice if filter is nil.
 func (g *ComprehensiveErrorGroup) ForAgent(filter func(*ExtractedError) bool) []*ExtractedError {
+	if g == nil {
+		return nil
+	}
+	if filter == nil {
+		return []*ExtractedError{}
+	}
 	allErrors := g.flatten()
 	result := make([]*ExtractedError, 0)
 

@@ -86,7 +86,8 @@ func (p *ErrorProcessor) Process(actResult *act.RunResult) *ProcessedErrors {
 		}
 	}
 
-	groupedComprehensive.AIContext = &errors.AIContext{
+	// Build AI context metadata (shared between groupedComprehensive and report)
+	aiContext := &errors.AIContext{
 		ExtractedAt:        time.Now().UTC().Format(time.RFC3339),
 		SnippetsIncluded:   true,
 		SnippetsFailed:     snippetsFailed,
@@ -95,16 +96,11 @@ func (p *ErrorProcessor) Process(actResult *act.RunResult) *ProcessedErrors {
 		ErrorsWithRuleID:   errorsWithRuleID,
 	}
 
+	groupedComprehensive.AIContext = aiContext
+
 	// Create flat ErrorReport for AI consumption
 	report := errors.NewErrorReport(extracted, p.repoRoot)
-	report.AIContext = &errors.AIContext{
-		ExtractedAt:        time.Now().UTC().Format(time.RFC3339),
-		SnippetsIncluded:   true,
-		SnippetsFailed:     snippetsFailed,
-		ErrorsWithLocation: errorsWithLocation,
-		ErrorsWithSnippet:  snippetsSucceeded,
-		ErrorsWithRuleID:   errorsWithRuleID,
-	}
+	report.AIContext = aiContext
 
 	return &ProcessedErrors{
 		Extracted:            extracted,
