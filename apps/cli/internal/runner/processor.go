@@ -24,6 +24,7 @@ type ProcessedErrors struct {
 	Extracted            []*errors.ExtractedError
 	Grouped              *errors.GroupedErrors
 	GroupedComprehensive *errors.ComprehensiveErrorGroup
+	Report               *errors.ErrorReport // Flat structure for AI consumption
 }
 
 // NewErrorProcessor creates a new ErrorProcessor with the given repository root.
@@ -60,6 +61,13 @@ func (p *ErrorProcessor) Process(actResult *act.RunResult) *ProcessedErrors {
 
 	errors.ApplySeverity(extracted)
 
+	// Populate WorkflowJob on each error from WorkflowContext for easier access
+	for _, err := range extracted {
+		if err.WorkflowContext != nil {
+			err.WorkflowJob = err.WorkflowContext.Job
+		}
+	}
+
 	// Extract source code snippets for AI consumption
 	snippetsSucceeded, snippetsFailed := errors.ExtractSnippetsForErrors(extracted, p.repoRoot)
 
@@ -87,10 +95,22 @@ func (p *ErrorProcessor) Process(actResult *act.RunResult) *ProcessedErrors {
 		ErrorsWithRuleID:   errorsWithRuleID,
 	}
 
+	// Create flat ErrorReport for AI consumption
+	report := errors.NewErrorReport(extracted, p.repoRoot)
+	report.AIContext = &errors.AIContext{
+		ExtractedAt:        time.Now().UTC().Format(time.RFC3339),
+		SnippetsIncluded:   true,
+		SnippetsFailed:     snippetsFailed,
+		ErrorsWithLocation: errorsWithLocation,
+		ErrorsWithSnippet:  snippetsSucceeded,
+		ErrorsWithRuleID:   errorsWithRuleID,
+	}
+
 	return &ProcessedErrors{
 		Extracted:            extracted,
 		Grouped:              grouped,
 		GroupedComprehensive: groupedComprehensive,
+		Report:               report,
 	}
 }
 

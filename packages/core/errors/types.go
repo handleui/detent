@@ -10,14 +10,65 @@ type ErrorCategory string
 
 // Error categories for workflow execution errors
 const (
+	// Existing categories
 	CategoryLint      ErrorCategory = "lint"
 	CategoryTypeCheck ErrorCategory = "type-check"
 	CategoryTest      ErrorCategory = "test"
 	CategoryCompile   ErrorCategory = "compile"
 	CategoryRuntime   ErrorCategory = "runtime"
 	CategoryMetadata  ErrorCategory = "metadata"
-	CategoryUnknown   ErrorCategory = "unknown"
+
+	// Security scanning tools (Snyk, Trivy, npm audit, etc.)
+	CategorySecurity ErrorCategory = "security"
+
+	// Dependency issues (outdated, vulnerable, conflicting)
+	CategoryDependency ErrorCategory = "dependency"
+
+	// Configuration validation (terraform validate, k8s lint, etc.)
+	CategoryConfig ErrorCategory = "config"
+
+	// Infrastructure/container issues
+	CategoryInfra ErrorCategory = "infrastructure"
+
+	// Documentation linting (markdownlint, etc.)
+	CategoryDocs ErrorCategory = "docs"
+
+	// Fallback
+	CategoryUnknown ErrorCategory = "unknown"
 )
+
+// allCategories is the internal list of all defined categories
+var allCategories = []ErrorCategory{
+	CategoryLint,
+	CategoryTypeCheck,
+	CategoryTest,
+	CategoryCompile,
+	CategoryRuntime,
+	CategoryMetadata,
+	CategorySecurity,
+	CategoryDependency,
+	CategoryConfig,
+	CategoryInfra,
+	CategoryDocs,
+	CategoryUnknown,
+}
+
+// IsValidCategory returns true if the category is a known category.
+func IsValidCategory(cat ErrorCategory) bool {
+	for _, c := range allCategories {
+		if c == cat {
+			return true
+		}
+	}
+	return false
+}
+
+// AllCategories returns all defined categories.
+func AllCategories() []ErrorCategory {
+	result := make([]ErrorCategory, len(allCategories))
+	copy(result, allCategories)
+	return result
+}
 
 // Error sources for attribution and filtering
 const (
@@ -72,6 +123,7 @@ type ExtractedError struct {
 	RuleID          string           `json:"rule_id,omitempty"`          // e.g., "no-var", "TS2749"
 	Category        ErrorCategory    `json:"category,omitempty"`         // lint, type-check, test, etc.
 	WorkflowContext *WorkflowContext `json:"workflow_context,omitempty"` // Job/step info
+	WorkflowJob     string           `json:"workflow_job,omitempty"`     // Flattened from WorkflowContext.Job for easier access
 	Source          string           `json:"source,omitempty"`           // "eslint", "typescript", "go", etc.
 	UnknownPattern  bool             `json:"unknown_pattern,omitempty"`  // True if matched by generic fallback parser (for Sentry reporting)
 
@@ -84,7 +136,8 @@ type ExtractedError struct {
 	MessageTruncated    bool         `json:"message_truncated,omitempty"`     // True if message was truncated due to size limits
 }
 
-// GroupedErrors groups errors by file path for organized output
+// GroupedErrors groups errors by file path for organized output.
+// Deprecated: Use ErrorReport with NewErrorReport instead for a flatter, non-duplicating structure.
 type GroupedErrors struct {
 	ByFile    map[string][]*ExtractedError `json:"by_file"`
 	NoFile    []*ExtractedError            `json:"no_file"`
@@ -166,10 +219,12 @@ func makeRelative(path, basePath string) string {
 
 // ErrorStats provides statistics for AI prompt generation
 type ErrorStats struct {
+	Total        int                   `json:"total"`
 	ErrorCount   int                   `json:"error_count"`
 	WarningCount int                   `json:"warning_count"`
 	ByCategory   map[ErrorCategory]int `json:"by_category"`
 	BySource     map[string]int        `json:"by_source"`
+	ByFile       map[string]int        `json:"by_file"`     // Error counts per file
 	UniqueFiles  int                   `json:"unique_files"`
 	UniqueRules  int                   `json:"unique_rules"`
 }
@@ -196,7 +251,70 @@ type AIContext struct {
 	ErrorsWithRuleID   int `json:"errors_with_rule_id"`  // Errors with identifiable rules
 }
 
-// ComprehensiveErrorGroup supports multiple grouping strategies for AI consumption
+// ErrorReport provides a flat error structure with computed statistics.
+// This is the preferred structure for error data, avoiding duplication.
+type ErrorReport struct {
+	Errors    []*ExtractedError `json:"errors"`
+	Stats     ErrorStats        `json:"stats"`
+	AIContext *AIContext        `json:"ai_context,omitempty"`
+}
+
+// NewErrorReport creates an ErrorReport from a flat list of errors.
+// It computes all statistics and makes file paths relative to basePath if provided.
+func NewErrorReport(errs []*ExtractedError, basePath string) *ErrorReport {
+	stats := ErrorStats{
+		Total:      len(errs),
+		ByCategory: make(map[ErrorCategory]int),
+		BySource:   make(map[string]int),
+		ByFile:     make(map[string]int),
+	}
+
+	uniqueFiles := make(map[string]struct{})
+	uniqueRules := make(map[string]struct{})
+
+	for _, err := range errs {
+		switch err.Severity {
+		case "error":
+			stats.ErrorCount++
+		case "warning":
+			stats.WarningCount++
+		}
+
+		category := err.Category
+		if category == "" {
+			category = CategoryUnknown
+		}
+		stats.ByCategory[category]++
+
+		if err.Source != "" {
+			stats.BySource[err.Source]++
+		}
+
+		if err.File != "" {
+			file := err.File
+			if basePath != "" {
+				file = makeRelative(file, basePath)
+			}
+			stats.ByFile[file]++
+			uniqueFiles[file] = struct{}{}
+		}
+
+		if err.RuleID != "" {
+			uniqueRules[err.RuleID] = struct{}{}
+		}
+	}
+
+	stats.UniqueFiles = len(uniqueFiles)
+	stats.UniqueRules = len(uniqueRules)
+
+	return &ErrorReport{
+		Errors: errs,
+		Stats:  stats,
+	}
+}
+
+// ComprehensiveErrorGroup supports multiple grouping strategies for AI consumption.
+// Deprecated: Use ErrorReport with NewErrorReport instead for a flatter, non-duplicating structure.
 type ComprehensiveErrorGroup struct {
 	ByFile     map[string][]*ExtractedError        `json:"by_file"`
 	ByCategory map[ErrorCategory][]*ExtractedError `json:"by_category"`
