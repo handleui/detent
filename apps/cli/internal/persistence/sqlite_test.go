@@ -1,6 +1,7 @@
 package persistence
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1438,5 +1439,262 @@ func TestSQLiteWriter_RecordHeal_WithFileHash(t *testing.T) {
 	if heals[0].FileHash != heal.FileHash {
 		t.Errorf("Retrieved heal FileHash = %v, want %v", heals[0].FileHash, heal.FileHash)
 	}
+}
+
+// --- Heal Lock Tests ---
+
+// TestSQLiteWriter_AcquireHealLock tests basic lock acquisition
+func TestSQLiteWriter_AcquireHealLock(t *testing.T) {
+	setupTestDetentHome(t)
+	tmpDir := t.TempDir()
+	writer, err := NewSQLiteWriter(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create writer: %v", err)
+	}
+	defer func() { _ = writer.Close() }()
+
+	repoPath := "/test/repo"
+	timeout := 10 * time.Minute
+
+	// First acquisition should succeed
+	holderID, err := writer.AcquireHealLock(repoPath, timeout)
+	if err != nil {
+		t.Fatalf("AcquireHealLock() error = %v", err)
+	}
+	if holderID == "" {
+		t.Fatal("Expected non-empty holder ID")
+	}
+
+	// Verify lock is held
+	held, heldBy, err := writer.IsHealLockHeld(repoPath)
+	if err != nil {
+		t.Fatalf("IsHealLockHeld() error = %v", err)
+	}
+	if !held {
+		t.Error("Expected lock to be held")
+	}
+	if heldBy != holderID {
+		t.Errorf("Expected holder %s, got %s", holderID, heldBy)
+	}
+
+	// Release the lock
+	if err := writer.ReleaseHealLock(repoPath, holderID); err != nil {
+		t.Fatalf("ReleaseHealLock() error = %v", err)
+	}
+}
+
+// TestSQLiteWriter_AcquireHealLock_AlreadyHeld tests that second acquisition fails
+func TestSQLiteWriter_AcquireHealLock_AlreadyHeld(t *testing.T) {
+	setupTestDetentHome(t)
+	tmpDir := t.TempDir()
+	writer, err := NewSQLiteWriter(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create writer: %v", err)
+	}
+	defer func() { _ = writer.Close() }()
+
+	repoPath := "/test/repo"
+	timeout := 10 * time.Minute
+
+	// First acquisition should succeed
+	holderID1, err := writer.AcquireHealLock(repoPath, timeout)
+	if err != nil {
+		t.Fatalf("First AcquireHealLock() error = %v", err)
+	}
+	defer func() { _ = writer.ReleaseHealLock(repoPath, holderID1) }()
+
+	// Second acquisition should fail with ErrHealLockHeld
+	_, err = writer.AcquireHealLock(repoPath, timeout)
+	if err == nil {
+		t.Fatal("Expected error for second acquisition")
+	}
+	if !errorContains(err, ErrHealLockHeld) {
+		t.Errorf("Expected ErrHealLockHeld, got: %v", err)
+	}
+}
+
+// TestSQLiteWriter_AcquireHealLock_ExpiredLock tests that expired locks can be re-acquired
+func TestSQLiteWriter_AcquireHealLock_ExpiredLock(t *testing.T) {
+	setupTestDetentHome(t)
+	tmpDir := t.TempDir()
+	writer, err := NewSQLiteWriter(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create writer: %v", err)
+	}
+	defer func() { _ = writer.Close() }()
+
+	repoPath := "/test/repo"
+
+	// Acquire lock with very short timeout (already expired)
+	// We insert directly with an expired timestamp to simulate this
+	now := time.Now()
+	expiredAt := now.Add(-time.Hour) // Already expired
+	_, err = writer.db.Exec(
+		"INSERT INTO heal_locks (repo_path, holder_id, acquired_at, expires_at, pid) VALUES (?, ?, ?, ?, ?)",
+		repoPath, "expired-holder", now.Add(-2*time.Hour).Unix(), expiredAt.Unix(), 99999,
+	)
+	if err != nil {
+		t.Fatalf("Failed to insert expired lock: %v", err)
+	}
+
+	// New acquisition should succeed (expired lock should be cleaned up)
+	holderID, err := writer.AcquireHealLock(repoPath, 10*time.Minute)
+	if err != nil {
+		t.Fatalf("AcquireHealLock() should succeed for expired lock, got error: %v", err)
+	}
+	if holderID == "" {
+		t.Fatal("Expected non-empty holder ID")
+	}
+
+	// Clean up
+	_ = writer.ReleaseHealLock(repoPath, holderID)
+}
+
+// TestSQLiteWriter_ReleaseHealLock tests lock release
+func TestSQLiteWriter_ReleaseHealLock(t *testing.T) {
+	setupTestDetentHome(t)
+	tmpDir := t.TempDir()
+	writer, err := NewSQLiteWriter(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create writer: %v", err)
+	}
+	defer func() { _ = writer.Close() }()
+
+	repoPath := "/test/repo"
+	timeout := 10 * time.Minute
+
+	// Acquire lock
+	holderID, err := writer.AcquireHealLock(repoPath, timeout)
+	if err != nil {
+		t.Fatalf("AcquireHealLock() error = %v", err)
+	}
+
+	// Release by correct holder should succeed
+	if err := writer.ReleaseHealLock(repoPath, holderID); err != nil {
+		t.Fatalf("ReleaseHealLock() error = %v", err)
+	}
+
+	// Verify lock is no longer held
+	held, _, err := writer.IsHealLockHeld(repoPath)
+	if err != nil {
+		t.Fatalf("IsHealLockHeld() error = %v", err)
+	}
+	if held {
+		t.Error("Expected lock to be released")
+	}
+
+	// Second release should be idempotent (no error)
+	if err := writer.ReleaseHealLock(repoPath, holderID); err != nil {
+		t.Errorf("Second ReleaseHealLock() should be idempotent, got error: %v", err)
+	}
+}
+
+// TestSQLiteWriter_ReleaseHealLock_WrongHolder tests that wrong holder cannot release
+func TestSQLiteWriter_ReleaseHealLock_WrongHolder(t *testing.T) {
+	setupTestDetentHome(t)
+	tmpDir := t.TempDir()
+	writer, err := NewSQLiteWriter(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create writer: %v", err)
+	}
+	defer func() { _ = writer.Close() }()
+
+	repoPath := "/test/repo"
+	timeout := 10 * time.Minute
+
+	// Acquire lock
+	holderID, err := writer.AcquireHealLock(repoPath, timeout)
+	if err != nil {
+		t.Fatalf("AcquireHealLock() error = %v", err)
+	}
+	defer func() { _ = writer.ReleaseHealLock(repoPath, holderID) }()
+
+	// Release by wrong holder should not release the lock
+	wrongHolder := "wrong-holder-id"
+	if err := writer.ReleaseHealLock(repoPath, wrongHolder); err != nil {
+		t.Fatalf("ReleaseHealLock() with wrong holder should not error: %v", err)
+	}
+
+	// Lock should still be held
+	held, heldBy, err := writer.IsHealLockHeld(repoPath)
+	if err != nil {
+		t.Fatalf("IsHealLockHeld() error = %v", err)
+	}
+	if !held {
+		t.Error("Lock should still be held after release by wrong holder")
+	}
+	if heldBy != holderID {
+		t.Errorf("Lock holder should be %s, got %s", holderID, heldBy)
+	}
+}
+
+// TestSQLiteWriter_IsHealLockHeld tests lock status checking
+func TestSQLiteWriter_IsHealLockHeld(t *testing.T) {
+	setupTestDetentHome(t)
+	tmpDir := t.TempDir()
+	writer, err := NewSQLiteWriter(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create writer: %v", err)
+	}
+	defer func() { _ = writer.Close() }()
+
+	repoPath := "/test/repo"
+
+	// No lock should be held initially
+	held, holderID, err := writer.IsHealLockHeld(repoPath)
+	if err != nil {
+		t.Fatalf("IsHealLockHeld() error = %v", err)
+	}
+	if held {
+		t.Error("Expected no lock to be held initially")
+	}
+	if holderID != "" {
+		t.Errorf("Expected empty holder ID, got %s", holderID)
+	}
+}
+
+// TestSQLiteWriter_AcquireHealLock_DifferentRepos tests locks on different repos are independent
+func TestSQLiteWriter_AcquireHealLock_DifferentRepos(t *testing.T) {
+	setupTestDetentHome(t)
+	tmpDir := t.TempDir()
+	writer, err := NewSQLiteWriter(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create writer: %v", err)
+	}
+	defer func() { _ = writer.Close() }()
+
+	repo1 := "/test/repo1"
+	repo2 := "/test/repo2"
+	timeout := 10 * time.Minute
+
+	// Acquire lock on repo1
+	holder1, err := writer.AcquireHealLock(repo1, timeout)
+	if err != nil {
+		t.Fatalf("AcquireHealLock(repo1) error = %v", err)
+	}
+	defer func() { _ = writer.ReleaseHealLock(repo1, holder1) }()
+
+	// Acquire lock on repo2 should also succeed
+	holder2, err := writer.AcquireHealLock(repo2, timeout)
+	if err != nil {
+		t.Fatalf("AcquireHealLock(repo2) error = %v", err)
+	}
+	defer func() { _ = writer.ReleaseHealLock(repo2, holder2) }()
+
+	// Both locks should be held
+	held1, _, _ := writer.IsHealLockHeld(repo1)
+	held2, _, _ := writer.IsHealLockHeld(repo2)
+	if !held1 || !held2 {
+		t.Error("Both repo locks should be held")
+	}
+}
+
+// errorContains checks if err wraps or contains target error
+func errorContains(err, target error) bool {
+	if err == nil {
+		return false
+	}
+	// Use errors.Is for proper error chain checking
+	return errors.Is(err, target)
 }
 

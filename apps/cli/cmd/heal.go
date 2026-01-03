@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/detent/cli/internal/persistence"
@@ -86,6 +87,19 @@ func runHeal(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("opening database: %w", err)
 	}
 	defer func() { _ = db.Close() }()
+
+	// Acquire exclusive heal lock to prevent concurrent heals on same repo
+	sentry.AddBreadcrumb("heal", "acquiring lock")
+	lockTimeout := time.Duration(cfg.TimeoutMins) * time.Minute
+	holderID, err := db.AcquireHealLock(repoCtx.Path, lockTimeout)
+	if err != nil {
+		if errors.Is(err, persistence.ErrHealLockHeld) {
+			return fmt.Errorf("cannot start heal: %w", err)
+		}
+		sentry.CaptureError(err)
+		return fmt.Errorf("acquiring heal lock: %w", err)
+	}
+	defer func() { _ = db.ReleaseHealLock(repoCtx.Path, holderID) }()
 
 	// Get global spend database for cross-repo budget tracking
 	spendDB, err := persistence.GetSpendDB()

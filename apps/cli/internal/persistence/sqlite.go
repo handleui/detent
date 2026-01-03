@@ -21,7 +21,7 @@ import (
 const (
 	batchSize = 500 // Batch size for error inserts
 
-	currentSchemaVersion = 17 // Current database schema version
+	currentSchemaVersion = 18 // Current database schema version
 
 	// healSelectColumns is the standard column list for heal queries (must match scanHealFromScanner order)
 	healSelectColumns = `heal_id, error_id, run_id, diff_content, diff_content_hash, file_path, file_hash,
@@ -34,6 +34,10 @@ const (
 // repoIDCache caches computed repository IDs to avoid repeated git subprocess calls.
 // Key: absolute repo root path, Value: computed repo ID string.
 var repoIDCache sync.Map
+
+// ErrHealLockHeld is returned when a heal lock cannot be acquired because
+// another process is already holding it.
+var ErrHealLockHeld = errors.New("heal lock is held by another process")
 
 func createDirIfNotExists(path string) error {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
@@ -521,6 +525,21 @@ func (w *SQLiteWriter) applyMigrations(fromVersion int) error {
 
 			-- Index for GC orphan error detection (status + last_seen_at filter)
 			CREATE INDEX IF NOT EXISTS idx_errors_status_last_seen ON errors(status, last_seen_at);
+			`,
+		},
+		{
+			version: 18,
+			name:    "add_heal_locks_table",
+			sql: `
+			-- Advisory lock table for preventing concurrent heal processes on the same repo
+			CREATE TABLE IF NOT EXISTS heal_locks (
+				repo_path TEXT PRIMARY KEY,
+				holder_id TEXT NOT NULL,
+				acquired_at INTEGER NOT NULL,
+				expires_at INTEGER NOT NULL,
+				pid INTEGER
+			);
+			CREATE INDEX IF NOT EXISTS idx_heal_locks_expires_at ON heal_locks(expires_at);
 			`,
 		},
 	}
@@ -1446,6 +1465,117 @@ func (w *SQLiteWriter) Close() error {
 // Path returns the absolute path to the SQLite database file
 func (w *SQLiteWriter) Path() string {
 	return w.path
+}
+
+// --- Heal Locks ---
+
+// AcquireHealLock attempts to acquire an exclusive heal lock for a repository.
+// Returns the holder ID on success, or ErrHealLockHeld if the lock is already held.
+// The lock automatically expires after the specified timeout for crash recovery.
+func (w *SQLiteWriter) AcquireHealLock(repoPath string, timeout time.Duration) (string, error) {
+	now := time.Now()
+	expiresAt := now.Add(timeout)
+
+	// Generate unique holder ID
+	holderID, err := util.GenerateUUID()
+	if err != nil {
+		return "", fmt.Errorf("failed to generate holder ID: %w", err)
+	}
+
+	// Get current process ID for debugging
+	pid := os.Getpid()
+
+	// Start a transaction to ensure atomicity
+	tx, err := w.db.Begin()
+	if err != nil {
+		return "", fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // No-op if committed
+
+	// First, clean up any expired locks
+	_, err = tx.Exec("DELETE FROM heal_locks WHERE expires_at < ?", now.Unix())
+	if err != nil {
+		return "", fmt.Errorf("failed to clean expired locks: %w", err)
+	}
+
+	// Try to insert the lock (will fail if lock exists due to PRIMARY KEY constraint)
+	_, err = tx.Exec(
+		"INSERT INTO heal_locks (repo_path, holder_id, acquired_at, expires_at, pid) VALUES (?, ?, ?, ?, ?)",
+		repoPath, holderID, now.Unix(), expiresAt.Unix(), pid,
+	)
+	if err != nil {
+		// Check if this is a constraint violation (lock already held)
+		if strings.Contains(err.Error(), "UNIQUE constraint failed") ||
+			strings.Contains(err.Error(), "PRIMARY KEY constraint failed") {
+			// Get info about who holds the lock
+			var existingHolder string
+			var existingPID sql.NullInt64
+			_ = tx.QueryRow(
+				"SELECT holder_id, pid FROM heal_locks WHERE repo_path = ?",
+				repoPath,
+			).Scan(&existingHolder, &existingPID)
+
+			pidInfo := ""
+			if existingPID.Valid {
+				pidInfo = fmt.Sprintf(" (pid: %d)", existingPID.Int64)
+			}
+			return "", fmt.Errorf("%w: held by %s%s", ErrHealLockHeld, existingHolder[:8], pidInfo)
+		}
+		return "", fmt.Errorf("failed to acquire lock: %w", err)
+	}
+
+	if err = tx.Commit(); err != nil {
+		return "", fmt.Errorf("failed to commit lock: %w", err)
+	}
+
+	return holderID, nil
+}
+
+// ReleaseHealLock releases a previously acquired heal lock.
+// Only the holder (matching holderID) can release the lock.
+// This operation is idempotent - releasing a non-existent lock is not an error.
+func (w *SQLiteWriter) ReleaseHealLock(repoPath, holderID string) error {
+	result, err := w.db.Exec(
+		"DELETE FROM heal_locks WHERE repo_path = ? AND holder_id = ?",
+		repoPath, holderID,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to release lock: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to check rows affected: %w", err)
+	}
+
+	// Log if lock was already released (not an error, but useful for debugging)
+	if rowsAffected == 0 {
+		// Lock was already released or expired - this is fine
+		return nil
+	}
+
+	return nil
+}
+
+// IsHealLockHeld checks if a valid (non-expired) heal lock exists for a repository.
+// Returns true if locked, along with the holder ID.
+func (w *SQLiteWriter) IsHealLockHeld(repoPath string) (bool, string, error) {
+	now := time.Now().Unix()
+
+	var holderID string
+	err := w.db.QueryRow(
+		"SELECT holder_id FROM heal_locks WHERE repo_path = ? AND expires_at > ?",
+		repoPath, now,
+	).Scan(&holderID)
+
+	if err == sql.ErrNoRows {
+		return false, "", nil
+	}
+	if err != nil {
+		return false, "", fmt.Errorf("failed to check lock status: %w", err)
+	}
+
+	return true, holderID, nil
 }
 
 // --- Garbage Collection ---
