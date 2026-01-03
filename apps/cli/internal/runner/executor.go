@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -48,6 +49,7 @@ func NewActExecutor(config *RunConfig, tmpDir string, worktreeInfo *git.Worktree
 
 // Execute runs the workflow using act and returns the raw result.
 // This is for non-TUI mode where output is streamed directly.
+// Includes retry logic for transient failures (Docker connection issues, image pull failures).
 func (e *ActExecutor) Execute(ctx context.Context) (*ExecuteResult, error) {
 	if err := git.ValidateWorktreeInitialized(e.worktreeInfo); err != nil {
 		return nil, err
@@ -56,7 +58,21 @@ func (e *ActExecutor) Execute(ctx context.Context) (*ExecuteResult, error) {
 	startTime := time.Now()
 	actConfig := e.buildActConfig(nil)
 
-	actResult, err := act.Run(ctx, actConfig)
+	actResult, err := act.RunWithRetry(ctx, actConfig,
+		act.WithMaxAttempts(3),
+		act.WithInitialDelay(1*time.Second),
+		act.WithMaxDelay(4*time.Second),
+		act.WithBackoffMultiplier(2.0),
+		act.WithOnRetry(func(attempt int, retryErr error, delay time.Duration) {
+			fmt.Fprintf(os.Stderr, "  Retrying after transient error (attempt %d/3): %v\n", attempt, retryErr)
+			fmt.Fprintf(os.Stderr, "  Waiting %v before retry...\n", delay.Round(time.Millisecond))
+		}),
+	)
+
+	if errors.Is(err, act.ErrMaxRetriesExceeded) {
+		return nil, fmt.Errorf("act execution failed after retries: %w", err)
+	}
+
 	if err != nil {
 		return nil, err
 	}
@@ -139,6 +155,7 @@ type tuiExecuteResult struct {
 // startActRunnerGoroutine starts a goroutine to run act and send results.
 // Error processing happens in this goroutine so errors can be sent to the TUI
 // via DoneMsg before the TUI exits.
+// Includes retry logic for transient failures (Docker connection issues, image pull failures).
 func (e *ActExecutor) startActRunnerGoroutine(
 	ctx context.Context,
 	actConfig *act.RunConfig,
@@ -158,7 +175,17 @@ func (e *ActExecutor) startActRunnerGoroutine(
 			}
 		}()
 
-		result, err := act.Run(ctx, actConfig)
+		result, err := act.RunWithRetry(ctx, actConfig,
+			act.WithMaxAttempts(3),
+			act.WithInitialDelay(1*time.Second),
+			act.WithMaxDelay(4*time.Second),
+			act.WithBackoffMultiplier(2.0),
+			act.WithOnRetry(func(attempt int, retryErr error, delay time.Duration) {
+				sendToTUI(program, tui.LogMsg(fmt.Sprintf("Retrying after transient error (attempt %d/3): %v", attempt, retryErr)))
+				sendToTUI(program, tui.LogMsg(fmt.Sprintf("Waiting %v before retry...", delay.Round(time.Millisecond))))
+			}),
+		)
+
 		if err != nil {
 			resultChan <- tuiExecuteResult{err: err}
 			sendToTUI(program, tui.ErrMsg(err))

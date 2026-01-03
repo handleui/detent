@@ -48,7 +48,7 @@ func TestRootCommandSubcommands(t *testing.T) {
 		"frankenstein",
 		"config",
 		"allow",
-		"prune",
+		"clean",
 	}
 
 	commands := rootCmd.Commands()

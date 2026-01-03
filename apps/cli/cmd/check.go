@@ -181,7 +181,7 @@ func printCompletionSummary(result *runner.RunResult) {
 	if success {
 		summary = fmt.Sprintf("  %s %s", icon, tui.SuccessStyle.Render(fmt.Sprintf("Check passed in %s", durationStr)))
 	} else {
-			var details string
+		var details string
 		if errorCount > 0 || warningCount > 0 {
 			var parts []string
 			if errorCount > 0 {
@@ -205,7 +205,6 @@ func printCompletionSummary(result *runner.RunResult) {
 
 	_, _ = fmt.Fprintln(os.Stderr, summary)
 }
-
 
 // printExitMessage prints the final exit message with timing.
 // Format: "✓ No errors found in 2.3s" or "✗ Found 12 errors in 2.3s"

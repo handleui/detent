@@ -128,8 +128,7 @@ CORE COMMANDS
   detent workflows:   Manage which workflow jobs run (enable/disable)
   detent allow:       Manage allowed shell commands for this repo
   detent config:      View and manage detent configuration
-  detent prune:       Clean up orphaned git worktrees
-  detent gc:          Clean up old run data based on retention policy
+  detent clean:       Clean up orphaned worktrees and old run data
 
   Pass --help to any command for specific help
   (e.g., detent check --help)
@@ -161,8 +160,7 @@ func init() {
 	rootCmd.AddCommand(frankensteinCmd)
 	rootCmd.AddCommand(configCmd)
 	rootCmd.AddCommand(allowCmd)
-	rootCmd.AddCommand(pruneCmd)
-	rootCmd.AddCommand(gcCmd)
+	rootCmd.AddCommand(cleanCmd)
 	rootCmd.AddCommand(workflowsCmd)
 
 	// Persistent flags available to all commands
