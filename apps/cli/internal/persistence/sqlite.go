@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -21,7 +22,7 @@ import (
 const (
 	batchSize = 500 // Batch size for error inserts
 
-	currentSchemaVersion = 18 // Current database schema version
+	currentSchemaVersion = 19 // Current database schema version
 
 	// healSelectColumns is the standard column list for heal queries (must match scanHealFromScanner order)
 	healSelectColumns = `heal_id, error_id, run_id, diff_content, diff_content_hash, file_path, file_hash,
@@ -29,6 +30,21 @@ const (
 		cache_read_tokens, cache_write_tokens, cost_usd,
 		status, created_at, applied_at, verified_at, verification_result,
 		attempt_number, parent_heal_id, failure_reason`
+
+	// suggestedFixSelectColumns is the standard column list for suggested_fixes queries (must match scanSuggestedFix order)
+	suggestedFixSelectColumns = `fix_id, assignment_id, agent_id, worktree_path,
+		file_changes_json, explanation, confidence,
+		verification_command, verification_exit_code, verification_output, verification_duration_ms,
+		errors_before, errors_after,
+		model_id, input_tokens, output_tokens, cost_usd,
+		status, created_at, applied_at, applied_by, applied_commit_sha,
+		rejected_at, rejected_by, rejection_reason`
+
+	// assignmentSelectColumns is the standard column list for assignments queries (must match scanAssignmentFromScanner order)
+	assignmentSelectColumns = `assignment_id, run_id, agent_id, worktree_path,
+		error_count, error_ids_json, status,
+		created_at, started_at, completed_at, expires_at,
+		fix_id, failure_reason`
 )
 
 // repoIDCache caches computed repository IDs to avoid repeated git subprocess calls.
@@ -540,6 +556,78 @@ func (w *SQLiteWriter) applyMigrations(fromVersion int) error {
 				pid INTEGER
 			);
 			CREATE INDEX IF NOT EXISTS idx_heal_locks_expires_at ON heal_locks(expires_at);
+			`,
+		},
+		{
+			version: 19,
+			name:    "add_suggested_fixes_and_assignments",
+			sql: `
+			-- Assignments: batch of errors assigned to a single agent
+			CREATE TABLE IF NOT EXISTS assignments (
+				assignment_id TEXT PRIMARY KEY,
+				run_id TEXT NOT NULL,
+				agent_id TEXT NOT NULL,
+				worktree_path TEXT,
+				error_count INTEGER NOT NULL,
+				error_ids_json TEXT NOT NULL,
+				status TEXT DEFAULT 'assigned',
+				created_at INTEGER NOT NULL,
+				started_at INTEGER,
+				completed_at INTEGER,
+				expires_at INTEGER NOT NULL,
+				fix_id TEXT,
+				failure_reason TEXT,
+				FOREIGN KEY (run_id) REFERENCES runs(run_id)
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_assignments_run_id ON assignments(run_id);
+			CREATE INDEX IF NOT EXISTS idx_assignments_status ON assignments(status);
+			CREATE INDEX IF NOT EXISTS idx_assignments_expires ON assignments(expires_at);
+
+			-- Suggested fixes: AI-proposed fixes for error batches
+			CREATE TABLE IF NOT EXISTS suggested_fixes (
+				fix_id TEXT PRIMARY KEY,
+				assignment_id TEXT NOT NULL,
+				agent_id TEXT,
+				worktree_path TEXT,
+				file_changes_json TEXT NOT NULL,
+				explanation TEXT,
+				confidence INTEGER DEFAULT 80,
+				verification_command TEXT NOT NULL,
+				verification_exit_code INTEGER NOT NULL,
+				verification_output TEXT,
+				verification_duration_ms INTEGER,
+				errors_before INTEGER NOT NULL,
+				errors_after INTEGER NOT NULL,
+				model_id TEXT,
+				input_tokens INTEGER DEFAULT 0,
+				output_tokens INTEGER DEFAULT 0,
+				cost_usd REAL DEFAULT 0,
+				status TEXT DEFAULT 'pending',
+				created_at INTEGER NOT NULL,
+				applied_at INTEGER,
+				applied_by TEXT,
+				applied_commit_sha TEXT,
+				rejected_at INTEGER,
+				rejected_by TEXT,
+				rejection_reason TEXT,
+				FOREIGN KEY (assignment_id) REFERENCES assignments(assignment_id)
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_suggested_fixes_assignment ON suggested_fixes(assignment_id);
+			CREATE INDEX IF NOT EXISTS idx_suggested_fixes_status ON suggested_fixes(status);
+			CREATE INDEX IF NOT EXISTS idx_suggested_fixes_created ON suggested_fixes(created_at DESC);
+
+			-- Junction table: which errors a fix addresses
+			CREATE TABLE IF NOT EXISTS fix_errors (
+				fix_id TEXT NOT NULL,
+				error_id TEXT NOT NULL,
+				PRIMARY KEY (fix_id, error_id),
+				FOREIGN KEY (fix_id) REFERENCES suggested_fixes(fix_id),
+				FOREIGN KEY (error_id) REFERENCES errors(error_id)
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_fix_errors_error_id ON fix_errors(error_id);
 			`,
 		},
 	}
@@ -1895,3 +1983,507 @@ func OpenDatabaseDirect(dbPath string) (*SQLiteWriter, error) {
 
 	return writer, nil
 }
+
+// ============================================================================
+// Assignment CRUD Methods
+// ============================================================================
+
+// CreateAssignment inserts a new assignment record.
+func (w *SQLiteWriter) CreateAssignment(a *Assignment) error {
+	// Validate input to prevent injection and ensure data integrity
+	if err := ValidateAssignment(a); err != nil {
+		return fmt.Errorf("invalid assignment: %w", err)
+	}
+
+	errorIDsJSON, err := json.Marshal(a.ErrorIDs)
+	if err != nil {
+		return fmt.Errorf("failed to marshal error IDs: %w", err)
+	}
+
+	query := `
+		INSERT INTO assignments (
+			assignment_id, run_id, agent_id, worktree_path,
+			error_count, error_ids_json, status,
+			created_at, expires_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`
+
+	_, err = w.db.Exec(query,
+		a.AssignmentID, a.RunID, a.AgentID, a.WorktreePath,
+		a.ErrorCount, string(errorIDsJSON), string(a.Status),
+		a.CreatedAt.Unix(), a.ExpiresAt.Unix(),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create assignment: %w", err)
+	}
+
+	return nil
+}
+
+// GetAssignment retrieves an assignment by its ID.
+func (w *SQLiteWriter) GetAssignment(assignmentID string) (*Assignment, error) {
+	// Validate input to prevent injection
+	if err := ValidateID(assignmentID, "assignment_id"); err != nil {
+		return nil, fmt.Errorf("invalid assignment_id: %w", err)
+	}
+
+	query := `SELECT ` + assignmentSelectColumns + ` FROM assignments WHERE assignment_id = ?`
+
+	a, err := scanAssignmentFromScanner(w.db.QueryRow(query, assignmentID))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get assignment: %w", err)
+	}
+
+	return a, nil
+}
+
+// UpdateAssignmentStatus updates the status of an assignment and optionally sets fix_id or failure_reason.
+func (w *SQLiteWriter) UpdateAssignmentStatus(assignmentID string, status AssignmentStatus, fixID, failureReason string) error {
+	// Validate inputs
+	if err := ValidateID(assignmentID, "assignment_id"); err != nil {
+		return fmt.Errorf("invalid assignment_id: %w", err)
+	}
+	if err := ValidateAssignmentStatus(status); err != nil {
+		return fmt.Errorf("invalid status: %w", err)
+	}
+	if err := ValidateOptionalID(fixID); err != nil {
+		return fmt.Errorf("invalid fix_id: %w", err)
+	}
+	if err := ValidateStringLength(failureReason, MaxReasonLength); err != nil {
+		return fmt.Errorf("failure_reason too long: %w", err)
+	}
+
+	now := time.Now().Unix()
+
+	var query string
+	var args []any
+
+	switch status {
+	case AssignmentStatusInProgress:
+		query = `UPDATE assignments SET status = ?, started_at = ? WHERE assignment_id = ?`
+		args = []any{string(status), now, assignmentID}
+	case AssignmentStatusCompleted:
+		query = `UPDATE assignments SET status = ?, completed_at = ?, fix_id = ? WHERE assignment_id = ?`
+		args = []any{string(status), now, fixID, assignmentID}
+	case AssignmentStatusFailed:
+		query = `UPDATE assignments SET status = ?, completed_at = ?, failure_reason = ? WHERE assignment_id = ?`
+		args = []any{string(status), now, failureReason, assignmentID}
+	default:
+		query = `UPDATE assignments SET status = ? WHERE assignment_id = ?`
+		args = []any{string(status), assignmentID}
+	}
+
+	result, err := w.db.Exec(query, args...)
+	if err != nil {
+		return fmt.Errorf("failed to update assignment status: %w", err)
+	}
+
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("assignment not found: %s", assignmentID)
+	}
+
+	return nil
+}
+
+// ListAssignmentsByRun retrieves all assignments for a given run.
+func (w *SQLiteWriter) ListAssignmentsByRun(runID string) ([]*Assignment, error) {
+	// Validate input to prevent injection
+	if err := ValidateID(runID, "run_id"); err != nil {
+		return nil, fmt.Errorf("invalid run_id: %w", err)
+	}
+
+	query := `SELECT ` + assignmentSelectColumns + ` FROM assignments WHERE run_id = ? ORDER BY created_at DESC`
+
+	rows, err := w.db.Query(query, runID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query assignments: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	assignments := make([]*Assignment, 0)
+	for rows.Next() {
+		a, scanErr := scanAssignmentFromScanner(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		assignments = append(assignments, a)
+	}
+
+	return assignments, rows.Err()
+}
+
+// assignmentScanner abstracts sql.Row and sql.Rows for shared Assignment scanning logic.
+type assignmentScanner interface {
+	Scan(dest ...any) error
+}
+
+// scanAssignmentFromScanner scans an assignment record from any scanner (sql.Row or sql.Rows).
+func scanAssignmentFromScanner(s assignmentScanner) (*Assignment, error) {
+	var a Assignment
+	var errorIDsJSON string
+	var status string
+	var createdAt, expiresAt int64
+	var startedAt, completedAt sql.NullInt64
+	var worktreePath, fixID, failureReason sql.NullString
+
+	err := s.Scan(
+		&a.AssignmentID, &a.RunID, &a.AgentID, &worktreePath,
+		&a.ErrorCount, &errorIDsJSON, &status,
+		&createdAt, &startedAt, &completedAt, &expiresAt,
+		&fixID, &failureReason,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to scan assignment: %w", err)
+	}
+
+	if err := json.Unmarshal([]byte(errorIDsJSON), &a.ErrorIDs); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal error IDs: %w", err)
+	}
+
+	a.Status = AssignmentStatus(status)
+	a.CreatedAt = time.Unix(createdAt, 0)
+	a.ExpiresAt = time.Unix(expiresAt, 0)
+
+	if worktreePath.Valid {
+		a.WorktreePath = worktreePath.String
+	}
+	if startedAt.Valid {
+		t := time.Unix(startedAt.Int64, 0)
+		a.StartedAt = &t
+	}
+	if completedAt.Valid {
+		t := time.Unix(completedAt.Int64, 0)
+		a.CompletedAt = &t
+	}
+	if fixID.Valid {
+		a.FixID = fixID.String
+	}
+	if failureReason.Valid {
+		a.FailureReason = failureReason.String
+	}
+
+	return &a, nil
+}
+
+// ============================================================================
+// SuggestedFix CRUD Methods
+// ============================================================================
+
+// StoreSuggestedFix inserts a new suggested fix record.
+// Uses content-addressed ID: same file changes = same fix_id.
+func (w *SQLiteWriter) StoreSuggestedFix(fix *SuggestedFix) error {
+	// Compute fix ID if not set
+	if fix.FixID == "" {
+		fix.FixID = ComputeFixID(fix.FileChanges)
+	}
+
+	// Require non-empty fix ID (implies non-empty file changes)
+	if fix.FixID == "" {
+		return errors.New("invalid suggested fix: file_changes cannot be empty")
+	}
+
+	// Validate input to prevent injection and ensure data integrity
+	if err := ValidateSuggestedFix(fix); err != nil {
+		return fmt.Errorf("invalid suggested fix: %w", err)
+	}
+
+	fileChangesJSON, err := json.Marshal(fix.FileChanges)
+	if err != nil {
+		return fmt.Errorf("failed to marshal file changes: %w", err)
+	}
+
+	// Use INSERT OR REPLACE for idempotent upserts (same fix proposed again = update)
+	query := `
+		INSERT OR REPLACE INTO suggested_fixes (
+			fix_id, assignment_id, agent_id, worktree_path,
+			file_changes_json, explanation, confidence,
+			verification_command, verification_exit_code, verification_output, verification_duration_ms,
+			errors_before, errors_after,
+			model_id, input_tokens, output_tokens, cost_usd,
+			status, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`
+
+	_, err = w.db.Exec(query,
+		fix.FixID, fix.AssignmentID, fix.AgentID, fix.WorktreePath,
+		string(fileChangesJSON), fix.Explanation, fix.Confidence,
+		fix.Verification.Command, fix.Verification.ExitCode, fix.Verification.Output, fix.Verification.DurationMs,
+		fix.Verification.ErrorsBefore, fix.Verification.ErrorsAfter,
+		fix.ModelID, fix.InputTokens, fix.OutputTokens, fix.CostUSD,
+		string(fix.Status), fix.CreatedAt.Unix(),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to store suggested fix: %w", err)
+	}
+
+	// Insert error associations
+	if len(fix.ErrorIDs) > 0 {
+		for _, errorID := range fix.ErrorIDs {
+			_, err = w.db.Exec(
+				`INSERT OR IGNORE INTO fix_errors (fix_id, error_id) VALUES (?, ?)`,
+				fix.FixID, errorID,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to associate fix with error: %w", err)
+			}
+		}
+	}
+
+	return nil
+}
+
+// GetSuggestedFix retrieves a suggested fix by its ID.
+func (w *SQLiteWriter) GetSuggestedFix(fixID string) (*SuggestedFix, error) {
+	// Validate input to prevent injection
+	if err := ValidateID(fixID, "fix_id"); err != nil {
+		return nil, fmt.Errorf("invalid fix_id: %w", err)
+	}
+
+	query := `SELECT ` + suggestedFixSelectColumns + ` FROM suggested_fixes WHERE fix_id = ?`
+
+	fix, err := scanSuggestedFixFromScanner(w.db.QueryRow(query, fixID))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	// Load associated error IDs
+	fix.ErrorIDs, err = w.getFixErrorIDs(fixID)
+	if err != nil {
+		return nil, err
+	}
+
+	return fix, nil
+}
+
+// ListPendingFixes retrieves all pending suggested fixes, optionally filtered by run.
+func (w *SQLiteWriter) ListPendingFixes(runID string) ([]*SuggestedFix, error) {
+	// Validate optional runID if provided
+	if runID != "" {
+		if err := ValidateID(runID, "run_id"); err != nil {
+			return nil, fmt.Errorf("invalid run_id: %w", err)
+		}
+	}
+
+	var query string
+	var args []any
+
+	if runID != "" {
+		query = `SELECT sf.fix_id, sf.assignment_id, sf.agent_id, sf.worktree_path,
+			sf.file_changes_json, sf.explanation, sf.confidence,
+			sf.verification_command, sf.verification_exit_code, sf.verification_output, sf.verification_duration_ms,
+			sf.errors_before, sf.errors_after,
+			sf.model_id, sf.input_tokens, sf.output_tokens, sf.cost_usd,
+			sf.status, sf.created_at, sf.applied_at, sf.applied_by, sf.applied_commit_sha,
+			sf.rejected_at, sf.rejected_by, sf.rejection_reason
+			FROM suggested_fixes sf
+			INNER JOIN assignments a ON sf.assignment_id = a.assignment_id
+			WHERE sf.status = ? AND a.run_id = ?
+			ORDER BY sf.created_at DESC`
+		args = []any{string(FixStatusPending), runID}
+	} else {
+		query = `SELECT ` + suggestedFixSelectColumns + `
+			FROM suggested_fixes
+			WHERE status = ?
+			ORDER BY created_at DESC`
+		args = []any{string(FixStatusPending)}
+	}
+
+	rows, err := w.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query pending fixes: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	fixes := make([]*SuggestedFix, 0)
+	for rows.Next() {
+		fix, scanErr := scanSuggestedFixFromScanner(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		fixes = append(fixes, fix)
+	}
+
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return nil, rowsErr
+	}
+
+	// Load associated error IDs after closing the rows cursor
+	// to avoid connection deadlock with single-connection pool
+	for _, fix := range fixes {
+		errorIDs, getErr := w.getFixErrorIDs(fix.FixID)
+		if getErr != nil {
+			return nil, getErr
+		}
+		fix.ErrorIDs = errorIDs
+	}
+
+	return fixes, nil
+}
+
+// UpdateFixStatus updates the status of a suggested fix.
+func (w *SQLiteWriter) UpdateFixStatus(fixID string, status FixStatus, appliedBy, commitSHA, rejectedBy, rejectionReason string) error {
+	// Validate inputs
+	if err := ValidateID(fixID, "fix_id"); err != nil {
+		return fmt.Errorf("invalid fix_id: %w", err)
+	}
+	if err := ValidateFixStatus(status); err != nil {
+		return fmt.Errorf("invalid status: %w", err)
+	}
+	if err := ValidateStringLength(appliedBy, MaxIDLength); err != nil {
+		return fmt.Errorf("applied_by too long: %w", err)
+	}
+	if err := ValidateStringLength(commitSHA, MaxIDLength); err != nil {
+		return fmt.Errorf("commit_sha too long: %w", err)
+	}
+	if err := ValidateStringLength(rejectedBy, MaxIDLength); err != nil {
+		return fmt.Errorf("rejected_by too long: %w", err)
+	}
+	if err := ValidateStringLength(rejectionReason, MaxReasonLength); err != nil {
+		return fmt.Errorf("rejection_reason too long: %w", err)
+	}
+
+	now := time.Now().Unix()
+
+	var query string
+	var args []any
+
+	switch status {
+	case FixStatusApplied:
+		query = `UPDATE suggested_fixes SET status = ?, applied_at = ?, applied_by = ?, applied_commit_sha = ? WHERE fix_id = ?`
+		args = []any{string(status), now, appliedBy, commitSHA, fixID}
+	case FixStatusRejected:
+		query = `UPDATE suggested_fixes SET status = ?, rejected_at = ?, rejected_by = ?, rejection_reason = ? WHERE fix_id = ?`
+		args = []any{string(status), now, rejectedBy, rejectionReason, fixID}
+	default:
+		query = `UPDATE suggested_fixes SET status = ? WHERE fix_id = ?`
+		args = []any{string(status), fixID}
+	}
+
+	result, err := w.db.Exec(query, args...)
+	if err != nil {
+		return fmt.Errorf("failed to update fix status: %w", err)
+	}
+
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("fix not found: %s", fixID)
+	}
+
+	return nil
+}
+
+// getFixErrorIDs retrieves the error IDs associated with a fix.
+func (w *SQLiteWriter) getFixErrorIDs(fixID string) ([]string, error) {
+	// Validate input (internal function but still validate for defense in depth)
+	if err := ValidateID(fixID, "fix_id"); err != nil {
+		return nil, fmt.Errorf("invalid fix_id: %w", err)
+	}
+
+	query := `SELECT error_id FROM fix_errors WHERE fix_id = ?`
+
+	rows, err := w.db.Query(query, fixID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query fix errors: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var errorIDs []string
+	for rows.Next() {
+		var errorID string
+		if err := rows.Scan(&errorID); err != nil {
+			return nil, fmt.Errorf("failed to scan error ID: %w", err)
+		}
+		errorIDs = append(errorIDs, errorID)
+	}
+
+	return errorIDs, rows.Err()
+}
+
+// suggestedFixScanner abstracts sql.Row and sql.Rows for shared SuggestedFix scanning logic.
+type suggestedFixScanner interface {
+	Scan(dest ...any) error
+}
+
+// scanSuggestedFixFromScanner scans a suggested fix record from any scanner (sql.Row or sql.Rows).
+func scanSuggestedFixFromScanner(s suggestedFixScanner) (*SuggestedFix, error) {
+	var fix SuggestedFix
+	var fileChangesJSON string
+	var status string
+	var createdAt int64
+	var appliedAt, rejectedAt sql.NullInt64
+	var agentID, worktreePath, explanation, modelID sql.NullString
+	var appliedBy, appliedCommitSHA, rejectedBy, rejectionReason sql.NullString
+	var verificationOutput sql.NullString
+	var verificationDurationMs sql.NullInt64
+
+	err := s.Scan(
+		&fix.FixID, &fix.AssignmentID, &agentID, &worktreePath,
+		&fileChangesJSON, &explanation, &fix.Confidence,
+		&fix.Verification.Command, &fix.Verification.ExitCode, &verificationOutput, &verificationDurationMs,
+		&fix.Verification.ErrorsBefore, &fix.Verification.ErrorsAfter,
+		&modelID, &fix.InputTokens, &fix.OutputTokens, &fix.CostUSD,
+		&status, &createdAt, &appliedAt, &appliedBy, &appliedCommitSHA,
+		&rejectedAt, &rejectedBy, &rejectionReason,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to scan suggested fix: %w", err)
+	}
+
+	// Parse JSON
+	if err := json.Unmarshal([]byte(fileChangesJSON), &fix.FileChanges); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal file changes: %w", err)
+	}
+
+	// Convert types
+	fix.Status = FixStatus(status)
+	fix.CreatedAt = time.Unix(createdAt, 0)
+
+	if agentID.Valid {
+		fix.AgentID = agentID.String
+	}
+	if worktreePath.Valid {
+		fix.WorktreePath = worktreePath.String
+	}
+	if explanation.Valid {
+		fix.Explanation = explanation.String
+	}
+	if modelID.Valid {
+		fix.ModelID = modelID.String
+	}
+	if verificationOutput.Valid {
+		fix.Verification.Output = verificationOutput.String
+	}
+	if verificationDurationMs.Valid {
+		fix.Verification.DurationMs = int(verificationDurationMs.Int64)
+	}
+	if appliedAt.Valid {
+		t := time.Unix(appliedAt.Int64, 0)
+		fix.AppliedAt = &t
+	}
+	if appliedBy.Valid {
+		fix.AppliedBy = appliedBy.String
+	}
+	if appliedCommitSHA.Valid {
+		fix.AppliedCommitSHA = appliedCommitSHA.String
+	}
+	if rejectedAt.Valid {
+		t := time.Unix(rejectedAt.Int64, 0)
+		fix.RejectedAt = &t
+	}
+	if rejectedBy.Valid {
+		fix.RejectedBy = rejectedBy.String
+	}
+	if rejectionReason.Valid {
+		fix.RejectionReason = rejectionReason.String
+	}
+
+	return &fix, nil
+}
+

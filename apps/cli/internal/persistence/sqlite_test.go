@@ -1694,3 +1694,800 @@ func TestSQLiteWriter_AcquireHealLock_DifferentRepos(t *testing.T) {
 		t.Error("Both repo locks should be held")
 	}
 }
+
+// ============================================================================
+// Assignment CRUD Tests
+// ============================================================================
+
+func TestSQLiteWriter_CreateAndGetAssignment(t *testing.T) {
+	setupTestDetentHome(t)
+	tmpDir := t.TempDir()
+	writer, err := NewSQLiteWriter(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create writer: %v", err)
+	}
+	defer func() { _ = writer.Close() }()
+
+	// First, create a run for the foreign key
+	runID := "test-run-123"
+	err = writer.RecordRun(runID, "test-workflow", "abc123", "tree123", "local")
+	if err != nil {
+		t.Fatalf("RecordRun() error = %v", err)
+	}
+
+	now := time.Now().Truncate(time.Second)
+	expires := now.Add(10 * time.Minute)
+
+	assignment := &Assignment{
+		AssignmentID: "assign-001",
+		RunID:        runID,
+		AgentID:      "agent-local-1",
+		WorktreePath: "/tmp/worktree-1",
+		ErrorCount:   3,
+		ErrorIDs:     []string{"err-1", "err-2", "err-3"},
+		Status:       AssignmentStatusAssigned,
+		CreatedAt:    now,
+		ExpiresAt:    expires,
+	}
+
+	// Create assignment
+	err = writer.CreateAssignment(assignment)
+	if err != nil {
+		t.Fatalf("CreateAssignment() error = %v", err)
+	}
+
+	// Get assignment back
+	got, err := writer.GetAssignment("assign-001")
+	if err != nil {
+		t.Fatalf("GetAssignment() error = %v", err)
+	}
+	if got == nil {
+		t.Fatal("GetAssignment() returned nil")
+	}
+
+	// Verify fields
+	if got.AssignmentID != "assign-001" {
+		t.Errorf("AssignmentID = %v, want assign-001", got.AssignmentID)
+	}
+	if got.RunID != runID {
+		t.Errorf("RunID = %v, want %v", got.RunID, runID)
+	}
+	if got.AgentID != "agent-local-1" {
+		t.Errorf("AgentID = %v, want agent-local-1", got.AgentID)
+	}
+	if got.WorktreePath != "/tmp/worktree-1" {
+		t.Errorf("WorktreePath = %v, want /tmp/worktree-1", got.WorktreePath)
+	}
+	if got.ErrorCount != 3 {
+		t.Errorf("ErrorCount = %v, want 3", got.ErrorCount)
+	}
+	if len(got.ErrorIDs) != 3 {
+		t.Errorf("ErrorIDs length = %v, want 3", len(got.ErrorIDs))
+	}
+	if got.Status != AssignmentStatusAssigned {
+		t.Errorf("Status = %v, want assigned", got.Status)
+	}
+}
+
+func TestSQLiteWriter_UpdateAssignmentStatus(t *testing.T) {
+	setupTestDetentHome(t)
+	tmpDir := t.TempDir()
+	writer, err := NewSQLiteWriter(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create writer: %v", err)
+	}
+	defer func() { _ = writer.Close() }()
+
+	// Create run and assignment
+	runID := "test-run-456"
+	_ = writer.RecordRun(runID, "test-workflow", "abc123", "tree123", "local")
+
+	assignment := &Assignment{
+		AssignmentID: "assign-002",
+		RunID:        runID,
+		AgentID:      "agent-1",
+		ErrorCount:   1,
+		ErrorIDs:     []string{"err-1"},
+		Status:       AssignmentStatusAssigned,
+		CreatedAt:    time.Now(),
+		ExpiresAt:    time.Now().Add(10 * time.Minute),
+	}
+	_ = writer.CreateAssignment(assignment)
+
+	// Update to in_progress
+	err = writer.UpdateAssignmentStatus("assign-002", AssignmentStatusInProgress, "", "")
+	if err != nil {
+		t.Fatalf("UpdateAssignmentStatus(in_progress) error = %v", err)
+	}
+
+	got, _ := writer.GetAssignment("assign-002")
+	if got.Status != AssignmentStatusInProgress {
+		t.Errorf("Status = %v, want in_progress", got.Status)
+	}
+	if got.StartedAt == nil {
+		t.Error("StartedAt should be set")
+	}
+
+	// Update to completed with fix_id
+	err = writer.UpdateAssignmentStatus("assign-002", AssignmentStatusCompleted, "fix-abc", "")
+	if err != nil {
+		t.Fatalf("UpdateAssignmentStatus(completed) error = %v", err)
+	}
+
+	got, _ = writer.GetAssignment("assign-002")
+	if got.Status != AssignmentStatusCompleted {
+		t.Errorf("Status = %v, want completed", got.Status)
+	}
+	if got.FixID != "fix-abc" {
+		t.Errorf("FixID = %v, want fix-abc", got.FixID)
+	}
+	if got.CompletedAt == nil {
+		t.Error("CompletedAt should be set")
+	}
+}
+
+func TestSQLiteWriter_ListAssignmentsByRun(t *testing.T) {
+	setupTestDetentHome(t)
+	tmpDir := t.TempDir()
+	writer, err := NewSQLiteWriter(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create writer: %v", err)
+	}
+	defer func() { _ = writer.Close() }()
+
+	runID := "test-run-789"
+	_ = writer.RecordRun(runID, "test-workflow", "abc123", "tree123", "local")
+
+	// Create multiple assignments
+	for i := 1; i <= 3; i++ {
+		a := &Assignment{
+			AssignmentID: fmt.Sprintf("assign-%d", i),
+			RunID:        runID,
+			AgentID:      fmt.Sprintf("agent-%d", i),
+			ErrorCount:   i,
+			ErrorIDs:     []string{fmt.Sprintf("err-%d", i)},
+			Status:       AssignmentStatusAssigned,
+			CreatedAt:    time.Now().Add(time.Duration(i) * time.Minute),
+			ExpiresAt:    time.Now().Add(30 * time.Minute),
+		}
+		_ = writer.CreateAssignment(a)
+	}
+
+	// List assignments
+	assignments, err := writer.ListAssignmentsByRun(runID)
+	if err != nil {
+		t.Fatalf("ListAssignmentsByRun() error = %v", err)
+	}
+
+	if len(assignments) != 3 {
+		t.Errorf("ListAssignmentsByRun() returned %d assignments, want 3", len(assignments))
+	}
+}
+
+// ============================================================================
+// SuggestedFix CRUD Tests
+// ============================================================================
+
+func TestSQLiteWriter_StoreSuggestedFix(t *testing.T) {
+	setupTestDetentHome(t)
+	tmpDir := t.TempDir()
+	writer, err := NewSQLiteWriter(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create writer: %v", err)
+	}
+	defer func() { _ = writer.Close() }()
+
+	// Create run and assignment first (foreign keys)
+	runID := "test-run-fix"
+	_ = writer.RecordRun(runID, "test-workflow", "abc123", "tree123", "local")
+
+	assignment := &Assignment{
+		AssignmentID: "assign-fix-1",
+		RunID:        runID,
+		AgentID:      "agent-1",
+		ErrorCount:   1,
+		ErrorIDs:     []string{"err-1"},
+		Status:       AssignmentStatusAssigned,
+		CreatedAt:    time.Now(),
+		ExpiresAt:    time.Now().Add(10 * time.Minute),
+	}
+	_ = writer.CreateAssignment(assignment)
+
+	fix := &SuggestedFix{
+		AssignmentID: "assign-fix-1",
+		AgentID:      "agent-1",
+		WorktreePath: "/tmp/worktree",
+		FileChanges: map[string]FileChange{
+			"src/main.go": {
+				BeforeContent: "func main() {}",
+				AfterContent:  "func main() { fmt.Println(\"Hello\") }",
+				UnifiedDiff:   "--- a/src/main.go\n+++ b/src/main.go\n@@ -1 +1 @@\n-func main() {}\n+func main() { fmt.Println(\"Hello\") }",
+				LinesAdded:    1,
+				LinesRemoved:  1,
+			},
+		},
+		Explanation: "Added print statement",
+		Confidence:  90,
+		Verification: VerificationRecord{
+			Command:      "go test ./...",
+			ExitCode:     0,
+			Output:       "PASS",
+			DurationMs:   1500,
+			ErrorsBefore: 1,
+			ErrorsAfter:  0,
+		},
+		ModelID:      "claude-sonnet-4-20250514",
+		InputTokens:  1000,
+		OutputTokens: 200,
+		CostUSD:      0.05,
+		Status:       FixStatusPending,
+		CreatedAt:    time.Now(),
+		// Note: ErrorIDs not set - fix_errors junction requires actual errors in DB
+	}
+
+	// Store fix
+	err = writer.StoreSuggestedFix(fix)
+	if err != nil {
+		t.Fatalf("StoreSuggestedFix() error = %v", err)
+	}
+
+	// Verify fix ID was computed
+	if fix.FixID == "" {
+		t.Error("FixID should have been computed")
+	}
+
+	// Get fix back
+	got, err := writer.GetSuggestedFix(fix.FixID)
+	if err != nil {
+		t.Fatalf("GetSuggestedFix() error = %v", err)
+	}
+	if got == nil {
+		t.Fatal("GetSuggestedFix() returned nil")
+	}
+
+	// Verify fields
+	if got.AssignmentID != "assign-fix-1" {
+		t.Errorf("AssignmentID = %v, want assign-fix-1", got.AssignmentID)
+	}
+	if got.Confidence != 90 {
+		t.Errorf("Confidence = %v, want 90", got.Confidence)
+	}
+	if got.Verification.Command != "go test ./..." {
+		t.Errorf("Verification.Command = %v, want 'go test ./...'", got.Verification.Command)
+	}
+	if got.Verification.ExitCode != 0 {
+		t.Errorf("Verification.ExitCode = %v, want 0", got.Verification.ExitCode)
+	}
+	if len(got.FileChanges) != 1 {
+		t.Errorf("FileChanges length = %v, want 1", len(got.FileChanges))
+	}
+}
+
+func TestSQLiteWriter_ListPendingFixes(t *testing.T) {
+	setupTestDetentHome(t)
+	tmpDir := t.TempDir()
+	writer, err := NewSQLiteWriter(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create writer: %v", err)
+	}
+	defer func() { _ = writer.Close() }()
+
+	// Setup
+	runID := "test-run-pending"
+	_ = writer.RecordRun(runID, "test-workflow", "abc123", "tree123", "local")
+
+	for i := 1; i <= 3; i++ {
+		a := &Assignment{
+			AssignmentID: fmt.Sprintf("assign-pend-%d", i),
+			RunID:        runID,
+			AgentID:      fmt.Sprintf("agent-%d", i),
+			ErrorCount:   1,
+			ErrorIDs:     []string{fmt.Sprintf("err-%d", i)},
+			Status:       AssignmentStatusAssigned,
+			CreatedAt:    time.Now(),
+			ExpiresAt:    time.Now().Add(10 * time.Minute),
+		}
+		_ = writer.CreateAssignment(a)
+
+		fix := &SuggestedFix{
+			FixID:        fmt.Sprintf("fix-%d", i),
+			AssignmentID: fmt.Sprintf("assign-pend-%d", i),
+			FileChanges: map[string]FileChange{
+				fmt.Sprintf("file%d.go", i): {AfterContent: "content"},
+			},
+			Verification: VerificationRecord{Command: "test", ExitCode: 0},
+			Confidence:   80,
+			Status:       FixStatusPending,
+			CreatedAt:    time.Now().Add(time.Duration(i) * time.Minute),
+		}
+		_ = writer.StoreSuggestedFix(fix)
+	}
+
+	// List all pending
+	fixes, err := writer.ListPendingFixes("")
+	if err != nil {
+		t.Fatalf("ListPendingFixes() error = %v", err)
+	}
+
+	if len(fixes) != 3 {
+		t.Errorf("ListPendingFixes() returned %d fixes, want 3", len(fixes))
+	}
+
+	// List by run
+	fixes, err = writer.ListPendingFixes(runID)
+	if err != nil {
+		t.Fatalf("ListPendingFixes(runID) error = %v", err)
+	}
+
+	if len(fixes) != 3 {
+		t.Errorf("ListPendingFixes(runID) returned %d fixes, want 3", len(fixes))
+	}
+}
+
+func TestSQLiteWriter_UpdateFixStatus(t *testing.T) {
+	setupTestDetentHome(t)
+	tmpDir := t.TempDir()
+	writer, err := NewSQLiteWriter(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create writer: %v", err)
+	}
+	defer func() { _ = writer.Close() }()
+
+	// Setup
+	runID := "test-run-status"
+	_ = writer.RecordRun(runID, "test-workflow", "abc123", "tree123", "local")
+
+	a := &Assignment{
+		AssignmentID: "assign-status-1",
+		RunID:        runID,
+		AgentID:      "agent-1",
+		ErrorCount:   1,
+		ErrorIDs:     []string{"err-1"},
+		Status:       AssignmentStatusAssigned,
+		CreatedAt:    time.Now(),
+		ExpiresAt:    time.Now().Add(10 * time.Minute),
+	}
+	_ = writer.CreateAssignment(a)
+
+	fix := &SuggestedFix{
+		FixID:        "fix-status-test",
+		AssignmentID: "assign-status-1",
+		FileChanges: map[string]FileChange{
+			"main.go": {AfterContent: "fixed"},
+		},
+		Verification: VerificationRecord{Command: "test", ExitCode: 0},
+		Confidence:   80,
+		Status:       FixStatusPending,
+		CreatedAt:    time.Now(),
+	}
+	if err = writer.StoreSuggestedFix(fix); err != nil {
+		t.Fatalf("StoreSuggestedFix() error = %v", err)
+	}
+
+	// Update to applied
+	err = writer.UpdateFixStatus("fix-status-test", FixStatusApplied, "user@example.com", "abc123sha", "", "")
+	if err != nil {
+		t.Fatalf("UpdateFixStatus(applied) error = %v", err)
+	}
+
+	got, _ := writer.GetSuggestedFix("fix-status-test")
+	if got.Status != FixStatusApplied {
+		t.Errorf("Status = %v, want applied", got.Status)
+	}
+	if got.AppliedBy != "user@example.com" {
+		t.Errorf("AppliedBy = %v, want user@example.com", got.AppliedBy)
+	}
+	if got.AppliedCommitSHA != "abc123sha" {
+		t.Errorf("AppliedCommitSHA = %v, want abc123sha", got.AppliedCommitSHA)
+	}
+	if got.AppliedAt == nil {
+		t.Error("AppliedAt should be set")
+	}
+}
+
+func TestComputeFixID_Deterministic(t *testing.T) {
+	changes1 := map[string]FileChange{
+		"file1.go": {AfterContent: "content1"},
+		"file2.go": {AfterContent: "content2"},
+	}
+	changes2 := map[string]FileChange{
+		"file2.go": {AfterContent: "content2"},
+		"file1.go": {AfterContent: "content1"},
+	}
+
+	id1 := ComputeFixID(changes1)
+	id2 := ComputeFixID(changes2)
+
+	if id1 != id2 {
+		t.Errorf("ComputeFixID not deterministic: %s != %s", id1, id2)
+	}
+
+	// Different content should produce different ID
+	changes3 := map[string]FileChange{
+		"file1.go": {AfterContent: "different"},
+		"file2.go": {AfterContent: "content2"},
+	}
+	id3 := ComputeFixID(changes3)
+
+	if id1 == id3 {
+		t.Error("Different changes should produce different IDs")
+	}
+}
+
+func TestComputeFixID_EmptyAndNilMaps(t *testing.T) {
+	// Empty map should return empty string (not a hash of empty content)
+	emptyID := ComputeFixID(map[string]FileChange{})
+	if emptyID != "" {
+		t.Errorf("ComputeFixID(empty map) = %q, want empty string", emptyID)
+	}
+
+	// Nil map should return empty string
+	nilID := ComputeFixID(nil)
+	if nilID != "" {
+		t.Errorf("ComputeFixID(nil) = %q, want empty string", nilID)
+	}
+}
+
+func TestSQLiteWriter_GetAssignment_NotFound(t *testing.T) {
+	setupTestDetentHome(t)
+	tmpDir := t.TempDir()
+	writer, err := NewSQLiteWriter(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create writer: %v", err)
+	}
+	defer func() { _ = writer.Close() }()
+
+	// Get non-existent assignment should return nil, nil (not an error)
+	got, err := writer.GetAssignment("does-not-exist")
+	if err != nil {
+		t.Errorf("GetAssignment(non-existent) should not error, got: %v", err)
+	}
+	if got != nil {
+		t.Error("GetAssignment(non-existent) should return nil")
+	}
+}
+
+func TestSQLiteWriter_GetSuggestedFix_NotFound(t *testing.T) {
+	setupTestDetentHome(t)
+	tmpDir := t.TempDir()
+	writer, err := NewSQLiteWriter(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create writer: %v", err)
+	}
+	defer func() { _ = writer.Close() }()
+
+	// Get non-existent fix should return nil, nil (not an error)
+	got, err := writer.GetSuggestedFix("does-not-exist")
+	if err != nil {
+		t.Errorf("GetSuggestedFix(non-existent) should not error, got: %v", err)
+	}
+	if got != nil {
+		t.Error("GetSuggestedFix(non-existent) should return nil")
+	}
+}
+
+func TestSQLiteWriter_UpdateAssignmentStatus_NotFound(t *testing.T) {
+	setupTestDetentHome(t)
+	tmpDir := t.TempDir()
+	writer, err := NewSQLiteWriter(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create writer: %v", err)
+	}
+	defer func() { _ = writer.Close() }()
+
+	// Update non-existent assignment should return an error
+	err = writer.UpdateAssignmentStatus("does-not-exist", AssignmentStatusCompleted, "", "")
+	if err == nil {
+		t.Error("UpdateAssignmentStatus(non-existent) should return an error")
+	}
+}
+
+func TestSQLiteWriter_UpdateFixStatus_NotFound(t *testing.T) {
+	setupTestDetentHome(t)
+	tmpDir := t.TempDir()
+	writer, err := NewSQLiteWriter(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create writer: %v", err)
+	}
+	defer func() { _ = writer.Close() }()
+
+	// Update non-existent fix should return an error
+	err = writer.UpdateFixStatus("does-not-exist", FixStatusApplied, "user", "sha", "", "")
+	if err == nil {
+		t.Error("UpdateFixStatus(non-existent) should return an error")
+	}
+}
+
+func TestSQLiteWriter_UpdateFixStatus_Rejected(t *testing.T) {
+	setupTestDetentHome(t)
+	tmpDir := t.TempDir()
+	writer, err := NewSQLiteWriter(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create writer: %v", err)
+	}
+	defer func() { _ = writer.Close() }()
+
+	// Setup
+	runID := "test-run-rejected"
+	_ = writer.RecordRun(runID, "test-workflow", "abc123", "tree123", "local")
+
+	a := &Assignment{
+		AssignmentID: "assign-rejected-1",
+		RunID:        runID,
+		AgentID:      "agent-1",
+		ErrorCount:   1,
+		ErrorIDs:     []string{"err-1"},
+		Status:       AssignmentStatusAssigned,
+		CreatedAt:    time.Now(),
+		ExpiresAt:    time.Now().Add(10 * time.Minute),
+	}
+	_ = writer.CreateAssignment(a)
+
+	fix := &SuggestedFix{
+		FixID:        "fix-rejected-test",
+		AssignmentID: "assign-rejected-1",
+		FileChanges: map[string]FileChange{
+			"main.go": {AfterContent: "fixed"},
+		},
+		Verification: VerificationRecord{Command: "test", ExitCode: 0},
+		Confidence:   80,
+		Status:       FixStatusPending,
+		CreatedAt:    time.Now(),
+	}
+	if err = writer.StoreSuggestedFix(fix); err != nil {
+		t.Fatalf("StoreSuggestedFix() error = %v", err)
+	}
+
+	// Update to rejected
+	err = writer.UpdateFixStatus("fix-rejected-test", FixStatusRejected, "", "", "reviewer@example.com", "Introduces regression")
+	if err != nil {
+		t.Fatalf("UpdateFixStatus(rejected) error = %v", err)
+	}
+
+	got, _ := writer.GetSuggestedFix("fix-rejected-test")
+	if got.Status != FixStatusRejected {
+		t.Errorf("Status = %v, want rejected", got.Status)
+	}
+	if got.RejectedBy != "reviewer@example.com" {
+		t.Errorf("RejectedBy = %v, want reviewer@example.com", got.RejectedBy)
+	}
+	if got.RejectionReason != "Introduces regression" {
+		t.Errorf("RejectionReason = %v, want 'Introduces regression'", got.RejectionReason)
+	}
+	if got.RejectedAt == nil {
+		t.Error("RejectedAt should be set")
+	}
+}
+
+func TestSQLiteWriter_AssignmentFailed(t *testing.T) {
+	setupTestDetentHome(t)
+	tmpDir := t.TempDir()
+	writer, err := NewSQLiteWriter(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create writer: %v", err)
+	}
+	defer func() { _ = writer.Close() }()
+
+	// Create run and assignment
+	runID := "test-run-failed"
+	_ = writer.RecordRun(runID, "test-workflow", "abc123", "tree123", "local")
+
+	assignment := &Assignment{
+		AssignmentID: "assign-fail-1",
+		RunID:        runID,
+		AgentID:      "agent-1",
+		ErrorCount:   1,
+		ErrorIDs:     []string{"err-1"},
+		Status:       AssignmentStatusAssigned,
+		CreatedAt:    time.Now(),
+		ExpiresAt:    time.Now().Add(10 * time.Minute),
+	}
+	_ = writer.CreateAssignment(assignment)
+
+	// Update to failed with failure reason
+	err = writer.UpdateAssignmentStatus("assign-fail-1", AssignmentStatusFailed, "", "Agent timeout")
+	if err != nil {
+		t.Fatalf("UpdateAssignmentStatus(failed) error = %v", err)
+	}
+
+	got, _ := writer.GetAssignment("assign-fail-1")
+	if got.Status != AssignmentStatusFailed {
+		t.Errorf("Status = %v, want failed", got.Status)
+	}
+	if got.FailureReason != "Agent timeout" {
+		t.Errorf("FailureReason = %v, want 'Agent timeout'", got.FailureReason)
+	}
+	if got.CompletedAt == nil {
+		t.Error("CompletedAt should be set for failed status")
+	}
+}
+
+func TestSQLiteWriter_StoreSuggestedFix_WithErrorIDs(t *testing.T) {
+	setupTestDetentHome(t)
+	tmpDir := t.TempDir()
+	writer, err := NewSQLiteWriter(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create writer: %v", err)
+	}
+	defer func() { _ = writer.Close() }()
+
+	// Create run
+	runID := "test-run-errors"
+	_ = writer.RecordRun(runID, "test-workflow", "abc123", "tree123", "local")
+
+	// Create actual error records first (required for FK constraint on fix_errors)
+	finding1 := &FindingRecord{
+		RunID:    runID,
+		FilePath: "main.go",
+		Message:  "Error 1 for fix test",
+		Line:     10,
+		Column:   5,
+		Severity: "error",
+		Category: "type-check",
+		Source:   "go",
+	}
+	finding2 := &FindingRecord{
+		RunID:    runID,
+		FilePath: "main.go",
+		Message:  "Error 2 for fix test",
+		Line:     20,
+		Column:   10,
+		Severity: "error",
+		Category: "type-check",
+		Source:   "go",
+	}
+	_ = writer.RecordError(finding1)
+	_ = writer.RecordError(finding2)
+	_ = writer.Flush()
+
+	// Get the actual error IDs from the database
+	errors, err := writer.GetErrorsByRunID(runID)
+	if err != nil {
+		t.Fatalf("GetErrorsByRunID() error = %v", err)
+	}
+	if len(errors) < 2 {
+		t.Fatalf("Expected at least 2 errors, got %d", len(errors))
+	}
+
+	errorIDs := []string{errors[0].ErrorID, errors[1].ErrorID}
+
+	// Create assignment with actual error IDs
+	a := &Assignment{
+		AssignmentID: "assign-errors-1",
+		RunID:        runID,
+		AgentID:      "agent-1",
+		ErrorCount:   2,
+		ErrorIDs:     errorIDs,
+		Status:       AssignmentStatusAssigned,
+		CreatedAt:    time.Now(),
+		ExpiresAt:    time.Now().Add(10 * time.Minute),
+	}
+	_ = writer.CreateAssignment(a)
+
+	fix := &SuggestedFix{
+		FixID:        "fix-with-errors",
+		AssignmentID: "assign-errors-1",
+		FileChanges: map[string]FileChange{
+			"main.go": {AfterContent: "fixed"},
+		},
+		Verification: VerificationRecord{Command: "test", ExitCode: 0},
+		Confidence:   80,
+		Status:       FixStatusPending,
+		CreatedAt:    time.Now(),
+		ErrorIDs:     errorIDs,
+	}
+	err = writer.StoreSuggestedFix(fix)
+	if err != nil {
+		t.Fatalf("StoreSuggestedFix() error = %v", err)
+	}
+
+	// Retrieve and verify error IDs are persisted
+	got, err := writer.GetSuggestedFix("fix-with-errors")
+	if err != nil {
+		t.Fatalf("GetSuggestedFix() error = %v", err)
+	}
+	if len(got.ErrorIDs) != 2 {
+		t.Errorf("ErrorIDs length = %d, want 2", len(got.ErrorIDs))
+	}
+}
+
+func TestSQLiteWriter_StoreSuggestedFix_EmptyFileChanges(t *testing.T) {
+	setupTestDetentHome(t)
+	tmpDir := t.TempDir()
+	writer, err := NewSQLiteWriter(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create writer: %v", err)
+	}
+	defer func() { _ = writer.Close() }()
+
+	// Create run and assignment
+	runID := "test-run-empty-changes"
+	_ = writer.RecordRun(runID, "test-workflow", "abc123", "tree123", "local")
+
+	a := &Assignment{
+		AssignmentID: "assign-empty-changes",
+		RunID:        runID,
+		AgentID:      "agent-1",
+		ErrorCount:   1,
+		ErrorIDs:     []string{},
+		Status:       AssignmentStatusAssigned,
+		CreatedAt:    time.Now(),
+		ExpiresAt:    time.Now().Add(10 * time.Minute),
+	}
+	_ = writer.CreateAssignment(a)
+
+	// Try to store fix with empty file changes - should fail
+	fix := &SuggestedFix{
+		AssignmentID: "assign-empty-changes",
+		FileChanges:  map[string]FileChange{},
+		Verification: VerificationRecord{Command: "test", ExitCode: 0},
+		Confidence:   80,
+		Status:       FixStatusPending,
+		CreatedAt:    time.Now(),
+	}
+	err = writer.StoreSuggestedFix(fix)
+	if err == nil {
+		t.Error("StoreSuggestedFix() should fail with empty file changes")
+	}
+
+	// Try with nil file changes too
+	fix2 := &SuggestedFix{
+		AssignmentID: "assign-empty-changes",
+		FileChanges:  nil,
+		Verification: VerificationRecord{Command: "test", ExitCode: 0},
+		Confidence:   80,
+		Status:       FixStatusPending,
+		CreatedAt:    time.Now(),
+	}
+	err = writer.StoreSuggestedFix(fix2)
+	if err == nil {
+		t.Error("StoreSuggestedFix() should fail with nil file changes")
+	}
+}
+
+func TestSQLiteWriter_ListAssignmentsByRun_Empty(t *testing.T) {
+	setupTestDetentHome(t)
+	tmpDir := t.TempDir()
+	writer, err := NewSQLiteWriter(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create writer: %v", err)
+	}
+	defer func() { _ = writer.Close() }()
+
+	runID := "test-run-empty"
+	_ = writer.RecordRun(runID, "test-workflow", "abc123", "tree123", "local")
+
+	// List assignments for run with no assignments
+	assignments, err := writer.ListAssignmentsByRun(runID)
+	if err != nil {
+		t.Fatalf("ListAssignmentsByRun() error = %v", err)
+	}
+	if assignments == nil {
+		t.Error("ListAssignmentsByRun() should return empty slice, not nil")
+	}
+	if len(assignments) != 0 {
+		t.Errorf("ListAssignmentsByRun() returned %d, want 0", len(assignments))
+	}
+}
+
+func TestSQLiteWriter_ListPendingFixes_Empty(t *testing.T) {
+	setupTestDetentHome(t)
+	tmpDir := t.TempDir()
+	writer, err := NewSQLiteWriter(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create writer: %v", err)
+	}
+	defer func() { _ = writer.Close() }()
+
+	// List pending fixes when none exist
+	fixes, err := writer.ListPendingFixes("")
+	if err != nil {
+		t.Fatalf("ListPendingFixes() error = %v", err)
+	}
+	if fixes == nil {
+		t.Error("ListPendingFixes() should return empty slice, not nil")
+	}
+	if len(fixes) != 0 {
+		t.Errorf("ListPendingFixes() returned %d, want 0", len(fixes))
+	}
+}
