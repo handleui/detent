@@ -21,7 +21,7 @@ import (
 const (
 	batchSize = 500 // Batch size for error inserts
 
-	currentSchemaVersion = 16 // Current database schema version
+	currentSchemaVersion = 17 // Current database schema version
 
 	// healSelectColumns is the standard column list for heal queries (must match scanHealFromScanner order)
 	healSelectColumns = `heal_id, error_id, run_id, diff_content, diff_content_hash, file_path, file_hash,
@@ -510,6 +510,17 @@ func (w *SQLiteWriter) applyMigrations(fromVersion int) error {
 			-- Backfill existing data: link errors to their original run_id
 			INSERT OR IGNORE INTO run_errors (run_id, error_id)
 			SELECT run_id, error_id FROM errors WHERE run_id IS NOT NULL;
+			`,
+		},
+		{
+			version: 17,
+			name:    "add_gc_indices",
+			sql: `
+			-- Index for GC queries filtering runs by completed_at
+			CREATE INDEX IF NOT EXISTS idx_runs_completed_at ON runs(completed_at);
+
+			-- Index for GC orphan error detection (status + last_seen_at filter)
+			CREATE INDEX IF NOT EXISTS idx_errors_status_last_seen ON errors(status, last_seen_at);
 			`,
 		},
 	}
@@ -1435,4 +1446,310 @@ func (w *SQLiteWriter) Close() error {
 // Path returns the absolute path to the SQLite database file
 func (w *SQLiteWriter) Path() string {
 	return w.path
+}
+
+// --- Garbage Collection ---
+
+// GCStats holds the results of a garbage collection operation.
+type GCStats struct {
+	RunsDeleted           int
+	RunErrorsDeleted      int
+	ErrorLocationsDeleted int
+	HealsDeleted          int
+	ErrorsDeleted         int
+	DryRun                bool
+}
+
+// GarbageCollect removes old data based on retention policy.
+// Deletes runs older than retentionDays along with associated data.
+// Preserves heals with status='applied' for audit trail.
+// Preserves errors with status='open' regardless of age.
+// Returns stats about what was (or would be in dry-run mode) deleted.
+func (w *SQLiteWriter) GarbageCollect(retentionDays int, dryRun bool) (*GCStats, error) {
+	cutoff := time.Now().AddDate(0, 0, -retentionDays).Unix()
+
+	if dryRun {
+		return w.countGCTargets(cutoff)
+	}
+
+	stats := &GCStats{DryRun: false}
+
+	tx, err := w.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("failed to begin gc transaction: %w", err)
+	}
+
+	// Rollback on any error (commit will clear this)
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	// 1. Delete run_errors for expired runs
+	result, err := tx.Exec(`
+		DELETE FROM run_errors
+		WHERE run_id IN (
+			SELECT run_id FROM runs
+			WHERE completed_at IS NOT NULL AND completed_at < ?
+		)`, cutoff)
+	if err != nil {
+		return nil, fmt.Errorf("failed to delete run_errors: %w", err)
+	}
+	affected, _ := result.RowsAffected()
+	stats.RunErrorsDeleted = int(affected)
+
+	// 2. Delete error_locations for expired runs
+	result, err = tx.Exec(`
+		DELETE FROM error_locations
+		WHERE run_id IN (
+			SELECT run_id FROM runs
+			WHERE completed_at IS NOT NULL AND completed_at < ?
+		)`, cutoff)
+	if err != nil {
+		return nil, fmt.Errorf("failed to delete error_locations: %w", err)
+	}
+	affected, _ = result.RowsAffected()
+	stats.ErrorLocationsDeleted = int(affected)
+
+	// 3. Delete heals for expired runs and orphaned errors (preserve applied status for audit)
+	result, err = tx.Exec(`
+		DELETE FROM heals
+		WHERE status != 'applied'
+		AND (
+			run_id IN (
+				SELECT run_id FROM runs
+				WHERE completed_at IS NOT NULL AND completed_at < ?
+			)
+			OR (run_id IS NULL AND created_at < ?)
+			OR error_id IN (
+				SELECT e.error_id FROM errors e
+				WHERE e.status != 'open'
+				  AND e.last_seen_at < ?
+				  AND NOT EXISTS (
+					SELECT 1 FROM run_errors re
+					WHERE re.error_id = e.error_id
+					  AND re.run_id IN (
+						  SELECT run_id FROM runs
+						  WHERE completed_at IS NULL OR completed_at >= ?
+					  )
+				  )
+			)
+		)`, cutoff, cutoff, cutoff, cutoff)
+	if err != nil {
+		return nil, fmt.Errorf("failed to delete heals: %w", err)
+	}
+	affected, _ = result.RowsAffected()
+	stats.HealsDeleted = int(affected)
+
+	// 4. Delete orphaned errors (not 'open', not seen recently, not linked to remaining runs)
+	result, err = tx.Exec(`
+		DELETE FROM errors
+		WHERE error_id IN (
+			SELECT e.error_id FROM errors e
+			WHERE e.status != 'open'
+			  AND e.last_seen_at < ?
+			  AND NOT EXISTS (
+				SELECT 1 FROM run_errors re
+				WHERE re.error_id = e.error_id
+				  AND re.run_id IN (
+					  SELECT run_id FROM runs
+					  WHERE completed_at IS NULL OR completed_at >= ?
+				  )
+			  )
+		)`, cutoff, cutoff)
+	if err != nil {
+		return nil, fmt.Errorf("failed to delete orphaned errors: %w", err)
+	}
+	affected, _ = result.RowsAffected()
+	stats.ErrorsDeleted = int(affected)
+
+	// 5. Delete expired runs
+	result, err = tx.Exec(`
+		DELETE FROM runs
+		WHERE completed_at IS NOT NULL AND completed_at < ?`, cutoff)
+	if err != nil {
+		return nil, fmt.Errorf("failed to delete runs: %w", err)
+	}
+	affected, _ = result.RowsAffected()
+	stats.RunsDeleted = int(affected)
+
+	if err = tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to commit gc transaction: %w", err)
+	}
+	committed = true
+
+	return stats, nil
+}
+
+// countGCTargets counts what would be deleted without actually deleting (for dry-run).
+func (w *SQLiteWriter) countGCTargets(cutoff int64) (*GCStats, error) {
+	stats := &GCStats{DryRun: true}
+	var err error
+
+	// Count runs to delete
+	err = w.db.QueryRow(`
+		SELECT COUNT(*) FROM runs
+		WHERE completed_at IS NOT NULL AND completed_at < ?`, cutoff).Scan(&stats.RunsDeleted)
+	if err != nil {
+		return nil, fmt.Errorf("failed to count runs: %w", err)
+	}
+
+	// Count run_errors to delete
+	err = w.db.QueryRow(`
+		SELECT COUNT(*) FROM run_errors
+		WHERE run_id IN (
+			SELECT run_id FROM runs
+			WHERE completed_at IS NOT NULL AND completed_at < ?
+		)`, cutoff).Scan(&stats.RunErrorsDeleted)
+	if err != nil {
+		return nil, fmt.Errorf("failed to count run_errors: %w", err)
+	}
+
+	// Count error_locations to delete
+	err = w.db.QueryRow(`
+		SELECT COUNT(*) FROM error_locations
+		WHERE run_id IN (
+			SELECT run_id FROM runs
+			WHERE completed_at IS NOT NULL AND completed_at < ?
+		)`, cutoff).Scan(&stats.ErrorLocationsDeleted)
+	if err != nil {
+		return nil, fmt.Errorf("failed to count error_locations: %w", err)
+	}
+
+	// Count heals to delete (exclude applied)
+	err = w.db.QueryRow(`
+		SELECT COUNT(*) FROM heals
+		WHERE status != 'applied'
+		AND (
+			run_id IN (
+				SELECT run_id FROM runs
+				WHERE completed_at IS NOT NULL AND completed_at < ?
+			)
+			OR (run_id IS NULL AND created_at < ?)
+			OR error_id IN (
+				SELECT e.error_id FROM errors e
+				WHERE e.status != 'open'
+				  AND e.last_seen_at < ?
+				  AND NOT EXISTS (
+					SELECT 1 FROM run_errors re
+					WHERE re.error_id = e.error_id
+					  AND re.run_id IN (
+						  SELECT run_id FROM runs
+						  WHERE completed_at IS NULL OR completed_at >= ?
+					  )
+				  )
+			)
+		)`, cutoff, cutoff, cutoff, cutoff).Scan(&stats.HealsDeleted)
+	if err != nil {
+		return nil, fmt.Errorf("failed to count heals: %w", err)
+	}
+
+	// Count orphaned errors to delete
+	err = w.db.QueryRow(`
+		SELECT COUNT(*) FROM errors e
+		WHERE e.status != 'open'
+		  AND e.last_seen_at < ?
+		  AND NOT EXISTS (
+			SELECT 1 FROM run_errors re
+			WHERE re.error_id = e.error_id
+			  AND re.run_id IN (
+				  SELECT run_id FROM runs
+				  WHERE completed_at IS NULL OR completed_at >= ?
+			  )
+		  )`, cutoff, cutoff).Scan(&stats.ErrorsDeleted)
+	if err != nil {
+		return nil, fmt.Errorf("failed to count errors: %w", err)
+	}
+
+	return stats, nil
+}
+
+// ListRepoDatabases returns all database files in ~/.detent/repos/.
+func ListRepoDatabases() ([]string, error) {
+	detentDir, err := GetDetentDir()
+	if err != nil {
+		return nil, err
+	}
+
+	reposDir := filepath.Join(detentDir, "repos")
+	entries, err := os.ReadDir(reposDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to read repos directory: %w", err)
+	}
+
+	var dbs []string
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".db") {
+			dbs = append(dbs, filepath.Join(reposDir, entry.Name()))
+		}
+	}
+	return dbs, nil
+}
+
+// OpenDatabaseDirect opens a database file directly without requiring a repo path.
+// Used by the gc command to iterate over all databases in ~/.detent/repos/.
+// Runs migrations to ensure schema is up-to-date before GC operations.
+// For security, only allows opening .db files within ~/.detent/repos/.
+func OpenDatabaseDirect(dbPath string) (*SQLiteWriter, error) {
+	// Validate path is within ~/.detent/repos/ to prevent path traversal
+	detentDir, err := GetDetentDir()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get detent directory: %w", err)
+	}
+
+	reposDir := filepath.Join(detentDir, "repos")
+	absPath, err := filepath.Abs(dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("invalid path: %w", err)
+	}
+
+	// Clean both paths and ensure absPath is within reposDir
+	cleanReposDir := filepath.Clean(reposDir) + string(filepath.Separator)
+	cleanAbsPath := filepath.Clean(absPath)
+	if !strings.HasPrefix(cleanAbsPath, cleanReposDir) {
+		return nil, fmt.Errorf("path outside repos directory")
+	}
+
+	// Ensure it's a .db file (not a directory or other file type)
+	if !strings.HasSuffix(cleanAbsPath, ".db") {
+		return nil, fmt.Errorf("not a database file")
+	}
+
+	db, err := sql.Open("sqlite3", cleanAbsPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open database: %w", err)
+	}
+
+	// Configure connection pool
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxLifetime(0)
+
+	// Apply essential pragmas
+	pragmas := []string{
+		"PRAGMA journal_mode=WAL",
+		"PRAGMA synchronous=NORMAL",
+		"PRAGMA busy_timeout=5000",
+	}
+	for _, pragma := range pragmas {
+		if _, pragmaErr := db.Exec(pragma); pragmaErr != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("failed to execute %s: %w", pragma, pragmaErr)
+		}
+	}
+
+	writer := &SQLiteWriter{db: db, path: cleanAbsPath}
+
+	// Run migrations to ensure schema is up-to-date (required for GC queries)
+	if err := writer.initSchema(); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("failed to initialize schema: %w", err)
+	}
+
+	return writer, nil
 }
