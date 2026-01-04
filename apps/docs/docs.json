@@ -3,12 +3,12 @@
   "theme": "aspen",
   "name": "Detent Docs",
   "colors": {
-    "primary": "#0ea5e9",
-    "light": "#38bdf8",
-    "dark": "#0284c7"
+    "primary": "#17DB4E",
+    "light": "#17DB4E",
+    "dark": "#17DB4E"
   },
   "appearance": {
-    "default": "dark"
+    "default": "system"
   },
   "favicon": "/favicon.svg",
   "subdirectory": "docs",
