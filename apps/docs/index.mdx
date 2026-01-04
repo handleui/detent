@@ -1,14 +1,14 @@
 ---
 mode: "frame"
-title: "Aspen Documentation"
+title: "Home"
 sidebarTitle: "Home"
 description: "Explore our API & SDK references, demos, and guides for building intelligent applications."
 ---
 
-import { Container, Title} from '/snippets/home/utility.mdx';
-import { ProductTiles } from '/snippets/home/product-tiles.mdx';
-import { appCategories } from '/snippets/home/data.mdx';
-import { ProductCard } from '/snippets/home/product-cards.mdx';
+import { Container, Title } from "/snippets/home/utility.mdx";
+import { ProductTiles } from "/snippets/home/product-tiles.mdx";
+import { appCategories } from "/snippets/home/data.mdx";
+import { ProductCard } from "/snippets/home/product-cards.mdx";
 
 <div className="px-5 divide-y divide-gray-100 dark:divide-white/10">
   <Container>
@@ -131,7 +131,6 @@ import { ProductCard } from '/snippets/home/product-cards.mdx';
     </div>
     <ProductTiles categories={appCategories} />
   </Container>
-  
 
   <Container>
     <div className="flex flex-col w-full mb-5">
@@ -186,4 +185,3 @@ import { ProductCard } from '/snippets/home/product-cards.mdx';
   </Columns>
   </Container>
 </div>
-
