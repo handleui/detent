@@ -1,0 +1,12 @@
+{
+  "rewrites": [
+    {
+      "source": "/docs",
+      "destination": "https://handle-604f6e43.mintlify.dev/docs"
+    },
+    {
+      "source": "/docs/:match*",
+      "destination": "https://handle-604f6e43.mintlify.dev/docs/:match*"
+    }
+  ]
+}

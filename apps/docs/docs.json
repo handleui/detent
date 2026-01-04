@@ -1,16 +1,17 @@
 {
   "$schema": "https://mintlify.com/docs.json",
   "theme": "aspen",
-  "name": "AspenAI Docs",
+  "name": "Detent Docs",
   "colors": {
-    "primary": "#d69000",
-    "light": "#d69000",
-    "dark": "#d69000"
+    "primary": "#0ea5e9",
+    "light": "#38bdf8",
+    "dark": "#0284c7"
   },
   "appearance": {
-    "default": "light"
+    "default": "dark"
   },
   "favicon": "/favicon.svg",
+  "subdirectory": "docs",
   "navigation": {
     "tabs": [
       {
@@ -56,19 +57,9 @@
     "global": {
       "anchors": [
         {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Community",
-          "href": "https://mintlify.com/community",
-          "icon": "slack"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
+          "anchor": "GitHub",
+          "href": "https://github.com/handleui/detent",
+          "icon": "github"
         }
       ]
     }
@@ -81,20 +72,13 @@
     "links": [
       {
         "label": "Support",
-        "href": "mailto:hi@mintlify.com"
+        "href": "https://github.com/haydenbleasel/detent/issues"
       }
-    ],
-    "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
-    }
+    ]
   },
   "footer": {
     "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
+      "github": "https://github.com/haydenbleasel/detent"
     }
   }
 }
