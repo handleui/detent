@@ -11,9 +11,7 @@
       "inputs": ["**/*.go", "go.mod", "go.sum", "package.json"],
       "outputs": ["dist/**"]
     },
-    "lint": {
-      "dependsOn": ["^lint"]
-    },
+    "//#check": {},
     "//#lint:go": {
       "inputs": ["apps/cli/**/*.go", ".golangci.yml"]
     },
