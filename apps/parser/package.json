@@ -1,6 +1,0 @@
-{
-  "name": "@detent/parser",
-  "version": "0.2.0",
-  "private": true,
-  "description": "Parser service for detent error parsing API"
-}
