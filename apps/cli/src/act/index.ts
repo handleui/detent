@@ -1,3 +1,4 @@
+// biome-ignore-all lint/performance/noBarrelFile: This is the act module's public API
 export type { ProgressCallback } from "./download.js";
 export { computeSha256, downloadAndVerify, downloadFile } from "./download.js";
 export { extractActBinary } from "./extract.js";

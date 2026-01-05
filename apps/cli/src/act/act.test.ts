@@ -3,9 +3,21 @@ import { getActPath, getBinDir, getDetentDir } from "./paths.js";
 import { detectPlatform, getDownloadUrl } from "./platform.js";
 import { ACT_VERSION } from "./version.js";
 
+const SEMVER_PATTERN = /^\d+\.\d+\.\d+$/;
+const OS_PATTERN = /^(Darwin|Linux|Windows)$/;
+const ARCH_PATTERN = /^(x86_64|arm64)$/;
+const ARCHIVE_EXT_PATTERN = /\.(tar\.gz|zip)$/;
+const ACT_DOWNLOAD_FILENAME_PATTERN =
+  /act_(Darwin|Linux|Windows)_(x86_64|arm64)/;
+const TAR_GZ_EXT_PATTERN = /\.tar\.gz$/;
+const ZIP_EXT_PATTERN = /\.zip$/;
+const WINDOWS_ACT_EXECUTABLE_PATTERN = /act-.*\.exe$/;
+const EXE_EXT_PATTERN = /\.exe$/;
+const UNIX_ACT_EXECUTABLE_PATTERN = /act-[\d.]+$/;
+
 describe("version", () => {
   test("ACT_VERSION is a valid semver string", () => {
-    expect(ACT_VERSION).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(ACT_VERSION).toMatch(SEMVER_PATTERN);
     expect(ACT_VERSION).toBe("0.2.83");
   });
 });
@@ -15,8 +27,8 @@ describe("platform", () => {
     const platform = detectPlatform();
     expect(platform).toHaveProperty("os");
     expect(platform).toHaveProperty("arch");
-    expect(platform.os).toMatch(/^(Darwin|Linux|Windows)$/);
-    expect(platform.arch).toMatch(/^(x86_64|arm64)$/);
+    expect(platform.os).toMatch(OS_PATTERN);
+    expect(platform.arch).toMatch(ARCH_PATTERN);
   });
 
   test("getDownloadUrl constructs correct URL with version", () => {
@@ -24,25 +36,25 @@ describe("platform", () => {
     expect(url).toContain(
       "https://github.com/nektos/act/releases/download/v0.2.83/act_"
     );
-    expect(url).toMatch(/\.(tar\.gz|zip)$/);
+    expect(url).toMatch(ARCHIVE_EXT_PATTERN);
   });
 
   test("getDownloadUrl includes platform and architecture", () => {
     const url = getDownloadUrl("0.2.83");
-    expect(url).toMatch(/act_(Darwin|Linux|Windows)_(x86_64|arm64)/);
+    expect(url).toMatch(ACT_DOWNLOAD_FILENAME_PATTERN);
   });
 
   test("getDownloadUrl uses tar.gz for Unix platforms", () => {
     const url = getDownloadUrl("0.2.83");
     if (process.platform === "darwin" || process.platform === "linux") {
-      expect(url).toMatch(/\.tar\.gz$/);
+      expect(url).toMatch(TAR_GZ_EXT_PATTERN);
     }
   });
 
   test("getDownloadUrl uses zip for Windows", () => {
     if (process.platform === "win32") {
       const url = getDownloadUrl("0.2.83");
-      expect(url).toMatch(/\.zip$/);
+      expect(url).toMatch(ZIP_EXT_PATTERN);
     } else {
       expect(true).toBe(true);
     }
@@ -91,10 +103,10 @@ describe("paths", () => {
   test("getActPath matches platform-specific extension", () => {
     const actPath = getActPath();
     if (process.platform === "win32") {
-      expect(actPath).toMatch(/act-.*\.exe$/);
+      expect(actPath).toMatch(WINDOWS_ACT_EXECUTABLE_PATTERN);
     } else {
-      expect(actPath).not.toMatch(/\.exe$/);
-      expect(actPath).toMatch(/act-[\d.]+$/);
+      expect(actPath).not.toMatch(EXE_EXT_PATTERN);
+      expect(actPath).toMatch(UNIX_ACT_EXECUTABLE_PATTERN);
     }
   });
 

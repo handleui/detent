@@ -4,6 +4,8 @@ import type { ACT_VERSION } from "./version.js";
 
 const execFileAsync = promisify(execFile);
 
+const ACT_VERSION_REGEX = /act version ([\d.]+)/i;
+
 export const verifyActVersion = async (
   actPath: string,
   expectedVersion: typeof ACT_VERSION
@@ -13,7 +15,7 @@ export const verifyActVersion = async (
       timeout: 5000,
     });
 
-    const versionMatch = stdout.match(/act version ([\d.]+)/i);
+    const versionMatch = stdout.match(ACT_VERSION_REGEX);
     if (!versionMatch) {
       return false;
     }

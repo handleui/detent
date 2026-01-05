@@ -87,12 +87,11 @@ const downloadFileOnce = async (
     const writeStream = createWriteStream(tempFile);
     let downloaded = 0;
 
+    const body = response.body;
     const transformStream = new Readable({
       async read() {
-        // biome-ignore lint/style/noNonNullAssertion: body existence is checked above
-        const reader = response.body!.getReader();
+        const reader = body.getReader();
         try {
-          // biome-ignore lint/correctness/noConstantCondition: need infinite loop for streaming
           while (true) {
             const { done, value } = await reader.read();
             if (done) {

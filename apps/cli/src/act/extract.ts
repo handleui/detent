@@ -129,6 +129,7 @@ const extractFromZip = async (
     await pipeline(
       createReadStream(archivePath),
       unzipper.Parse(),
+      // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Async generator handles ZIP streaming in single cohesive unit; splitting would harm readability
       async function* (source: AsyncIterable<unzipper.Entry>) {
         for await (const entry of source) {
           validatePath(entry.path, tempDir);
