@@ -68,5 +68,5 @@ release:
   footer: |
     ## Install
     ```bash
-    curl -fsSL https://detent.dev/install.sh | bash
+    curl -fsSL https://detent.sh/install.sh | bash
     ```

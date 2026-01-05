@@ -4,13 +4,17 @@
   "private": true,
   "type": "module",
   "bin": {
-    "detent": "./dist/index.js"
+    "dt": "./dist/index.js"
   },
   "main": "./dist/index.js",
   "scripts": {
     "build": "tsc",
+    "build:binaries": "bun run scripts/build-binaries.ts",
+    "upload:binaries": "bun run scripts/upload-binaries.ts",
     "dev": "tsc --watch",
-    "check-types": "tsc --noEmit"
+    "check-types": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@detent/persistence": "*",
@@ -22,8 +26,16 @@
   },
   "devDependencies": {
     "@detent/typescript-config": "*",
-    "@types/node": "^22.15.3",
+    "@types/node": "^25.0.3",
     "@types/react": "^18.3.3",
-    "typescript": "5.9.2"
+    "@vercel/blob": "^0.27.1",
+    "happy-dom": "^20.0.11",
+    "ink-testing-library": "^4.0.0",
+    "memfs": "^4.51.1",
+    "react-devtools-core": "^7.0.1",
+    "semver": "^7.7.1",
+    "tar": "^7.4.3",
+    "typescript": "5.9.2",
+    "vitest": "^4.0.16"
   }
 }

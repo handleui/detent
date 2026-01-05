@@ -38,29 +38,54 @@ jobs:
         with:
           bun-version: latest
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.23"
-          cache: true
-          cache-dependency-path: apps/go-cli/go.sum
-
       - name: Install dependencies
         run: bun install
+
+      - name: Build binaries
+        run: bun run build:binaries
+        working-directory: apps/cli
+
+      - name: Verify Linux binary
+        run: |
+          cd apps/cli/dist
+          tar -xzf dt-linux-amd64.tar.gz
+          ./dt-linux-amd64 version
+          rm dt-linux-amd64
 
       - name: Install Cosign
         uses: sigstore/cosign-installer@v3
 
-      - name: Build and Release
-        uses: goreleaser/goreleaser-action@v6
+      - name: Sign checksums
+        run: |
+          cosign sign-blob \
+            --output-certificate=apps/cli/dist/checksums.txt.pem \
+            --output-signature=apps/cli/dist/checksums.txt.sig \
+            --yes \
+            apps/cli/dist/checksums.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          version: "~> v2"
-          args: release --clean
-          workdir: apps/go-cli
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          name: ${{ inputs.tag || github.ref_name }}
+          draft: false
+          prerelease: ${{ contains(inputs.tag || github.ref_name, '-') }}
+          files: |
+            apps/cli/dist/*.tar.gz
+            apps/cli/dist/*.zip
+            apps/cli/dist/checksums.txt
+            apps/cli/dist/checksums.txt.sig
+            apps/cli/dist/checksums.txt.pem
+          body: |
+            ## Install
+            ```bash
+            curl -fsSL https://detent.sh/install.sh | bash
+            ```
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload to Blob
-        run: bun apps/go-cli/scripts/upload-binaries.mjs
+        run: bun run upload:binaries
+        working-directory: apps/cli
         env:
           BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}

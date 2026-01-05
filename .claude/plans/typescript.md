@@ -323,11 +323,10 @@ detent clean                    # Cleanup worktrees + old data
 detent config [key] [value]     # Get/set config
 ```
 
-**Removed:**
+**Deferred:**
 - `allow` → merged into config
 - `workflows` → use flags
 - `frankenstein` → dev tool
-- `update` → use package manager
 
 ---
 

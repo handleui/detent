@@ -204,7 +204,7 @@ const hasFieldChanged = (
   return String(originalValue) !== String(currentValue);
 };
 
-const ConfigEditor = (): JSX.Element => {
+export const ConfigEditor = (): JSX.Element => {
   const { exit } = useApp();
   const originalConfig = useRef<GlobalConfig>(loadGlobalConfig());
   const [draftConfig, setDraftConfig] =

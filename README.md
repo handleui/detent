@@ -5,7 +5,7 @@ Run your CI/CD locally, catch-all and get a green check in one go
 ## Install
 
 ```bash
-curl -fsSL https://detent.dev/install.sh | bash
+curl -fsSL https://detent.sh/install.sh | bash
 ```
 
 Installs `dt` to `~/.local/bin`. Update with `dt update`.
