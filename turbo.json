@@ -11,6 +11,16 @@
       "inputs": ["**/*.go", "go.mod", "go.sum", "package.json"],
       "outputs": ["dist/**"]
     },
+    "@detent/cli#build": {
+      "dependsOn": ["@detent/persistence#build", "@detent/healing#build"],
+      "inputs": [
+        "src/**/*.ts",
+        "src/**/*.tsx",
+        "tsconfig.json",
+        "package.json"
+      ],
+      "outputs": ["dist/**"]
+    },
     "//#check": {},
     "//#lint:go": {
       "inputs": ["apps/go-cli/**/*.go", ".golangci.yml"]
