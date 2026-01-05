@@ -8,8 +8,7 @@
     "dark": "#17DB4E"
   },
   "appearance": {
-    "default": "light",
-    "strict": true
+    "strict": false
   },
   "subdirectory": "docs",
   "navigation": {
@@ -76,11 +75,10 @@
   "background": {
     "color": {
       "dark": "#000000"
-    },
-    "decoration": "gradient"
+    }
   },
   "styling": {
-    "eyebrows": "section",
     "latex": false
-  }
+  },
+  "logo": "/images/icon_v1.png"
 }
