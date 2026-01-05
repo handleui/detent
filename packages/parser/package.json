@@ -1,0 +1,24 @@
+{
+  "name": "@detent/parser",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@detent/typescript-config": "*",
+    "@types/node": "^25.0.3",
+    "typescript": "5.9.2",
+    "vitest": "^4.0.16"
+  }
+}
