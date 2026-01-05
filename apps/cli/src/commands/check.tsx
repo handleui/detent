@@ -16,7 +16,7 @@ const printVerboseResults = (result: RunResult): void => {
 
   if (result.success) {
     console.log("✓ No errors found");
-  } else {
+  } else if (result.errors.length > 0) {
     console.log(`✗ Found ${result.errors.length} error(s):\n`);
     for (const error of result.errors) {
       console.log(`  ${error.errorId}`);
@@ -26,6 +26,9 @@ const printVerboseResults = (result: RunResult): void => {
       }
       console.log();
     }
+  } else {
+    // Workflow failed but no parsing errors were extracted
+    console.log("✓ No parsing errors found");
   }
 
   console.log(`Run ID: ${result.runID}`);

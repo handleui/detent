@@ -26,6 +26,26 @@ export interface RunConfig {
 }
 
 /**
+ * Manifest job info for TUI display.
+ */
+export interface ManifestJob {
+  readonly id: string;
+  readonly name: string;
+  readonly uses?: string;
+  readonly sensitive: boolean;
+  readonly steps: readonly string[];
+  readonly needs?: readonly string[];
+}
+
+/**
+ * Manifest containing all jobs for TUI display.
+ */
+export interface Manifest {
+  readonly v: 2;
+  readonly jobs: readonly ManifestJob[];
+}
+
+/**
  * Result of preparing the execution environment.
  * Contains paths and metadata needed for workflow execution.
  */
@@ -44,6 +64,12 @@ export interface PrepareResult {
    * List of workflow files to be executed.
    */
   readonly workflows: readonly WorkflowFile[];
+
+  /**
+   * Manifest containing all job/step info for TUI display.
+   * Emitted directly to TUI at execution start (doesn't depend on act output).
+   */
+  readonly manifest: Manifest;
 
   /**
    * List of workflow filenames that were skipped due to sensitivity.

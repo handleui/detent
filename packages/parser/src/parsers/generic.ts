@@ -254,6 +254,8 @@ const fastErrorPrefixes: readonly string[] = [
  * Fast substring checks for noise detection (lowercase for case-insensitive matching).
  */
 const fastContains: readonly string[] = [
+  // Act/IO artifacts (not real errors)
+  "error: eof",
   // Success indicators
   "all files pass",
   "build succeeded",

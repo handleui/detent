@@ -91,10 +91,8 @@ export class WorkflowPreparer {
       "Prepare",
       `Injecting continue-on-error into ${workflows.length} workflow(s)`
     );
-    const { skippedWorkflows, skippedJobs } = await this.injectWorkflows(
-      worktreePath,
-      workflows
-    );
+    const { skippedWorkflows, skippedJobs, manifest } =
+      await this.injectWorkflows(worktreePath, workflows);
 
     if (this.config.verbose) {
       console.log("[Prepare] ✓ Worktree ready\n");
@@ -106,6 +104,7 @@ export class WorkflowPreparer {
       worktreePath,
       runID,
       workflows,
+      manifest,
       skippedWorkflows:
         skippedWorkflows.length > 0 ? skippedWorkflows : undefined,
       skippedJobs: skippedJobs.length > 0 ? skippedJobs : undefined,
@@ -342,6 +341,7 @@ export class WorkflowPreparer {
   ): Promise<{
     skippedWorkflows: readonly string[];
     skippedJobs: readonly string[];
+    manifest: import("./types.js").Manifest;
   }> {
     const { isSensitiveWorkflow } = await import("../workflow/sensitivity.js");
     const {
@@ -362,10 +362,12 @@ export class WorkflowPreparer {
       allSkippedJobs
     );
 
-    const manifestB64 = this.buildManifestBase64(
-      parsedWorkflows,
-      buildCombinedManifest,
-      findFirstNoDepJob
+    // Build manifest for TUI (emitted directly, not via act)
+    const manifest = this.buildManifest(parsedWorkflows, buildCombinedManifest);
+
+    // Build base64 for act echo (backup/validation)
+    const manifestB64 = Buffer.from(JSON.stringify(manifest)).toString(
+      "base64"
     );
 
     await this.writeInjectedWorkflows(
@@ -379,7 +381,30 @@ export class WorkflowPreparer {
     return {
       skippedWorkflows: allSkippedWorkflows,
       skippedJobs: allSkippedJobs,
+      manifest,
     };
+  }
+
+  /**
+   * Builds the manifest object for TUI display.
+   */
+  private buildManifest(
+    parsedWorkflows: readonly ParsedWorkflow[],
+    buildCombinedManifest: (
+      infos: readonly {
+        name: string;
+        content: string;
+        jobs: Record<string, unknown>;
+      }[]
+    ) => import("./types.js").Manifest
+  ): import("./types.js").Manifest {
+    const workflowInfos = parsedWorkflows.map((pw) => ({
+      name: pw.name,
+      content: pw.injectedContent,
+      jobs: pw.jobs,
+    }));
+
+    return buildCombinedManifest(workflowInfos);
   }
 
   /**

@@ -49,7 +49,9 @@ export class CheckRunner {
   };
 
   /**
-   * Logs preparation results and emits warnings for skipped items.
+   * Logs preparation results, emits manifest, and emits warnings for skipped items.
+   * IMPORTANT: Manifest is emitted DIRECTLY here, not via act output.
+   * This ensures the TUI gets job/step info even if act jobs fail early.
    */
   private readonly logPreparationResults = (
     prepareResult: PrepareResult
@@ -59,6 +61,24 @@ export class CheckRunner {
     this.debugLogger?.log(
       `Workflows: ${prepareResult.workflows.map((w) => w.name).join(", ")}`
     );
+
+    // Emit manifest immediately to TUI (doesn't depend on act running)
+    if (this.eventEmitter && prepareResult.manifest.jobs.length > 0) {
+      this.eventEmitter.emit({
+        type: "manifest",
+        jobs: prepareResult.manifest.jobs.map((job) => ({
+          id: job.id,
+          name: job.name,
+          uses: job.uses,
+          sensitive: job.sensitive,
+          steps: job.steps,
+          needs: job.needs,
+        })),
+      });
+      this.debugLogger?.log(
+        `[Runner] Emitted manifest with ${prepareResult.manifest.jobs.length} jobs`
+      );
+    }
 
     const skippedCount =
       (prepareResult.skippedWorkflows?.length ?? 0) +
