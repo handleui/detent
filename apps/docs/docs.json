@@ -12,56 +12,21 @@
   },
   "subdirectory": "docs",
   "navigation": {
-    "tabs": [
-      {
-        "tab": "Guides",
-        "groups": [
-          {
-            "group": "GETTING STARTED",
-            "icon": "https://mintlify-assets.b-cdn.net/compass-2.svg",
-            "pages": ["index", "quickstart", "development"]
-          },
-          {
-            "group": "ESSENTIALS",
-            "icon": "https://mintlify-assets.b-cdn.net/star-2.svg",
-            "pages": [
-              "essentials/markdown",
-              "essentials/code",
-              "essentials/images",
-              "essentials/settings",
-              "essentials/navigation"
-            ]
-          }
-        ]
-      },
-      {
-        "tab": "API Reference",
-        "groups": [
-          {
-            "group": "API Documentation",
-            "pages": ["api-reference/introduction"]
-          },
-          {
-            "group": "Endpoint Examples",
-            "pages": [
-              "api-reference/endpoint/get",
-              "api-reference/endpoint/create",
-              "api-reference/endpoint/delete",
-              "api-reference/endpoint/webhook"
-            ]
-          }
-        ]
-      }
-    ],
     "global": {
       "anchors": [
         {
           "anchor": "GitHub",
-          "href": "https://github.com/handleui/detent",
-          "icon": "github"
+          "icon": "github",
+          "href": "https://github.com/handleui/detent"
         }
       ]
-    }
+    },
+    "anchors": [
+      {
+        "anchor": "Status",
+        "href": "https://status.detent.sh"
+      }
+    ]
   },
   "navbar": {
     "links": []
