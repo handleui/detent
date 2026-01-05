@@ -18,33 +18,51 @@
           "anchor": "GitHub",
           "icon": "github",
           "href": "https://github.com/handleui/detent"
+        },
+        {
+          "anchor": "Pricing",
+          "icon": "credit-card",
+          "href": "https://detent.sh/pricing"
+        },
+        {
+          "anchor": "Status",
+          "icon": "signal",
+          "href": "https://status.detent.sh"
         }
       ]
     },
-    "anchors": [
+    "products": [
       {
-        "anchor": "Status",
-        "href": "https://status.detent.sh"
+        "product": "Parser",
+        "description": "Parse and validate data",
+        "icon": "code",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "parser/index",
+              "parser/getting-started",
+              "parser/installation"
+            ]
+          },
+          {
+            "group": "Reference",
+            "pages": ["parser/api-reference"]
+          }
+        ]
       },
       {
-        "anchor": "Detent Docs",
-        "products": [
+        "product": "Detent CLI",
+        "description": "Command-line interface",
+        "icon": "terminal",
+        "groups": [
           {
-            "product": "CLI",
-            "tabs": [
-              {
-                "tab": "Tab 2",
-                "pages": [
-                  "detent-docs/cli/tab-2/page-1"
-                ]
-              },
-              {
-                "tab": "Tab 1",
-                "pages": [
-                  "detent-docs/cli/tab-1/page-2"
-                ]
-              }
-            ]
+            "group": "Getting Started",
+            "pages": ["cli/index", "cli/getting-started", "cli/installation"]
+          },
+          {
+            "group": "Usage",
+            "pages": ["cli/commands", "cli/configuration"]
           }
         ]
       }
