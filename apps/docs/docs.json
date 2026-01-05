@@ -80,5 +80,10 @@
     "socials": {
       "github": "https://github.com/handleui/detent"
     }
+  },
+  "background": {
+    "color": {
+      "dark": "#252525"
+    }
   }
 }
