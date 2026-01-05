@@ -11,9 +11,9 @@ import {
   checkDockerRunning,
   checkGitRepository,
 } from "../preflight/checks.js";
+import type { DebugLogger } from "../utils/debug-logger.js";
 import { formatError } from "../utils/error.js";
 import type { PrepareResult, RunConfig, WorkflowFile } from "./types.js";
-import { injectContinueOnError } from "./workflow-injector.js";
 
 /**
  * Prepares the execution environment for running GitHub Actions workflows.
@@ -26,9 +26,11 @@ import { injectContinueOnError } from "./workflow-injector.js";
  */
 export class WorkflowPreparer {
   private readonly config: RunConfig;
+  private readonly debugLogger?: DebugLogger;
 
-  constructor(config: RunConfig) {
+  constructor(config: RunConfig, debugLogger?: DebugLogger) {
     this.config = config;
+    this.debugLogger = debugLogger;
   }
 
   /**
@@ -38,12 +40,26 @@ export class WorkflowPreparer {
    * @throws Error if preflight checks fail or workflows cannot be prepared
    */
   async prepare(): Promise<PrepareResult> {
+    this.debugLogger?.startPhase("Prepare");
+
     await this.runPreflightChecks();
 
+    if (this.config.verbose) {
+      console.log("[Prepare] Discovering workflows...");
+    }
+
+    this.debugLogger?.logPhase("Prepare", "Discovering workflows");
     const workflows = await this.discoverWorkflows();
 
     if (workflows.length === 0) {
       if (this.config.workflow) {
+        const allWorkflows = await this.listAllWorkflows();
+        if (allWorkflows.length > 0) {
+          throw new Error(
+            `Workflow "${this.config.workflow}" not found in .github/workflows/\n\n` +
+              `Available workflows:\n${allWorkflows.map((w) => `  - ${w}`).join("\n")}`
+          );
+        }
         throw new Error(
           `Workflow "${this.config.workflow}" not found in .github/workflows/`
         );
@@ -51,9 +67,37 @@ export class WorkflowPreparer {
       throw new Error("No workflow files found in .github/workflows/");
     }
 
-    const { worktreePath, runID } = await this.createWorktree();
+    this.debugLogger?.logPhase(
+      "Prepare",
+      `Found ${workflows.length} workflow(s): ${workflows.map((w) => w.name).join(", ")}`
+    );
 
+    if (this.config.verbose) {
+      console.log(
+        `[Prepare] ✓ Found ${workflows.length} workflow(s): ${workflows.map((w) => w.name).join(", ")}\n`
+      );
+      console.log("[Prepare] Creating worktree...");
+    }
+
+    this.debugLogger?.logPhase("Prepare", "Creating worktree");
+    const { worktreePath, runID } = await this.createWorktree();
+    this.debugLogger?.logPhase(
+      "Prepare",
+      `Worktree created at: ${worktreePath}`
+    );
+    this.debugLogger?.logPhase("Prepare", `Run ID: ${runID}`);
+
+    this.debugLogger?.logPhase(
+      "Prepare",
+      `Injecting continue-on-error into ${workflows.length} workflow(s)`
+    );
     await this.injectWorkflows(worktreePath, workflows);
+
+    if (this.config.verbose) {
+      console.log("[Prepare] ✓ Worktree ready\n");
+    }
+
+    this.debugLogger?.endPhase("Prepare");
 
     return {
       worktreePath,
@@ -68,24 +112,63 @@ export class WorkflowPreparer {
    * @throws Error with details of the first failed check
    */
   private async runPreflightChecks(): Promise<void> {
+    this.debugLogger?.startPhase("Preflight");
+
+    if (this.config.verbose) {
+      console.log("[Preflight] Checking git repository...");
+    }
+
     const checks = [
       { name: "Git Repository", fn: checkGitRepository },
       { name: "Act Installation", fn: checkActInstalled },
       { name: "Docker Daemon", fn: checkDockerRunning },
     ];
 
-    const results = await Promise.all(checks.map((check) => check.fn()));
-
-    for (let i = 0; i < results.length; i++) {
-      const result = results[i];
+    for (let i = 0; i < checks.length; i++) {
       const check = checks[i];
-      if (!(result && check)) {
-        throw new Error("Preflight check returned invalid result");
+      if (!check) {
+        throw new Error("Invalid check configuration");
       }
+
+      if (this.config.verbose && i > 0) {
+        console.log(`[Preflight] Checking ${check.name.toLowerCase()}...`);
+      }
+
+      this.debugLogger?.logPhase("Preflight", `Running check: ${check.name}`);
+      const result = await check.fn();
       if (!result.passed) {
         const errorMessage = result.message || `${check.name} check failed`;
+        this.debugLogger?.logPhase(
+          "Preflight",
+          `✗ ${check.name} failed: ${errorMessage}`
+        );
         throw result.error || new Error(errorMessage);
       }
+      this.debugLogger?.logPhase("Preflight", `✓ ${check.name} passed`);
+    }
+
+    if (this.config.verbose) {
+      console.log("[Preflight] ✓ All checks passed\n");
+    }
+
+    this.debugLogger?.endPhase("Preflight");
+  }
+
+  /**
+   * Lists all workflow files in .github/workflows directory.
+   *
+   * @returns Array of workflow file names
+   */
+  private async listAllWorkflows(): Promise<readonly string[]> {
+    const workflowsDir = join(this.config.repoRoot, ".github", "workflows");
+
+    try {
+      const files = await readdir(workflowsDir);
+      return files.filter(
+        (file) => file.endsWith(".yml") || file.endsWith(".yaml")
+      );
+    } catch {
+      return [];
     }
   }
 
@@ -229,7 +312,13 @@ export class WorkflowPreparer {
   }
 
   /**
-   * Injects continue-on-error into workflow files in the worktree.
+   * Injects workflow modifications for safe local execution.
+   *
+   * This method:
+   * 1. Skips sensitive workflow files entirely
+   * 2. Injects `if: false` on sensitive jobs to skip them
+   * 3. Injects `continue-on-error: true` on non-sensitive jobs
+   * 4. Injects `if: always()` on jobs with dependencies
    *
    * @param worktreePath - Path to the worktree
    * @param workflows - Array of workflow files to inject
@@ -239,9 +328,28 @@ export class WorkflowPreparer {
     worktreePath: string,
     workflows: readonly WorkflowFile[]
   ): Promise<void> {
+    const { isSensitiveWorkflow } = await import("../workflow/sensitivity.js");
+    const { injectWorkflow } = await import("./workflow-injector.js");
+
     await Promise.all(
       workflows.map(async (workflow) => {
-        const injectedContent = injectContinueOnError(workflow.content);
+        // Skip entire workflow if filename indicates sensitivity
+        if (isSensitiveWorkflow(workflow.name)) {
+          if (this.config.verbose) {
+            console.log(
+              `[Inject] ! Skipping sensitive workflow: ${workflow.name}`
+            );
+          }
+          return;
+        }
+
+        const { content, skippedJobs } = injectWorkflow(workflow.content);
+
+        if (this.config.verbose && skippedJobs.length > 0) {
+          console.log(
+            `[Inject] ! Skipping sensitive jobs in ${workflow.name}: ${skippedJobs.join(", ")}`
+          );
+        }
 
         const targetPath = join(
           worktreePath,
@@ -251,7 +359,7 @@ export class WorkflowPreparer {
         );
 
         try {
-          await writeFile(targetPath, injectedContent, "utf-8");
+          await writeFile(targetPath, content, "utf-8");
         } catch (error) {
           throw new Error(
             `Failed to write injected workflow ${workflow.name}: ${formatError(error)}`

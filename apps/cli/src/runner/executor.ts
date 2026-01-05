@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
 import { ensureInstalled } from "../act/index.js";
+import type { DebugLogger } from "../utils/debug-logger.js";
+import type { TUIEventEmitter } from "./event-emitter.js";
 import type { ExecuteResult, PrepareResult } from "./types.js";
 
 /**
@@ -22,6 +24,16 @@ interface ExecutorConfig {
    * Defaults to exponential backoff: 1000ms, 2000ms
    */
   readonly retryDelay?: number;
+
+  /**
+   * Optional event emitter for TUI updates
+   */
+  readonly eventEmitter?: TUIEventEmitter;
+
+  /**
+   * Optional debug logger for troubleshooting
+   */
+  readonly debugLogger?: DebugLogger;
 }
 
 /**
@@ -35,7 +47,14 @@ interface ExecutorConfig {
  * - Tracks execution duration
  */
 export class ActExecutor {
-  private readonly config: Required<ExecutorConfig>;
+  private readonly config: {
+    readonly verbose: boolean;
+    readonly maxRetries: number;
+    readonly retryDelay: number;
+  };
+
+  private readonly eventEmitter?: TUIEventEmitter;
+  private readonly debugLogger?: DebugLogger;
 
   constructor(config: ExecutorConfig = {}) {
     this.config = {
@@ -43,6 +62,8 @@ export class ActExecutor {
       maxRetries: config.maxRetries ?? 2,
       retryDelay: config.retryDelay ?? 1000,
     };
+    this.eventEmitter = config.eventEmitter;
+    this.debugLogger = config.debugLogger;
   }
 
   /**
@@ -60,6 +81,9 @@ export class ActExecutor {
     for (let attempt = 0; attempt <= this.config.maxRetries; attempt++) {
       if (attempt > 0) {
         const delay = this.config.retryDelay * attempt;
+        this.debugLogger?.log(
+          `[Execute] Retry attempt ${attempt} after ${delay}ms delay`
+        );
         await new Promise((resolve) => setTimeout(resolve, delay));
       }
 
@@ -120,12 +144,56 @@ export class ActExecutor {
       const stdoutChunks: Buffer[] = [];
       const stderrChunks: Buffer[] = [];
 
+      let stdoutBuffer = "";
+
       child.stdout.on("data", (chunk: Buffer) => {
         stdoutChunks.push(chunk);
+        const text = chunk.toString("utf-8");
+
+        // Write to debug log
+        this.debugLogger?.logActOutput(text);
+
+        // Stream to stdout in real-time if verbose mode
+        if (this.config.verbose) {
+          process.stdout.write(chunk);
+        }
+
+        // Parse output for TUI events if event emitter is provided
+        if (this.eventEmitter) {
+          stdoutBuffer += text;
+          const lines = stdoutBuffer.split("\n");
+          stdoutBuffer = lines.pop() ?? "";
+
+          for (const line of lines) {
+            this.eventEmitter.emit({
+              type: "log",
+              content: line,
+            });
+          }
+        }
       });
 
       child.stderr.on("data", (chunk: Buffer) => {
         stderrChunks.push(chunk);
+        const text = chunk.toString("utf-8");
+
+        // Write to debug log
+        this.debugLogger?.logActOutput(text);
+
+        // Stream to stderr in real-time if verbose mode
+        if (this.config.verbose) {
+          process.stderr.write(chunk);
+        }
+
+        // Emit stderr as log events too
+        if (this.eventEmitter) {
+          for (const line of text.split("\n").filter((l) => l.trim())) {
+            this.eventEmitter.emit({
+              type: "log",
+              content: line,
+            });
+          }
+        }
       });
 
       child.on("close", (code) => {
@@ -145,6 +213,16 @@ export class ActExecutor {
 
       child.on("error", (error) => {
         const duration = Date.now() - startTime;
+
+        this.debugLogger?.logError(error, "ActExecutor");
+
+        if (this.eventEmitter) {
+          this.eventEmitter.emit({
+            type: "error",
+            error: error instanceof Error ? error : new Error(String(error)),
+            message: error.message,
+          });
+        }
 
         resolve({
           exitCode: 1,

@@ -1,22 +1,27 @@
 import { ParserClient } from "../services/parser-client.js";
+import type { DebugLogger } from "../utils/debug-logger.js";
 import { formatError } from "../utils/error.js";
 import type { ExecuteResult, ParsedError, ProcessResult } from "./types.js";
 
 /**
  * Configuration for the error processor.
+ * @deprecated Config parameters are no longer used since we switched to local parser.
  */
 interface ProcessorConfig {
   /**
-   * Base URL for the parser service.
-   * Defaults to PARSER_URL env var or http://localhost:8080
+   * @deprecated No longer used - parser is now local.
    */
   readonly parserUrl?: string;
 
   /**
-   * Request timeout in milliseconds.
-   * Defaults to 30000ms (30 seconds)
+   * @deprecated No longer used - parser is now local.
    */
   readonly timeout?: number;
+
+  /**
+   * Optional debug logger for troubleshooting
+   */
+  readonly debugLogger?: DebugLogger;
 }
 
 /**
@@ -24,18 +29,20 @@ interface ProcessorConfig {
  *
  * Responsibilities:
  * - Combines stdout and stderr into complete log output
- * - Sends logs to the parser service via HTTP
- * - Handles parser service failures gracefully
+ * - Uses local @detent/parser package to extract errors
+ * - Handles parser failures gracefully
  * - Returns structured error information
  */
 export class ErrorProcessor {
   private readonly parser: ParserClient;
+  private readonly debugLogger?: DebugLogger;
 
   constructor(config: ProcessorConfig = {}) {
     this.parser = new ParserClient({
       baseUrl: config.parserUrl,
       timeout: config.timeout,
     });
+    this.debugLogger = config.debugLogger;
   }
 
   /**
@@ -45,9 +52,17 @@ export class ErrorProcessor {
    * @returns Processing result with parsed errors and count
    */
   async process(executeResult: ExecuteResult): Promise<ProcessResult> {
+    this.debugLogger?.startPhase("Process");
+
     const combinedLogs = this.combineLogs(executeResult);
+    this.debugLogger?.logPhase(
+      "Process",
+      `Parsing ${combinedLogs.length} bytes of output`
+    );
 
     if (combinedLogs.trim().length === 0) {
+      this.debugLogger?.logPhase("Process", "No output to parse");
+      this.debugLogger?.endPhase("Process");
       return {
         errors: [],
         errorCount: 0,
@@ -57,13 +72,32 @@ export class ErrorProcessor {
     try {
       const response = await this.parser.parse(combinedLogs);
 
+      this.debugLogger?.logPhase(
+        "Process",
+        `Extracted ${response.errors.length} error(s)`
+      );
+
+      if (response.errors.length > 0) {
+        for (const error of response.errors) {
+          this.debugLogger?.logPhase(
+            "Process",
+            `  - ${error.errorId}: ${error.message.substring(0, 80)}${error.message.length > 80 ? "..." : ""}`
+          );
+        }
+      }
+
+      this.debugLogger?.endPhase("Process");
+
       return {
         errors: response.errors,
         errorCount: response.errors.length,
       };
     } catch (error) {
-      console.warn(`Warning: Parser service failed: ${formatError(error)}`);
+      this.debugLogger?.logError(error, "Parser");
+      console.warn(`Warning: Parser failed: ${formatError(error)}`);
       console.warn("Continuing without error parsing...");
+
+      this.debugLogger?.endPhase("Process");
 
       return {
         errors: [],
