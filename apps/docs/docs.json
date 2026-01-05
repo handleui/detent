@@ -25,6 +25,28 @@
       {
         "anchor": "Status",
         "href": "https://status.detent.sh"
+      },
+      {
+        "anchor": "Detent Docs",
+        "products": [
+          {
+            "product": "CLI",
+            "tabs": [
+              {
+                "tab": "Tab 2",
+                "pages": [
+                  "detent-docs/cli/tab-2/page-1"
+                ]
+              },
+              {
+                "tab": "Tab 1",
+                "pages": [
+                  "detent-docs/cli/tab-1/page-2"
+                ]
+              }
+            ]
+          }
+        ]
       }
     ]
   },
