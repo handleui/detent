@@ -10,5 +10,6 @@ export const main = defineCommand({
   subCommands: {
     version: () => import("./version.js").then((m) => m.versionCommand),
     config: () => import("./config/index.js").then((m) => m.configCommand),
+    check: () => import("./check.js").then((m) => m.checkCommand),
   },
 });

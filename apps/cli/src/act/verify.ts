@@ -1,0 +1,26 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import type { ACT_VERSION } from "./version.js";
+
+const execFileAsync = promisify(execFile);
+
+export const verifyActVersion = async (
+  actPath: string,
+  expectedVersion: typeof ACT_VERSION
+): Promise<boolean> => {
+  try {
+    const { stdout } = await execFileAsync(actPath, ["--version"], {
+      timeout: 5000,
+    });
+
+    const versionMatch = stdout.match(/act version ([\d.]+)/i);
+    if (!versionMatch) {
+      return false;
+    }
+
+    const installedVersion = versionMatch[1];
+    return installedVersion === expectedVersion;
+  } catch {
+    return false;
+  }
+};
