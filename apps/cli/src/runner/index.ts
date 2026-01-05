@@ -22,10 +22,31 @@ export class CheckRunner {
   private readonly config: RunConfig;
   private readonly eventEmitter?: TUIEventEmitter;
   private debugLogger?: DebugLogger;
+  private executor?: ActExecutor;
+  private aborted = false;
 
   constructor(config: RunConfig, eventEmitter?: TUIEventEmitter) {
     this.config = config;
     this.eventEmitter = eventEmitter;
+  }
+
+  /**
+   * Aborts the current run and triggers cleanup.
+   */
+  abort(): void {
+    this.aborted = true;
+    this.debugLogger?.log("[Runner] Abort requested");
+
+    if (this.executor) {
+      this.executor.abort();
+    }
+  }
+
+  /**
+   * Returns whether the runner has been aborted.
+   */
+  isAborted(): boolean {
+    return this.aborted;
   }
 
   /**
@@ -63,19 +84,21 @@ export class CheckRunner {
         `Workflows: ${prepareResult.workflows.map((w) => w.name).join(", ")}`
       );
 
-      // Emit manifest event with discovered workflows
-      if (this.eventEmitter && prepareResult.workflows.length > 0) {
-        const manifest = {
-          type: "manifest" as const,
-          jobs: prepareResult.workflows.map((wf) => ({
-            id: wf.name,
-            name: wf.name.replace(".yml", "").replace(".yaml", ""),
-            sensitive: false,
-            steps: [], // Steps will be discovered during execution
-          })),
-        };
-        this.eventEmitter.emit(manifest);
+      // Emit warning for skipped sensitive items
+      const skippedCount =
+        (prepareResult.skippedWorkflows?.length ?? 0) +
+        (prepareResult.skippedJobs?.length ?? 0);
+      if (skippedCount > 0 && this.eventEmitter) {
+        this.eventEmitter.emit({
+          type: "warning",
+          message: `Skipped ${skippedCount} sensitive workflow${skippedCount === 1 ? "" : "s"}/job${skippedCount === 1 ? "" : "s"} for safety`,
+          category: "skipped",
+        });
       }
+
+      // Note: Manifest event is now emitted by the ActOutputParser when it
+      // parses the ::detent::manifest:: marker from act output. This provides
+      // accurate job IDs and step names from the injected workflow markers.
 
       // Step 2: Execute workflows
       if (this.config.verbose) {
@@ -96,6 +119,15 @@ export class CheckRunner {
       this.debugLogger.logSection("ERROR PARSING");
       const processResult = await this.process(executeResult);
       this.debugLogger.log(`Total errors found: ${processResult.errorCount}`);
+
+      // Emit warning if parser failed
+      if (processResult.parserFailed && this.eventEmitter) {
+        this.eventEmitter.emit({
+          type: "warning",
+          message: "Parser failed to extract errors from output",
+          category: "parser",
+        });
+      }
 
       const duration = Date.now() - startTime;
       const success =
@@ -195,12 +227,12 @@ export class CheckRunner {
    * @returns Execution result with exit code, output, and duration
    */
   private async execute(prepareResult: PrepareResult): Promise<ExecuteResult> {
-    const executor = new ActExecutor({
+    this.executor = new ActExecutor({
       verbose: this.config.verbose,
       eventEmitter: this.eventEmitter,
       debugLogger: this.debugLogger,
     });
-    return await executor.execute(prepareResult);
+    return await this.executor.execute(prepareResult);
   }
 
   /**
@@ -216,22 +248,20 @@ export class CheckRunner {
 
   /**
    * Cleans up resources created during execution.
+   * Uses the cleanup function from prepareWorktree which has:
+   * - Built-in timeout protection (30s)
+   * - Lock release before removal
    *
-   * @param prepareResult - Result from the prepare step containing worktree info
+   * @param prepareResult - Result from the prepare step containing cleanup function
    */
   private async cleanup(prepareResult: PrepareResult): Promise<void> {
     try {
-      const { execGit } = await import("@detent/git");
-      await execGit(
-        ["worktree", "remove", "--force", prepareResult.worktreePath],
-        {
-          cwd: this.config.repoRoot,
-        }
-      );
+      await prepareResult.cleanup();
     } catch (error) {
       const errorMessage =
         error instanceof Error ? error.message : String(error);
 
+      // Ignore errors about non-existent worktrees (already cleaned up)
       if (
         errorMessage.includes("is not a working tree") ||
         errorMessage.includes("not found") ||

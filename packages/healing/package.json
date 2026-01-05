@@ -15,7 +15,9 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "check-types": "tsc --noEmit"
+    "check-types": "tsc --noEmit",
+    "eval": "bun run src/eval/run.ts",
+    "eval:live": "EVAL_MODE=live bun run src/eval/run.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.71.2",
@@ -24,6 +26,8 @@
   "devDependencies": {
     "@detent/typescript-config": "*",
     "@types/node": "^22.15.3",
+    "autoevals": "^0.0.131",
+    "braintrust": "^2.0.0",
     "typescript": "5.9.2"
   }
 }

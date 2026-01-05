@@ -4,6 +4,19 @@
  */
 
 /**
+ * Represents a structured error for display in the TUI
+ */
+export interface DisplayError {
+  readonly message: string;
+  readonly file?: string;
+  readonly line?: number;
+  readonly column?: number;
+  readonly severity: "error" | "warning";
+  readonly ruleId?: string;
+  readonly category?: string;
+}
+
+/**
  * Job status states matching Go CLI ci.JobStatus
  */
 export type JobStatus =
@@ -45,6 +58,7 @@ export interface TrackedJob {
   readonly isSensitive: boolean;
   readonly steps: TrackedStep[];
   currentStep: number;
+  readonly needs?: readonly string[];
 }
 
 /**
@@ -58,6 +72,7 @@ export interface ManifestEvent {
     readonly uses?: string;
     readonly sensitive: boolean;
     readonly steps: readonly string[];
+    readonly needs?: readonly string[];
   }[];
 }
 
@@ -98,6 +113,7 @@ export interface DoneEvent {
   readonly exitCode: number;
   readonly errorCount: number;
   readonly cancelled: boolean;
+  readonly errors?: readonly DisplayError[];
 }
 
 /**
@@ -110,6 +126,15 @@ export interface ErrorEvent {
 }
 
 /**
+ * Warning event - non-fatal issue occurred
+ */
+export interface WarningEvent {
+  readonly type: "warning";
+  readonly message: string;
+  readonly category: "parser" | "skipped";
+}
+
+/**
  * Union type for all TUI events
  */
 export type TUIEvent =
@@ -118,4 +143,5 @@ export type TUIEvent =
   | StepEvent
   | LogEvent
   | DoneEvent
-  | ErrorEvent;
+  | ErrorEvent
+  | WarningEvent;

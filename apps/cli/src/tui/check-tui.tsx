@@ -2,6 +2,7 @@ import { Spinner } from "@inkjs/ui";
 import { Box, Text, useApp, useInput } from "ink";
 import { useEffect, useState } from "react";
 import { formatErrorForTUI } from "../utils/error.js";
+import { formatDuration, formatDurationMs } from "../utils/format.js";
 import type {
   DoneEvent,
   JobEvent,
@@ -12,6 +13,99 @@ import type {
   TUIEvent,
 } from "./check-tui-types.js";
 import { colors } from "./styles.js";
+import { useShimmer } from "./use-shimmer.js";
+
+interface ShimmerTextProps {
+  readonly text: string;
+  readonly isLoading: boolean;
+}
+
+const ShimmerText = ({ text, isLoading }: ShimmerTextProps): JSX.Element => {
+  const shimmerOutput = useShimmer({
+    text,
+    baseColor: colors.muted,
+    isLoading,
+  });
+  return <Text>{shimmerOutput}</Text>;
+};
+
+interface JobLineProps {
+  readonly job: TrackedJob;
+  readonly currentStepName: string;
+  readonly allJobs: readonly TrackedJob[];
+}
+
+const JobLine = ({
+  job,
+  currentStepName,
+  allJobs,
+}: JobLineProps): JSX.Element => {
+  const icon = getJobIcon(job.status, job.isReusable);
+  const iconColor = getJobIconColor(job.status, job.isReusable);
+  const textColor = getJobTextColor(job.status);
+
+  // Check if this job has dependencies
+  const hasDeps = job.needs && job.needs.length > 0;
+
+  // For running jobs: show job name + current step
+  if (job.status === "running") {
+    const hasStep = job.currentStep >= 0 && job.currentStep < job.steps.length;
+
+    return (
+      <Box flexDirection="column">
+        <Box>
+          <Text color={iconColor}>{icon} </Text>
+          <ShimmerText isLoading={true} text={job.name} />
+          {hasStep && (
+            <>
+              <Text color={colors.muted}> › </Text>
+              <Text color={colors.muted}>{currentStepName}</Text>
+            </>
+          )}
+        </Box>
+      </Box>
+    );
+  }
+
+  // For pending jobs with dependencies: show nested under deps
+  if (job.status === "pending" && hasDeps) {
+    // Find which dependencies are blocking (not yet successful)
+    const blockingDeps =
+      job.needs?.filter((depId) => {
+        const depJob = allJobs.find((j) => j.id === depId);
+        return depJob && depJob.status !== "success";
+      }) ?? [];
+
+    // Get display names for blocking deps
+    const blockingNames = blockingDeps
+      .map((depId) => {
+        const depJob = allJobs.find((j) => j.id === depId);
+        return depJob?.name ?? depId;
+      })
+      .slice(0, 2); // Limit to 2 for brevity
+
+    const waitingText =
+      blockingNames.length > 0
+        ? `waiting for ${blockingNames.join(", ")}${blockingDeps.length > 2 ? "…" : ""}`
+        : "";
+
+    return (
+      <Box>
+        <Text color={iconColor}>{icon} </Text>
+        <Text color={textColor}>{job.name}</Text>
+        {waitingText && <Text color={colors.muted}> · {waitingText}</Text>}
+      </Box>
+    );
+  }
+
+  // Default: just show job name
+  return (
+    <Box>
+      <Text color={iconColor}>{icon} </Text>
+      <Text color={textColor}>{job.name}</Text>
+    </Box>
+  );
+};
 
 interface CheckTUIProps {
   /**
@@ -40,6 +134,7 @@ export const CheckTUI = ({ onEvent, onCancel }: CheckTUIProps): JSX.Element => {
   const [done, setDone] = useState(false);
   const [doneInfo, setDoneInfo] = useState<DoneEvent | undefined>();
   const [errorMessage, setErrorMessage] = useState<string | undefined>();
+  const [warnings, setWarnings] = useState<string[]>([]);
 
   // Handle Ctrl+C cancellation
   useInput((input, key) => {
@@ -86,6 +181,9 @@ export const CheckTUI = ({ onEvent, onCancel }: CheckTUIProps): JSX.Element => {
             exit();
           }, 100);
           break;
+        case "warning":
+          setWarnings((prev) => [...prev, event.message]);
+          break;
       }
     });
 
@@ -93,6 +191,13 @@ export const CheckTUI = ({ onEvent, onCancel }: CheckTUIProps): JSX.Element => {
   }, [onEvent, exit]);
 
   const handleManifest = (event: ManifestEvent): void => {
+    // CRITICAL: Ignore duplicate manifests from retries to prevent TUI restart
+    // When act retries (exit code != 0), it emits a new manifest which would
+    // reset all job state. We only process the first manifest received.
+    if (!waiting) {
+      return;
+    }
+
     const trackedJobs: TrackedJob[] = event.jobs.map((job) => ({
       id: job.id,
       name: job.name,
@@ -105,6 +210,7 @@ export const CheckTUI = ({ onEvent, onCancel }: CheckTUIProps): JSX.Element => {
         status: "pending" as const,
       })),
       currentStep: -1,
+      needs: job.needs,
     }));
 
     setJobs(trackedJobs);
@@ -217,7 +323,13 @@ export const CheckTUI = ({ onEvent, onCancel }: CheckTUIProps): JSX.Element => {
   };
 
   if (done) {
-    return renderCompletionView(jobs, doneInfo, elapsed, errorMessage);
+    return renderCompletionView(
+      jobs,
+      doneInfo,
+      elapsed,
+      errorMessage,
+      warnings
+    );
   }
 
   if (waiting) {
@@ -232,8 +344,8 @@ export const CheckTUI = ({ onEvent, onCancel }: CheckTUIProps): JSX.Element => {
  */
 const renderWaitingView = (elapsed: number): JSX.Element => (
   <Box flexDirection="column">
-    <Box marginTop={1}>
-      <Text color={colors.muted}>$ act · {elapsed}s</Text>
+    <Box>
+      <Text color={colors.muted}>$ act · {formatDuration(elapsed)}</Text>
     </Box>
     <Box marginLeft={2} marginTop={1}>
       <Spinner label="Waiting for workflow" />
@@ -255,53 +367,18 @@ const renderRunningView = (
   elapsed: number
 ): JSX.Element => (
   <Box flexDirection="column">
-    <Box marginTop={1}>
-      <Text color={colors.muted}>$ act · {elapsed}s</Text>
+    <Box>
+      <Text color={colors.muted}>$ act · {formatDuration(elapsed)}</Text>
     </Box>
     <Box flexDirection="column" marginTop={1}>
       {jobs.map((job) => (
         <Box key={job.id} marginLeft={2}>
-          {renderJobLine(job, currentStepName)}
+          <JobLine allJobs={jobs} currentStepName={currentStepName} job={job} />
         </Box>
       ))}
     </Box>
   </Box>
 );
-
-/**
- * Renders a single job line
- */
-const renderJobLine = (
-  job: TrackedJob,
-  currentStepName: string
-): JSX.Element => {
-  const icon = getJobIcon(job.status, job.isReusable);
-  const color = getJobColor(job.status);
-
-  if (job.status === "running") {
-    // Show spinner with current step name
-    if (job.currentStep >= 0 && job.currentStep < job.steps.length) {
-      return (
-        <Box>
-          <Text color={color}>{icon} </Text>
-          <Spinner label={currentStepName} />
-        </Box>
-      );
-    }
-    return (
-      <Box>
-        <Text color={color}>{icon} </Text>
-        <Spinner label={job.name} />
-      </Box>
-    );
-  }
-
-  return (
-    <Text color={color}>
-      {icon} {job.name}
-    </Text>
-  );
-};
 
 /**
  * Renders the completion view with final job statuses
@@ -310,29 +387,32 @@ const renderCompletionView = (
   jobs: readonly TrackedJob[],
   doneInfo: DoneEvent | undefined,
   elapsed: number,
-  errorMessage?: string
+  errorMessage?: string,
+  warnings: readonly string[] = []
 ): JSX.Element => {
-  const durationSec = doneInfo
-    ? (doneInfo.duration / 1000).toFixed(1)
-    : elapsed.toFixed(1);
+  const durationStr = doneInfo
+    ? formatDurationMs(doneInfo.duration)
+    : formatDuration(elapsed);
   const hasErrors = doneInfo ? doneInfo.errorCount > 0 : false;
   const workflowFailed = doneInfo ? doneInfo.exitCode !== 0 : false;
   const hasSecuritySkipped = jobs.some(
     (job) => job.status === "skipped_security"
   );
+  const structuredErrors = doneInfo?.errors ?? [];
 
   return (
     <Box flexDirection="column">
-      <Box marginTop={1}>
-        <Text color={colors.muted}>$ act · {durationSec}s</Text>
+      <Box>
+        <Text color={colors.muted}>$ act · {durationStr}</Text>
       </Box>
       <Box flexDirection="column" marginTop={1}>
         {jobs.map((job) => (
           <Box flexDirection="column" key={job.id}>
             <Box marginLeft={2}>
-              <Text color={getJobColor(job.status)}>
-                {getJobIcon(job.status, job.isReusable)} {job.name}
+              <Text color={getJobIconColor(job.status, job.isReusable)}>
+                {getJobIcon(job.status, job.isReusable)}{" "}
               </Text>
+              <Text color={getJobTextColor(job.status)}>{job.name}</Text>
             </Box>
             {/* Expand steps only for failed jobs */}
             {job.status === "failed" &&
@@ -341,8 +421,11 @@ const renderCompletionView = (
                 <Box flexDirection="column" marginLeft={4}>
                   {job.steps.map((step) => (
                     <Box key={step.index}>
-                      <Text color={getStepColor(step.status)}>
-                        {getStepIcon(step.status)} {step.name}
+                      <Text color={getStepIconColor(step.status)}>
+                        {getStepIcon(step.status)}{" "}
+                      </Text>
+                      <Text color={getStepTextColor(step.status)}>
+                        {step.name}
                       </Text>
                     </Box>
                   ))}
@@ -351,6 +434,7 @@ const renderCompletionView = (
           </Box>
         ))}
       </Box>
+      {structuredErrors.length > 0 && renderErrorsView(structuredErrors)}
       <Box marginTop={1}>
         {(() => {
           if (errorMessage) {
@@ -363,13 +447,13 @@ const renderCompletionView = (
           if (hasErrors || workflowFailed) {
             return (
               <Text bold color={colors.error}>
-                ✗ Check failed in {durationSec}s
+                ✗ Check failed in {durationStr}
               </Text>
             );
           }
           return (
             <Text bold color={colors.brand}>
-              ✓ Check passed in {durationSec}s
+              ✓ Check passed in {durationStr}
             </Text>
           );
         })()}
@@ -379,6 +463,15 @@ const renderCompletionView = (
           <Text color={colors.muted} italic>
             Locked jobs skipped for safety. Manage with: detent workflows
           </Text>
+        </Box>
+      )}
+      {warnings.length > 0 && (
+        <Box flexDirection="column" marginTop={1}>
+          {warnings.map((warning, idx) => (
+            <Text color={colors.muted} key={idx}>
+              i {warning}
+            </Text>
+          ))}
         </Box>
       )}
     </Box>
@@ -414,26 +507,57 @@ const getJobIcon = (status: JobStatus, isReusable: boolean): string => {
     case "failed":
       return "✗";
     case "skipped":
-      return "⏭";
+      return "—";
     case "skipped_security":
-      return "🔒";
+      return "⊘";
   }
 };
 
 /**
- * Gets the color for a job status
+ * Gets the color for a job's ICON
+ * - Grey dot: pending
+ * - Green dot: running
+ * - Green check: success
+ * - Red X: failed
+ * - Grey dash: skipped
  */
-const getJobColor = (status: JobStatus): string => {
+const getJobIconColor = (status: JobStatus, isReusable: boolean): string => {
+  if (isReusable) {
+    return colors.muted; // Reusable workflow icons always grey
+  }
+
   switch (status) {
     case "pending":
       return colors.muted;
     case "running":
-      return colors.text;
-    case "success":
       return colors.brand;
+    case "success":
+      return colors.brand; // Green checkmark
     case "failed":
-      return colors.error;
+      return colors.error; // Red X
     case "skipped":
+      return colors.muted;
+    case "skipped_security":
+      return colors.muted;
+  }
+};
+
+/**
+ * Gets the color for a job's TEXT (name)
+ * - Grey: pending, skipped
+ * - Green: running
+ * - White: finished (success, failed)
+ */
+const getJobTextColor = (status: JobStatus): string => {
+  switch (status) {
+    case "pending":
+      return colors.muted;
+    case "running":
+      return colors.brand;
+    case "success":
+    case "failed":
+    case "skipped":
+      return colors.text;
     case "skipped_security":
       return colors.muted;
   }
@@ -453,31 +577,194 @@ const getStepIcon = (status: string): string => {
     case "failed":
       return "✗";
     case "skipped":
-      return "⏭";
+      return "—";
     case "cancelled":
-      return "·";
+      return "—";
     default:
       return "·";
   }
 };
 
 /**
- * Gets the color for a step status
+ * Gets the color for a step's ICON
+ * - Grey dot: pending, cancelled
+ * - Green dot: running
+ * - Green check: success
+ * - Red X: failed
+ * - Grey dash: skipped
  */
-const getStepColor = (status: string): string => {
+const getStepIconColor = (status: string): string => {
   switch (status) {
     case "pending":
+    case "cancelled":
       return colors.muted;
     case "running":
-      return colors.text;
-    case "success":
       return colors.brand;
+    case "success":
+      return colors.brand; // Green checkmark
     case "failed":
-      return colors.error;
+      return colors.error; // Red X
     case "skipped":
-    case "cancelled":
       return colors.muted;
     default:
       return colors.muted;
   }
 };
+
+/**
+ * Gets the color for a step's TEXT (name)
+ * - Grey: pending, cancelled, skipped
+ * - Green: running
+ * - White: success, failed
+ */
+const getStepTextColor = (status: string): string => {
+  switch (status) {
+    case "pending":
+    case "cancelled":
+    case "skipped":
+      return colors.muted;
+    case "running":
+      return colors.brand;
+    case "success":
+    case "failed":
+      return colors.text;
+    default:
+      return colors.muted;
+  }
+};
+
+interface ErrorsByCategory {
+  readonly category: string;
+  readonly fileGroups: readonly FileErrorGroup[];
+}
+
+interface FileErrorGroup {
+  readonly file: string;
+  readonly errors: readonly DisplayError[];
+  readonly errorCount: number;
+  readonly warningCount: number;
+}
+
+/**
+ * Groups errors by category and file for structured display
+ */
+const groupErrors = (
+  errors: readonly DisplayError[]
+): readonly ErrorsByCategory[] => {
+  const categoryMap = new Map<string, Map<string, DisplayError[]>>();
+
+  for (const error of errors) {
+    const category = error.category ?? "Issues";
+    const file = error.file ?? "unknown";
+
+    if (!categoryMap.has(category)) {
+      categoryMap.set(category, new Map());
+    }
+    const fileMap = categoryMap.get(category);
+    if (fileMap && !fileMap.has(file)) {
+      fileMap.set(file, []);
+    }
+    fileMap?.get(file)?.push(error);
+  }
+
+  const result: ErrorsByCategory[] = [];
+  for (const [category, fileMap] of categoryMap) {
+    const fileGroups: FileErrorGroup[] = [];
+    for (const [file, fileErrors] of fileMap) {
+      const errorCount = fileErrors.filter(
+        (e) => e.severity === "error"
+      ).length;
+      const warningCount = fileErrors.filter(
+        (e) => e.severity === "warning"
+      ).length;
+      fileGroups.push({
+        file,
+        errors: fileErrors,
+        errorCount,
+        warningCount,
+      });
+    }
+    result.push({ category, fileGroups });
+  }
+
+  return result;
+};
+
+/**
+ * Renders the structured error display matching Go CLI format
+ */
+const renderErrorsView = (
+  errors: readonly DisplayError[]
+): JSX.Element | null => {
+  if (errors.length === 0) {
+    return null;
+  }
+
+  const totalErrors = errors.filter((e) => e.severity === "error").length;
+  const totalWarnings = errors.filter((e) => e.severity === "warning").length;
+  const uniqueFiles = new Set(errors.map((e) => e.file).filter(Boolean)).size;
+
+  const grouped = groupErrors(errors);
+
+  const problemText =
+    totalErrors + totalWarnings === 1 ? "problem" : "problems";
+  const fileText = uniqueFiles === 1 ? "file" : "files";
+  const errorText = totalErrors === 1 ? "error" : "errors";
+  const warningText = totalWarnings === 1 ? "warning" : "warnings";
+
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <Box>
+        <Text color={colors.error}>{">"} </Text>
+        <Text color={colors.error}>✖ </Text>
+        <Text>
+          Found {totalErrors + totalWarnings} {problemText} ({totalErrors}{" "}
+          {errorText}, {totalWarnings} {warningText}) across {uniqueFiles}{" "}
+          {fileText}
+        </Text>
+      </Box>
+
+      {grouped.map((categoryGroup) => (
+        <Box flexDirection="column" key={categoryGroup.category} marginTop={1}>
+          <Box>
+            <Text bold>{categoryGroup.category}:</Text>
+          </Box>
+
+          {categoryGroup.fileGroups.map((fileGroup) => (
+            <Box flexDirection="column" key={fileGroup.file} marginLeft={2}>
+              <Box marginTop={1}>
+                <Text color={colors.info}>{fileGroup.file}</Text>
+                <Text color={colors.muted}>
+                  {" "}
+                  ({fileGroup.errorCount}{" "}
+                  {fileGroup.errorCount === 1 ? "error" : "errors"},{" "}
+                  {fileGroup.warningCount}{" "}
+                  {fileGroup.warningCount === 1 ? "warning" : "warnings"})
+                </Text>
+              </Box>
+
+              {fileGroup.errors.map((error, idx) => (
+                <Box key={idx} marginLeft={2}>
+                  <Text color={colors.muted}>
+                    {error.line ?? 0}:{error.column ?? 0}{" "}
+                  </Text>
+                  {error.severity === "error" ? (
+                    <Text color={colors.error}>✖ </Text>
+                  ) : (
+                    <Text color={colors.warn}>⚠ </Text>
+                  )}
+                  <Text>{error.message}</Text>
+                  {error.ruleId && (
+                    <Text color={colors.muted}> [{error.ruleId}]</Text>
+                  )}
+                </Box>
+              ))}
+            </Box>
+          ))}
+        </Box>
+      ))}
+    </Box>
+  );
+};
+
+type DisplayError = import("./check-tui-types.js").DisplayError;

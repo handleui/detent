@@ -1,8 +1,20 @@
 import { spawn } from "node:child_process";
 import { ensureInstalled } from "../act/index.js";
 import type { DebugLogger } from "../utils/debug-logger.js";
+import { ActOutputParser } from "./act-output-parser.js";
 import type { TUIEventEmitter } from "./event-emitter.js";
 import type { ExecuteResult, PrepareResult } from "./types.js";
+
+/**
+ * Maximum buffer size for stdout parsing (1MB).
+ * Prevents memory exhaustion on verbose output.
+ */
+const MAX_BUFFER_SIZE = 1024 * 1024;
+
+/**
+ * Exit code returned when execution is aborted.
+ */
+const ABORT_EXIT_CODE = 130;
 
 /**
  * Configuration for the act executor.
@@ -55,6 +67,8 @@ export class ActExecutor {
 
   private readonly eventEmitter?: TUIEventEmitter;
   private readonly debugLogger?: DebugLogger;
+  private currentChild: ReturnType<typeof spawn> | undefined;
+  private aborted = false;
 
   constructor(config: ExecutorConfig = {}) {
     this.config = {
@@ -67,18 +81,71 @@ export class ActExecutor {
   }
 
   /**
+   * Aborts any running execution.
+   * Kills the child process group (including Docker containers spawned by act).
+   */
+  abort(): void {
+    this.aborted = true;
+    if (
+      this.currentChild &&
+      !this.currentChild.killed &&
+      this.currentChild.pid
+    ) {
+      this.debugLogger?.log(
+        "[Execute] Aborting execution, killing process group"
+      );
+
+      // Kill the entire process group (negative PID on Unix)
+      // This ensures Docker containers spawned by act are also killed
+      try {
+        // On Unix, killing -pid sends signal to entire process group
+        process.kill(-this.currentChild.pid, "SIGTERM");
+      } catch {
+        // Fallback to killing just the child if process group kill fails
+        // (e.g., on Windows or if process already exited)
+        try {
+          this.currentChild.kill("SIGTERM");
+        } catch {
+          // Process may have already exited
+        }
+      }
+    }
+  }
+
+  /**
+   * Returns whether the executor has been aborted.
+   */
+  isAborted(): boolean {
+    return this.aborted;
+  }
+
+  /**
    * Executes workflows in the prepared worktree environment.
    *
    * @param prepareResult - Environment prepared by the CheckRunner
    * @returns Execution result with exit code, output, and duration
    */
   async execute(prepareResult: PrepareResult): Promise<ExecuteResult> {
+    if (this.aborted) {
+      return {
+        exitCode: ABORT_EXIT_CODE,
+        stdout: "",
+        stderr: "Execution aborted",
+        duration: 0,
+      };
+    }
+
     const { path: actPath } = await ensureInstalled();
 
     const args = this.buildActArgs(prepareResult);
 
     let lastResult: ExecuteResult | undefined;
     for (let attempt = 0; attempt <= this.config.maxRetries; attempt++) {
+      if (this.aborted) {
+        this.debugLogger?.log("[Execute] Aborted, skipping retry");
+        break;
+      }
+
       if (attempt > 0) {
         const delay = this.config.retryDelay * attempt;
         this.debugLogger?.log(
@@ -93,14 +160,21 @@ export class ActExecutor {
         prepareResult.worktreePath
       );
 
-      if (result.exitCode === 0) {
+      if (result.exitCode === 0 || this.aborted) {
         return result;
       }
 
       lastResult = result;
     }
 
-    return lastResult as ExecuteResult;
+    return (
+      lastResult ?? {
+        exitCode: ABORT_EXIT_CODE,
+        stdout: "",
+        stderr: "Execution aborted",
+        duration: 0,
+      }
+    );
   }
 
   /**
@@ -134,12 +208,15 @@ export class ActExecutor {
     cwd: string
   ): Promise<ExecuteResult> {
     const startTime = Date.now();
+    const parser = new ActOutputParser();
 
     return new Promise((resolve) => {
       const child = spawn(actPath, args, {
         cwd,
         stdio: ["ignore", "pipe", "pipe"],
       });
+
+      this.currentChild = child;
 
       const stdoutChunks: Buffer[] = [];
       const stderrChunks: Buffer[] = [];
@@ -161,10 +238,29 @@ export class ActExecutor {
         // Parse output for TUI events if event emitter is provided
         if (this.eventEmitter) {
           stdoutBuffer += text;
+
+          // Prevent unbounded buffer growth
+          if (stdoutBuffer.length > MAX_BUFFER_SIZE) {
+            const lastNewline = stdoutBuffer.lastIndexOf("\n");
+            if (lastNewline > 0) {
+              this.debugLogger?.log(
+                `[Execute] Buffer exceeded ${MAX_BUFFER_SIZE} bytes, truncating`
+              );
+              stdoutBuffer = stdoutBuffer.slice(lastNewline + 1);
+            }
+          }
+
           const lines = stdoutBuffer.split("\n");
           stdoutBuffer = lines.pop() ?? "";
 
           for (const line of lines) {
+            // Parse detent markers and emit structured events
+            const events = parser.parseLine(line);
+            for (const event of events) {
+              this.eventEmitter.emit(event);
+            }
+
+            // Also emit raw log event for verbose display
             this.eventEmitter.emit({
               type: "log",
               content: line,
@@ -197,8 +293,9 @@ export class ActExecutor {
       });
 
       child.on("close", (code) => {
+        this.currentChild = undefined;
         const duration = Date.now() - startTime;
-        const exitCode = code ?? 1;
+        const exitCode = this.aborted ? ABORT_EXIT_CODE : (code ?? 1);
 
         const stdout = Buffer.concat(stdoutChunks).toString("utf-8");
         const stderr = Buffer.concat(stderrChunks).toString("utf-8");
@@ -212,6 +309,7 @@ export class ActExecutor {
       });
 
       child.on("error", (error) => {
+        this.currentChild = undefined;
         const duration = Date.now() - startTime;
 
         this.debugLogger?.logError(error, "ActExecutor");

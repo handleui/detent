@@ -1,149 +1,161 @@
-import type { ManifestEvent, TUIEvent } from "../tui/check-tui-types.js";
+import type {
+  JobEvent,
+  ManifestEvent,
+  StepEvent,
+  TUIEvent,
+} from "../tui/check-tui-types.js";
+import type { ManifestInfo } from "./workflow-injector.js";
+
+// Regex patterns for detent markers (compiled once at module level)
+const MANIFEST_PATTERN = /::detent::manifest::v2::b64::([A-Za-z0-9+/=]+)/;
+const JOB_START_PATTERN = /::detent::job-start::([a-zA-Z_][a-zA-Z0-9_-]*)/;
+const JOB_END_PATTERN =
+  /::detent::job-end::([a-zA-Z_][a-zA-Z0-9_-]*)::(success|failure|cancelled)/;
+const STEP_START_PATTERN =
+  /::detent::step-start::([a-zA-Z_][a-zA-Z0-9_-]*)::(\d+)::(.+)/;
 
 /**
- * Parses act output to extract TUI events
+ * Parses act output to extract TUI events from detent markers.
  *
- * Act output format (examples):
- * - [Workflow/Job Name]
- * - [Job/Step Name]
- * - ✅ Success: Job Name
- * - ❌ Failure: Job Name
+ * The workflow injector adds echo statements like:
+ * - echo '::detent::manifest::v2::b64::{base64}'
+ * - echo '::detent::job-start::{jobId}'
+ * - echo '::detent::step-start::{jobId}::{idx}::{name}'
+ * - echo '::detent::job-end::{jobId}::{status}'
+ *
+ * This parser extracts these markers and converts them to TUI events.
  */
 export class ActOutputParser {
-  private manifestEmitted = false;
-  private readonly jobs = new Map<
-    string,
-    { name: string; steps: string[]; started: boolean }
-  >();
-  private currentJob: string | undefined;
+  private manifestReceived = false;
+  private manifest: ManifestInfo | undefined;
 
   /**
-   * Parse a line of act output and extract events
+   * Parse a line of act output and extract detent marker events.
+   * Returns empty array if line contains no detent markers.
    */
   parseLine(line: string): TUIEvent[] {
     const events: TUIEvent[] = [];
 
-    // Remove ANSI codes for easier parsing
+    // Fast path: skip lines that don't contain detent markers (like Go CLI)
+    if (!line.includes("::detent::")) {
+      return events;
+    }
+
+    // Remove ANSI codes for cleaner parsing
     const cleanLine = this.stripAnsi(line);
 
-    // Emit manifest once if we have jobs
-    if (!this.manifestEmitted && this.jobs.size > 0) {
-      events.push(this.createManifest());
-      this.manifestEmitted = true;
-    }
+    // Check for manifest marker
+    const manifestMatch = cleanLine.match(MANIFEST_PATTERN);
+    if (manifestMatch?.[1]) {
+      try {
+        const json = Buffer.from(manifestMatch[1], "base64").toString("utf-8");
+        const parsed: unknown = JSON.parse(json);
 
-    // Parse different line patterns
-    // Pattern: [Workflow/Job Name] or [Job Name]
-    const workflowMatch = cleanLine.match(/\[(.+?)\]/);
-    if (workflowMatch?.[1]) {
-      const name = workflowMatch[1].trim();
-
-      // Check if this is a new job
-      if (!this.jobs.has(name)) {
-        // Register new job
-        this.jobs.set(name, { name, steps: [], started: false });
-
-        // If manifest already emitted, we need to update it
-        if (this.manifestEmitted) {
-          events.push(this.createManifest());
+        // Validate manifest structure (Go CLI uses "v" key, not "version")
+        if (!parsed || typeof parsed !== "object") {
+          throw new Error("Invalid manifest");
         }
-      }
-
-      // Check if job is starting
-      if (cleanLine.includes("Starting") || cleanLine.includes("Running")) {
-        const job = this.jobs.get(name);
-        if (job && !job.started) {
-          job.started = true;
-          this.currentJob = name;
-          events.push({
-            type: "job",
-            jobId: name,
-            action: "start",
-          });
+        const manifest = parsed as Record<string, unknown>;
+        if (manifest.v !== 2) {
+          throw new Error("Unsupported manifest version");
         }
-      }
-    }
-
-    // Pattern: Success/Failure indicators
-    if (cleanLine.includes("✅") || cleanLine.includes("Success")) {
-      const match = cleanLine.match(/(?:✅|Success).*?:\s*(.+)/);
-      if (match?.[1]) {
-        const jobName = match[1].trim();
-        events.push({
-          type: "job",
-          jobId: jobName,
-          action: "finish",
-          success: true,
-        });
-      }
-    }
-
-    if (cleanLine.includes("❌") || cleanLine.includes("Failure")) {
-      const match = cleanLine.match(/(?:❌|Failure).*?:\s*(.+)/);
-      if (match?.[1]) {
-        const jobName = match[1].trim();
-        events.push({
-          type: "job",
-          jobId: jobName,
-          action: "finish",
-          success: false,
-        });
-      }
-    }
-
-    // Pattern: Step execution
-    // Act typically shows "| Step Name" for step output
-    if (
-      cleanLine.includes("|") &&
-      this.currentJob &&
-      !cleanLine.includes("[")
-    ) {
-      const stepMatch = cleanLine.match(/\|\s*(.+)/);
-      if (stepMatch?.[1]) {
-        const stepName = stepMatch[1].trim();
-        const job = this.jobs.get(this.currentJob);
-        if (job && stepName) {
-          // Register step if not seen
-          if (!job.steps.includes(stepName)) {
-            job.steps.push(stepName);
+        if (!Array.isArray(manifest.jobs)) {
+          throw new Error("Invalid manifest jobs");
+        }
+        // Validate each job has required fields
+        for (const job of manifest.jobs) {
+          if (
+            !job ||
+            typeof job !== "object" ||
+            typeof (job as Record<string, unknown>).id !== "string" ||
+            typeof (job as Record<string, unknown>).name !== "string" ||
+            typeof (job as Record<string, unknown>).sensitive !== "boolean" ||
+            !Array.isArray((job as Record<string, unknown>).steps)
+          ) {
+            throw new Error("Invalid job in manifest");
           }
-
-          const stepIdx = job.steps.indexOf(stepName);
-          events.push({
-            type: "step",
-            jobId: this.currentJob,
-            stepIdx,
-            stepName,
-          });
         }
+
+        this.manifest = parsed as ManifestInfo;
+        this.manifestReceived = true;
+
+        const manifestEvent: ManifestEvent = {
+          type: "manifest",
+          jobs: this.manifest.jobs.map((job) => ({
+            id: job.id,
+            name: job.name,
+            uses: job.uses,
+            sensitive: job.sensitive,
+            steps: job.steps,
+            needs: job.needs,
+          })),
+        };
+        events.push(manifestEvent);
+      } catch {
+        // Invalid manifest - ignore
       }
+      return events;
+    }
+
+    // Check for job-start marker
+    const jobStartMatch = cleanLine.match(JOB_START_PATTERN);
+    if (jobStartMatch?.[1]) {
+      const jobEvent: JobEvent = {
+        type: "job",
+        jobId: jobStartMatch[1],
+        action: "start",
+      };
+      events.push(jobEvent);
+      return events;
+    }
+
+    // Check for job-end marker
+    const jobEndMatch = cleanLine.match(JOB_END_PATTERN);
+    if (jobEndMatch?.[1] && jobEndMatch[2]) {
+      const status = jobEndMatch[2];
+      const jobEvent: JobEvent = {
+        type: "job",
+        jobId: jobEndMatch[1],
+        action: "finish",
+        success: status === "success",
+      };
+      events.push(jobEvent);
+      return events;
+    }
+
+    // Check for step-start marker
+    const stepMatch = cleanLine.match(STEP_START_PATTERN);
+    if (stepMatch?.[1] && stepMatch[2] && stepMatch[3]) {
+      const idx = Number.parseInt(stepMatch[2], 10);
+      // Validate stepIdx bounds to skip malformed events
+      if (Number.isNaN(idx) || idx < 0 || idx > 10_000) {
+        return [];
+      }
+      const stepEvent: StepEvent = {
+        type: "step",
+        jobId: stepMatch[1],
+        stepIdx: idx,
+        stepName: stepMatch[3],
+      };
+      events.push(stepEvent);
+      return events;
     }
 
     return events;
   }
 
   /**
-   * Get the final manifest based on discovered jobs
+   * Check if manifest has been received
    */
-  getManifest(): ManifestEvent {
-    return this.createManifest();
+  hasManifest(): boolean {
+    return this.manifestReceived;
   }
 
   /**
-   * Create manifest event from current job state
+   * Get the parsed manifest (if received)
    */
-  private createManifest(): ManifestEvent {
-    const jobsArray = Array.from(this.jobs.values()).map((job) => ({
-      id: job.name,
-      name: job.name,
-      sensitive: false,
-      steps: job.steps,
-    }));
-
-    return {
-      type: "manifest",
-      jobs: jobsArray,
-    };
+  getManifest(): ManifestInfo | undefined {
+    return this.manifest;
   }
 
   /**

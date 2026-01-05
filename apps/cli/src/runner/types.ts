@@ -44,6 +44,23 @@ export interface PrepareResult {
    * List of workflow files to be executed.
    */
   readonly workflows: readonly WorkflowFile[];
+
+  /**
+   * List of workflow filenames that were skipped due to sensitivity.
+   */
+  readonly skippedWorkflows?: readonly string[];
+
+  /**
+   * List of job names that were skipped due to sensitivity.
+   * Format: "workflow:jobName"
+   */
+  readonly skippedJobs?: readonly string[];
+
+  /**
+   * Cleanup function to release worktree lock and remove the worktree.
+   * Has built-in timeout protection (30s).
+   */
+  readonly cleanup: () => Promise<void>;
 }
 
 /**
@@ -105,6 +122,12 @@ export interface ProcessResult {
    * Total count of errors found.
    */
   readonly errorCount: number;
+
+  /**
+   * Whether the parser failed to process the output.
+   * When true, errors array may be empty but this doesn't indicate success.
+   */
+  readonly parserFailed?: boolean;
 }
 
 /**

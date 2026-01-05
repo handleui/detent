@@ -1,5 +1,6 @@
 import { lstatSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { checkLockStatus, tryAcquireLock } from "./lock.js";
 import { getDirtyFilesList } from "./operations.js";
 import type { CommitSHA, WorktreeInfo } from "./types.js";
 import { execGit } from "./utils.js";
@@ -63,6 +64,22 @@ export const prepareWorktree = async (
 
   validatePath(finalPath);
 
+  // Check if worktree exists and is locked by another process
+  try {
+    lstatSync(finalPath);
+    const lockStatus = checkLockStatus(finalPath);
+    if (lockStatus === "busy") {
+      throw new Error(
+        `Worktree ${finalPath} is locked by another process. ` +
+          "If the process has died, remove the .detent.lock file manually."
+      );
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw err;
+    }
+  }
+
   try {
     mkdirSync(finalPath, { recursive: true, mode: DIRECTORY_MODE });
   } catch (err) {
@@ -99,12 +116,33 @@ export const prepareWorktree = async (
 
   await syncDirtyFiles(repoRoot, finalPath);
 
+  // Acquire lock on the worktree
+  const lockResult = tryAcquireLock(finalPath);
+  if (!lockResult.success) {
+    // Clean up the worktree we just created since we couldn't lock it
+    try {
+      await execGit(["worktree", "remove", "--force", finalPath], {
+        cwd: repoRoot,
+      });
+    } catch {
+      // Best effort
+    }
+    throw new Error(
+      `Failed to acquire lock on worktree: ${lockResult.reason}${
+        lockResult.error ? ` - ${lockResult.error.message}` : ""
+      }`
+    );
+  }
+
   const worktreeInfo: WorktreeInfo = {
     path: finalPath,
     commitSHA,
   };
 
   const cleanup = async (): Promise<void> => {
+    // Release the lock first
+    lockResult.release();
+
     const timeoutPromise = new Promise<never>((_, reject) => {
       setTimeout(() => {
         reject(

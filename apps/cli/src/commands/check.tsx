@@ -6,6 +6,7 @@ import type { RunConfig } from "../runner/types.js";
 import { CheckTUI } from "../tui/check-tui.js";
 import { printHeaderWithUpdateCheck } from "../tui/components/index.js";
 import { formatError } from "../utils/error.js";
+import { createSignalController, SIGINT_EXIT_CODE } from "../utils/signal.js";
 
 export const checkCommand = defineCommand({
   meta: {
@@ -64,14 +65,48 @@ export const checkCommand = defineCommand({
       verbose,
     };
 
+    // Create signal controller for graceful shutdown
+    const signalCtrl = createSignalController();
+
+    // Track if we're in cleanup phase (second signal = force exit)
+    let inCleanup = false;
+
+    // Setup force exit handler for second signal during cleanup
+    const forceExitHandler = (): void => {
+      if (inCleanup) {
+        process.exit(SIGINT_EXIT_CODE);
+      }
+    };
+    process.on("SIGINT", forceExitHandler);
+    process.on("SIGTERM", forceExitHandler);
+
     try {
       if (verbose) {
         // Verbose mode: run without TUI, show detailed output
         const runner = new CheckRunner(config);
 
+        // Abort runner when signal received
+        signalCtrl.signal.addEventListener("abort", () => {
+          console.log("\nCancelling...");
+          runner.abort();
+        });
+
         console.log("Detent check (verbose mode)\n");
 
+        inCleanup = true; // Runner cleanup happens inside run()
         const result = await runner.run();
+        inCleanup = false;
+
+        // Clean up signal handlers
+        signalCtrl.cleanup();
+        process.off("SIGINT", forceExitHandler);
+        process.off("SIGTERM", forceExitHandler);
+
+        // If aborted, exit cleanly
+        if (runner.isAborted()) {
+          console.log("\nCancelled. Cleanup complete.");
+          process.exit(SIGINT_EXIT_CODE);
+        }
 
         // Display debug log path
         const debugLogPath = runner.getDebugLogPath();
@@ -112,11 +147,16 @@ export const checkCommand = defineCommand({
         // Create runner with event emitter
         const runner = new CheckRunner(config, eventEmitter);
 
+        // Abort runner when signal received (process-level handler for TUI mode)
+        signalCtrl.signal.addEventListener("abort", () => {
+          runner.abort();
+        });
+
         // Render TUI
-        const { waitUntilExit } = render(
+        const { waitUntilExit, unmount } = render(
           <CheckTUI
             onCancel={() => {
-              // TUI will handle exit
+              runner.abort();
             }}
             onEvent={(callback) => eventEmitter.on(callback)}
           />
@@ -128,8 +168,21 @@ export const checkCommand = defineCommand({
         // Wait for TUI to exit
         await waitUntilExit();
 
-        // Wait for runner to finish
+        // TUI has exited, now wait for runner cleanup
+        inCleanup = true;
         const result = await runPromise;
+        inCleanup = false;
+
+        // Clean up signal handlers
+        signalCtrl.cleanup();
+        process.off("SIGINT", forceExitHandler);
+        process.off("SIGTERM", forceExitHandler);
+
+        // If aborted, exit cleanly without error message
+        if (runner.isAborted()) {
+          console.log("\nCancelled. Cleanup complete.");
+          process.exit(SIGINT_EXIT_CODE);
+        }
 
         // Show error summary if failed
         if (!result.success && result.errors.length > 0) {
@@ -141,6 +194,11 @@ export const checkCommand = defineCommand({
         process.exit(result.success ? 0 : 1);
       }
     } catch (error) {
+      // Clean up signal handlers on error
+      signalCtrl.cleanup();
+      process.off("SIGINT", forceExitHandler);
+      process.off("SIGTERM", forceExitHandler);
+
       const message = formatError(error);
       console.error(`\n✗ Check failed: ${message}\n`);
 

@@ -80,7 +80,7 @@ export class WorkflowPreparer {
     }
 
     this.debugLogger?.logPhase("Prepare", "Creating worktree");
-    const { worktreePath, runID } = await this.createWorktree();
+    const { worktreePath, runID, cleanup } = await this.createWorktree();
     this.debugLogger?.logPhase(
       "Prepare",
       `Worktree created at: ${worktreePath}`
@@ -91,7 +91,10 @@ export class WorkflowPreparer {
       "Prepare",
       `Injecting continue-on-error into ${workflows.length} workflow(s)`
     );
-    await this.injectWorkflows(worktreePath, workflows);
+    const { skippedWorkflows, skippedJobs } = await this.injectWorkflows(
+      worktreePath,
+      workflows
+    );
 
     if (this.config.verbose) {
       console.log("[Prepare] ✓ Worktree ready\n");
@@ -103,6 +106,10 @@ export class WorkflowPreparer {
       worktreePath,
       runID,
       workflows,
+      skippedWorkflows:
+        skippedWorkflows.length > 0 ? skippedWorkflows : undefined,
+      skippedJobs: skippedJobs.length > 0 ? skippedJobs : undefined,
+      cleanup,
     };
   }
 
@@ -290,17 +297,18 @@ export class WorkflowPreparer {
   /**
    * Creates an ephemeral git worktree for isolated execution.
    *
-   * @returns Object containing worktree path and run ID
+   * @returns Object containing worktree path, run ID, and cleanup function
    * @throws Error if worktree creation fails
    */
   private async createWorktree(): Promise<{
     worktreePath: string;
     runID: string;
+    cleanup: () => Promise<void>;
   }> {
     const runIDInfo = await computeCurrentRunID(this.config.repoRoot);
     const worktreePath = createEphemeralWorktreePath(runIDInfo.runID);
 
-    await prepareWorktree({
+    const { cleanup } = await prepareWorktree({
       repoRoot: this.config.repoRoot,
       worktreePath,
     });
@@ -308,64 +316,162 @@ export class WorkflowPreparer {
     return {
       worktreePath,
       runID: runIDInfo.runID,
+      cleanup,
     };
   }
 
   /**
    * Injects workflow modifications for safe local execution.
    *
-   * This method:
-   * 1. Skips sensitive workflow files entirely
-   * 2. Injects `if: false` on sensitive jobs to skip them
-   * 3. Injects `continue-on-error: true` on non-sensitive jobs
-   * 4. Injects `if: always()` on jobs with dependencies
+   * Strategy for manifest injection:
+   * 1. Build a COMBINED manifest from ALL workflows (contains all jobs)
+   * 2. Inject manifest into EACH workflow's first no-deps job
+   *
+   * This ensures that whichever workflow runs first (based on event triggers),
+   * its first job will emit the complete manifest. The parser handles duplicate
+   * manifests by using the first one received.
    *
    * @param worktreePath - Path to the worktree
    * @param workflows - Array of workflow files to inject
+   * @returns Object containing lists of skipped workflows and jobs
    * @throws Error if injection or writing fails
    */
   private async injectWorkflows(
     worktreePath: string,
     workflows: readonly WorkflowFile[]
-  ): Promise<void> {
+  ): Promise<{
+    skippedWorkflows: readonly string[];
+    skippedJobs: readonly string[];
+  }> {
     const { isSensitiveWorkflow } = await import("../workflow/sensitivity.js");
-    const { injectWorkflow } = await import("./workflow-injector.js");
+    const {
+      injectWorkflow,
+      injectMarkersWithManifest,
+      buildCombinedManifest,
+      findFirstNoDepJob,
+    } = await import("./workflow-injector.js");
+    const { load } = await import("js-yaml");
 
-    await Promise.all(
-      workflows.map(async (workflow) => {
-        // Skip entire workflow if filename indicates sensitivity
-        if (isSensitiveWorkflow(workflow.name)) {
-          if (this.config.verbose) {
-            console.log(
-              `[Inject] ! Skipping sensitive workflow: ${workflow.name}`
-            );
-          }
-          return;
+    const allSkippedWorkflows: string[] = [];
+    const allSkippedJobs: string[] = [];
+
+    // Step 1: Filter sensitive workflows and parse remaining ones
+    const parsedWorkflows: Array<{
+      name: string;
+      originalContent: string;
+      injectedContent: string;
+      jobs: Record<string, unknown>;
+      skippedJobs: readonly string[];
+    }> = [];
+
+    for (const workflow of workflows) {
+      // Skip entire workflow if filename indicates sensitivity
+      if (isSensitiveWorkflow(workflow.name)) {
+        allSkippedWorkflows.push(workflow.name);
+        if (this.config.verbose) {
+          console.log(
+            `[Inject] ! Skipping sensitive workflow: ${workflow.name}`
+          );
         }
+        continue;
+      }
 
-        const { content, skippedJobs } = injectWorkflow(workflow.content);
+      // Apply sensitivity handling (continue-on-error, skip sensitive jobs)
+      const { content: injectedContent, skippedJobs } = injectWorkflow(
+        workflow.content
+      );
 
-        if (this.config.verbose && skippedJobs.length > 0) {
+      if (skippedJobs.length > 0) {
+        for (const jobName of skippedJobs) {
+          allSkippedJobs.push(`${workflow.name}:${jobName}`);
+        }
+        if (this.config.verbose) {
           console.log(
             `[Inject] ! Skipping sensitive jobs in ${workflow.name}: ${skippedJobs.join(", ")}`
           );
         }
+      }
 
-        const targetPath = join(
-          worktreePath,
-          ".github",
-          "workflows",
-          workflow.name
+      // Parse to extract jobs for manifest building
+      let parsed: unknown;
+      try {
+        parsed = load(injectedContent);
+      } catch {
+        continue; // Skip unparseable workflows
+      }
+
+      if (
+        !parsed ||
+        typeof parsed !== "object" ||
+        Array.isArray(parsed) ||
+        !("jobs" in parsed)
+      ) {
+        continue;
+      }
+
+      const jobs = (parsed as Record<string, unknown>).jobs;
+      if (!jobs || typeof jobs !== "object" || Array.isArray(jobs)) {
+        continue;
+      }
+
+      parsedWorkflows.push({
+        name: workflow.name,
+        originalContent: workflow.content,
+        injectedContent,
+        jobs: jobs as Record<string, unknown>,
+        skippedJobs,
+      });
+    }
+
+    // Step 2: Build combined manifest from ALL workflows
+    const workflowInfos = parsedWorkflows.map((pw) => ({
+      name: pw.name,
+      content: pw.injectedContent,
+      jobs: pw.jobs,
+    }));
+
+    const combinedManifest = buildCombinedManifest(workflowInfos);
+    const manifestJson = JSON.stringify(combinedManifest);
+    const manifestB64 = Buffer.from(manifestJson).toString("base64");
+
+    // Step 3: Find manifest injection point for EACH workflow
+    // This ensures whichever workflow runs first will emit the manifest
+    const manifestLocations = parsedWorkflows.map((pw) => ({
+      name: pw.name,
+      jobId: findFirstNoDepJob(pw.jobs),
+    }));
+
+    this.debugLogger?.log(
+      `[Inject] Manifest locations (per-workflow): ${manifestLocations.map((loc) => `${loc.name}:${loc.jobId ?? "none"}`).join(", ")}`
+    );
+
+    // Step 4: Inject markers into each workflow (with manifest in each workflow's first no-dep job)
+    await Promise.all(
+      parsedWorkflows.map(async (pw) => {
+        // Find this workflow's manifest job
+        const manifestJobId = findFirstNoDepJob(pw.jobs);
+
+        const finalContent = injectMarkersWithManifest(
+          pw.injectedContent,
+          manifestB64,
+          manifestJobId
         );
 
+        const targetPath = join(worktreePath, ".github", "workflows", pw.name);
+
         try {
-          await writeFile(targetPath, content, "utf-8");
+          await writeFile(targetPath, finalContent, "utf-8");
         } catch (error) {
           throw new Error(
-            `Failed to write injected workflow ${workflow.name}: ${formatError(error)}`
+            `Failed to write injected workflow ${pw.name}: ${formatError(error)}`
           );
         }
       })
     );
+
+    return {
+      skippedWorkflows: allSkippedWorkflows,
+      skippedJobs: allSkippedJobs,
+    };
   }
 }

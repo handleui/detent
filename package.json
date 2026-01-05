@@ -32,5 +32,8 @@
     "*.{js,jsx,ts,tsx,json,jsonc,css,scss,md,mdx}": [
       "bun x ultracite fix"
     ]
+  },
+  "dependencies": {
+    "@handleui/shimmer": "0.1.0"
   }
 }

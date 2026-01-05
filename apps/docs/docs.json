@@ -3,7 +3,8 @@
   "theme": "maple",
   "name": "Detent Docs",
   "colors": {
-    "primary": "#2e2e2e"
+    "primary": "#F58514",
+    "light": "#F58514"
   },
   "appearance": {
     "default": "light"
@@ -70,7 +71,8 @@
   },
   "background": {
     "color": {
-      "light": "#f8f8f8"
+      "light": "#f8f8f8",
+      "dark": "#000000"
     }
   },
   "styling": {

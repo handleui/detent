@@ -1,5 +1,13 @@
 // biome-ignore-all lint/performance/noBarrelFile: This is the package entry point
 export { cleanupOrphanedWorktrees } from "./cleanup.js";
+export type { LockResult } from "./lock.js";
+export {
+  checkLockStatus,
+  isProcessAlive,
+  LOCK_FILE_NAME,
+  readLockPid,
+  tryAcquireLock,
+} from "./lock.js";
 export {
   commitAllChanges,
   getCurrentBranch,

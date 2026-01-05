@@ -1,6 +1,7 @@
 import { lstatSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { checkLockStatus } from "./lock.js";
 import { execGit } from "./utils.js";
 
 const ORPHAN_AGE_THRESHOLD = 60 * 60 * 1000;
@@ -57,8 +58,15 @@ const cleanOrphanedTempDirs = (repoRoot: string): number => {
       continue;
     }
 
+    // Check lock status - skip if locked by a live process
+    const lockStatus = checkLockStatus(fullPath);
+    if (lockStatus === "busy") {
+      continue;
+    }
+
+    // Only clean up if old enough (unless the lock check determined it's free)
     const age = Date.now() - info.mtimeMs;
-    if (age < ORPHAN_AGE_THRESHOLD) {
+    if (age < ORPHAN_AGE_THRESHOLD && lockStatus !== "free") {
       continue;
     }
 

@@ -1,6 +1,5 @@
 import { ParserClient } from "../services/parser-client.js";
 import type { DebugLogger } from "../utils/debug-logger.js";
-import { formatError } from "../utils/error.js";
 import type { ExecuteResult, ParsedError, ProcessResult } from "./types.js";
 
 /**
@@ -94,14 +93,13 @@ export class ErrorProcessor {
       };
     } catch (error) {
       this.debugLogger?.logError(error, "Parser");
-      console.warn(`Warning: Parser failed: ${formatError(error)}`);
-      console.warn("Continuing without error parsing...");
 
       this.debugLogger?.endPhase("Process");
 
       return {
         errors: [],
         errorCount: 0,
+        parserFailed: true,
       };
     }
   }
