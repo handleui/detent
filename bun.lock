@@ -87,6 +87,16 @@
       "name": "@detent/core",
       "version": "0.9.0",
     },
+    "packages/git": {
+      "name": "@detent/git",
+      "version": "0.0.1",
+      "devDependencies": {
+        "@detent/typescript-config": "*",
+        "@types/node": "^25.0.3",
+        "typescript": "5.9.2",
+        "vitest": "^4.0.16",
+      },
+    },
     "packages/healing": {
       "name": "@detent/healing",
       "version": "0.0.1",
@@ -223,6 +233,8 @@
     "@detent/core": ["@detent/core@workspace:packages/core"],
 
     "@detent/docs": ["@detent/docs@workspace:apps/docs"],
+
+    "@detent/git": ["@detent/git@workspace:packages/git"],
 
     "@detent/go-cli": ["@detent/go-cli@workspace:apps/go-cli"],
 

@@ -12,7 +12,11 @@
       "outputs": ["dist/**"]
     },
     "@detent/cli#build": {
-      "dependsOn": ["@detent/persistence#build", "@detent/healing#build"],
+      "dependsOn": [
+        "@detent/persistence#build",
+        "@detent/healing#build",
+        "@detent/git#build"
+      ],
       "inputs": [
         "src/**/*.ts",
         "src/**/*.tsx",
@@ -27,6 +31,10 @@
     },
     "check-types": {
       "dependsOn": ["^check-types"]
+    },
+    "test": {
+      "dependsOn": ["^build"],
+      "outputs": ["coverage/**"]
     },
     "dev": {
       "cache": false,

@@ -11,57 +11,16 @@ import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as tar from "tar";
+import {
+  formatChecksumLine,
+  TARGETS,
+  type Target,
+} from "../src/build/targets.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CLI_ROOT = join(__dirname, "..");
 const DIST_DIR = join(CLI_ROOT, "dist");
 const SRC_ENTRY = join(CLI_ROOT, "src", "index.ts");
-
-interface Target {
-  bun: string; // Bun target name
-  os: string; // Output OS name
-  arch: string; // Output arch name
-  ext: string; // Binary extension
-  archive: "tar.gz" | "zip";
-}
-
-const TARGETS: Target[] = [
-  {
-    bun: "bun-linux-x64",
-    os: "linux",
-    arch: "amd64",
-    ext: "",
-    archive: "tar.gz",
-  },
-  {
-    bun: "bun-linux-arm64",
-    os: "linux",
-    arch: "arm64",
-    ext: "",
-    archive: "tar.gz",
-  },
-  {
-    bun: "bun-darwin-x64",
-    os: "darwin",
-    arch: "amd64",
-    ext: "",
-    archive: "tar.gz",
-  },
-  {
-    bun: "bun-darwin-arm64",
-    os: "darwin",
-    arch: "arm64",
-    ext: "",
-    archive: "tar.gz",
-  },
-  {
-    bun: "bun-windows-x64",
-    os: "windows",
-    arch: "amd64",
-    ext: ".exe",
-    archive: "zip",
-  },
-];
 
 const log = (msg: string) => console.log(`[build] ${msg}`);
 const fatal = (msg: string): never => {
@@ -183,7 +142,7 @@ const generateChecksums = async (archivePaths: string[]): Promise<void> => {
   for (const archivePath of archivePaths) {
     const checksum = await calculateChecksum(archivePath);
     const filename = basename(archivePath);
-    checksums.push(`${checksum}  ${filename}`);
+    checksums.push(formatChecksumLine(checksum, filename));
   }
 
   const checksumsPath = join(DIST_DIR, "checksums.txt");
