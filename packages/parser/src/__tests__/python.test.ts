@@ -3,6 +3,22 @@ import { createParseContext, type ParseContext } from "../parser-types.js";
 import { createPythonParser } from "../parsers/python.js";
 import type { ExtractedError } from "../types.js";
 
+const getLine = (arr: string[], i: number): string => {
+  const line = arr[i];
+  if (line === undefined) {
+    throw new Error(`Expected line at index ${i}`);
+  }
+  return line;
+};
+
+const getLastLine = (arr: string[]): string => {
+  const line = arr.at(-1);
+  if (line === undefined) {
+    throw new Error("Expected last line");
+  }
+  return line;
+};
+
 describe("PythonParser", () => {
   let parser: ReturnType<typeof createPythonParser>;
   let ctx: ParseContext;
@@ -334,13 +350,13 @@ describe("PythonParser", () => {
         "ValueError: Invalid input",
       ];
 
-      expect(parser.canParse(lines[0]!, ctx)).toBeGreaterThan(0.9);
-      parser.parse(lines[0]!, ctx);
+      expect(parser.canParse(getLine(lines, 0), ctx)).toBeGreaterThan(0.9);
+      parser.parse(getLine(lines, 0), ctx);
 
       for (let i = 1; i < lines.length - 1; i++) {
-        expect(parser.continueMultiLine(lines[i]!, ctx)).toBe(true);
+        expect(parser.continueMultiLine(getLine(lines, i), ctx)).toBe(true);
       }
-      expect(parser.continueMultiLine(lines.at(-1)!, ctx)).toBe(false);
+      expect(parser.continueMultiLine(getLastLine(lines), ctx)).toBe(false);
 
       const result = parser.finishMultiLine(ctx) as ExtractedError;
 
@@ -363,11 +379,11 @@ describe("PythonParser", () => {
         "KeyError: 'missing_key'",
       ];
 
-      parser.parse(lines[0]!, ctx);
+      parser.parse(getLine(lines, 0), ctx);
       for (let i = 1; i < lines.length - 1; i++) {
-        parser.continueMultiLine(lines[i]!, ctx);
+        parser.continueMultiLine(getLine(lines, i), ctx);
       }
-      parser.continueMultiLine(lines.at(-1)!, ctx);
+      parser.continueMultiLine(getLastLine(lines), ctx);
       const result = parser.finishMultiLine(ctx) as ExtractedError;
 
       expect(result).not.toBeNull();
@@ -384,11 +400,11 @@ describe("PythonParser", () => {
         "AttributeError: 'NoneType' object has no attribute 'nonexistent_method'",
       ];
 
-      parser.parse(lines[0]!, ctx);
+      parser.parse(getLine(lines, 0), ctx);
       for (let i = 1; i < lines.length - 1; i++) {
-        parser.continueMultiLine(lines[i]!, ctx);
+        parser.continueMultiLine(getLine(lines, i), ctx);
       }
-      parser.continueMultiLine(lines.at(-1)!, ctx);
+      parser.continueMultiLine(getLastLine(lines), ctx);
       const result = parser.finishMultiLine(ctx) as ExtractedError;
 
       expect(result).not.toBeNull();
@@ -410,11 +426,11 @@ describe("PythonParser", () => {
         "RuntimeError: deep",
       ];
 
-      parser.parse(lines[0]!, ctx);
+      parser.parse(getLine(lines, 0), ctx);
       for (let i = 1; i < lines.length - 1; i++) {
-        parser.continueMultiLine(lines[i]!, ctx);
+        parser.continueMultiLine(getLine(lines, i), ctx);
       }
-      parser.continueMultiLine(lines.at(-1)!, ctx);
+      parser.continueMultiLine(getLastLine(lines), ctx);
       const result = parser.finishMultiLine(ctx) as ExtractedError;
 
       expect(result).not.toBeNull();
@@ -438,11 +454,11 @@ describe("PythonParser", () => {
         "RuntimeError: Handler failed",
       ];
 
-      parser.parse(lines[0]!, ctx);
+      parser.parse(getLine(lines, 0), ctx);
       for (let i = 1; i < lines.length - 1; i++) {
-        parser.continueMultiLine(lines[i]!, ctx);
+        parser.continueMultiLine(getLine(lines, i), ctx);
       }
-      parser.continueMultiLine(lines.at(-1)!, ctx);
+      parser.continueMultiLine(getLastLine(lines), ctx);
       const result = parser.finishMultiLine(ctx) as ExtractedError;
 
       expect(result).not.toBeNull();
@@ -463,11 +479,11 @@ describe("PythonParser", () => {
         "SyntaxError: unexpected EOF while parsing",
       ];
 
-      parser.parse(lines[0]!, ctx);
+      parser.parse(getLine(lines, 0), ctx);
       for (let i = 1; i < lines.length - 1; i++) {
-        parser.continueMultiLine(lines[i]!, ctx);
+        parser.continueMultiLine(getLine(lines, i), ctx);
       }
-      parser.continueMultiLine(lines.at(-1)!, ctx);
+      parser.continueMultiLine(getLastLine(lines), ctx);
       const result = parser.finishMultiLine(ctx) as ExtractedError;
 
       expect(result).not.toBeNull();
@@ -488,11 +504,11 @@ describe("PythonParser", () => {
         "SyntaxError: invalid syntax",
       ];
 
-      parser.parse(lines[0]!, ctx);
+      parser.parse(getLine(lines, 0), ctx);
       for (let i = 1; i < lines.length - 1; i++) {
-        parser.continueMultiLine(lines[i]!, ctx);
+        parser.continueMultiLine(getLine(lines, i), ctx);
       }
-      parser.continueMultiLine(lines.at(-1)!, ctx);
+      parser.continueMultiLine(getLastLine(lines), ctx);
       const result = parser.finishMultiLine(ctx) as ExtractedError;
 
       expect(result).not.toBeNull();
@@ -510,11 +526,11 @@ describe("PythonParser", () => {
         "IndentationError: expected an indented block",
       ];
 
-      parser.parse(lines[0]!, ctx);
+      parser.parse(getLine(lines, 0), ctx);
       for (let i = 1; i < lines.length - 1; i++) {
-        parser.continueMultiLine(lines[i]!, ctx);
+        parser.continueMultiLine(getLine(lines, i), ctx);
       }
-      parser.continueMultiLine(lines.at(-1)!, ctx);
+      parser.continueMultiLine(getLastLine(lines), ctx);
       const result = parser.finishMultiLine(ctx) as ExtractedError;
 
       expect(result).not.toBeNull();
@@ -594,11 +610,11 @@ describe("PythonParser", () => {
           "requests.exceptions.HTTPError: 404 Client Error",
         ];
 
-        parser.parse(lines[0]!, ctx);
+        parser.parse(getLine(lines, 0), ctx);
         for (let i = 1; i < lines.length - 1; i++) {
-          parser.continueMultiLine(lines[i]!, ctx);
+          parser.continueMultiLine(getLine(lines, i), ctx);
         }
-        parser.continueMultiLine(lines.at(-1)!, ctx);
+        parser.continueMultiLine(getLastLine(lines), ctx);
         const result = parser.finishMultiLine(ctx) as ExtractedError;
 
         expect(result).not.toBeNull();
@@ -660,11 +676,11 @@ describe("PythonParser", () => {
           "ValueError: Invalid: \u2603",
         ];
 
-        parser.parse(lines[0]!, ctx);
+        parser.parse(getLine(lines, 0), ctx);
         for (let i = 1; i < lines.length - 1; i++) {
-          parser.continueMultiLine(lines[i]!, ctx);
+          parser.continueMultiLine(getLine(lines, i), ctx);
         }
-        parser.continueMultiLine(lines.at(-1)!, ctx);
+        parser.continueMultiLine(getLastLine(lines), ctx);
         const result = parser.finishMultiLine(ctx) as ExtractedError;
 
         expect(result).not.toBeNull();
@@ -682,9 +698,9 @@ describe("PythonParser", () => {
         }
         lines.push("RecursionError: maximum recursion depth exceeded");
 
-        parser.parse(lines[0]!, ctx);
+        parser.parse(getLine(lines, 0), ctx);
         for (let i = 1; i < lines.length; i++) {
-          parser.continueMultiLine(lines[i]!, ctx);
+          parser.continueMultiLine(getLine(lines, i), ctx);
         }
         const result = parser.finishMultiLine(ctx) as ExtractedError;
 
@@ -870,8 +886,8 @@ describe("PythonParser", () => {
         "    raise ValueError('test')",
       ];
 
-      parser.parse(lines[0]!, ctx);
-      parser.continueMultiLine(lines[1]!, ctx);
+      parser.parse(getLine(lines, 0), ctx);
+      parser.continueMultiLine(getLine(lines, 1), ctx);
 
       parser.reset();
 

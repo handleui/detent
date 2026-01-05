@@ -564,11 +564,12 @@ export class GolangParser extends MultiLineParser {
   ): ParseResult => {
     const source: ErrorSource = "go";
     let category: ErrorCategory = "compile";
+    let parsedMessage = message;
 
     // Check for specific error types
-    if (goImportCyclePattern.test(message)) {
+    if (goImportCyclePattern.test(parsedMessage)) {
       category = "compile";
-    } else if (goBuildConstraintPattern.test(message)) {
+    } else if (goBuildConstraintPattern.test(parsedMessage)) {
       category = "compile";
     }
 
@@ -580,9 +581,9 @@ export class GolangParser extends MultiLineParser {
     // Extract rule ID from golangci-lint format
     let ruleId = "";
     let linterName = "";
-    const ruleMatches = golangciLintRulePattern.exec(message);
+    const ruleMatches = golangciLintRulePattern.exec(parsedMessage);
     if (ruleMatches) {
-      message = ruleMatches[1] ?? "";
+      parsedMessage = ruleMatches[1] ?? "";
       ruleId = ruleMatches[2] ?? "";
       linterName = ruleMatches[2] ?? "";
       category = "lint";
@@ -590,7 +591,7 @@ export class GolangParser extends MultiLineParser {
 
     // Check for static analysis codes
     let codePrefix = "";
-    const codeMatches = golangciLintCodePattern.exec(message);
+    const codeMatches = golangciLintCodePattern.exec(parsedMessage);
     if (codeMatches) {
       const code = codeMatches[1] ?? "";
       if (ruleId === "") {
@@ -598,7 +599,7 @@ export class GolangParser extends MultiLineParser {
       } else {
         ruleId = `${code}/${ruleId}`;
       }
-      message = codeMatches[2] ?? "";
+      parsedMessage = codeMatches[2] ?? "";
       category = "lint";
       codePrefix = extractCodePrefix(code);
     }
@@ -606,7 +607,7 @@ export class GolangParser extends MultiLineParser {
     const severity = determineLintSeverity(linterName, codePrefix);
 
     const err: MutableExtractedError = {
-      message,
+      message: parsedMessage,
       file,
       line: lineNum,
       column: col > 0 ? col : undefined,
@@ -664,6 +665,7 @@ export class GolangParser extends MultiLineParser {
     };
   };
 
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Go panic stack trace parsing requires handling multiple interleaved formats (goroutine headers, function frames, file references, resource limits)
   private readonly continuePanic = (line: string): boolean => {
     // SECURITY: Check resource limits BEFORE accumulating
     const currentBytes = this.panicState.stackTrace.reduce(

@@ -366,16 +366,15 @@ export class TypeScriptParser
     const stripped = stripAnsi(line);
 
     // If already in a multi-line error, maintain confidence for context lines
-    if (this.state.inError) {
-      // Check if this is a continuation line (code context, pointer, or related info)
-      if (
-        codeContextLinePattern.test(stripped) ||
+    // Check if this is a continuation line (code context, pointer, or related info)
+    if (
+      this.state.inError &&
+      (codeContextLinePattern.test(stripped) ||
         errorPointerPattern.test(stripped) ||
         relatedInfoPattern.test(stripped) ||
-        stripped.trim() === ""
-      ) {
-        return 0.85;
-      }
+        stripped.trim() === "")
+    ) {
+      return 0.85;
     }
 
     // Global error (no file location) - highest specificity due to "error TS" prefix

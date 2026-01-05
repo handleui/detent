@@ -316,6 +316,8 @@ class ESLintParser extends MultiLineParser implements NoisePatternProvider {
           return this.parseStylishError(match, line, ctx);
         case "compact":
           return this.parseCompactError(match, line, ctx);
+        default:
+          break;
       }
     }
 

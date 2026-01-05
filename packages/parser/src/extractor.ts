@@ -3,7 +3,7 @@
  * Migrated from packages/core/extract/extractor.go
  */
 
-import type { ContextParser } from "./ci-types.js";
+import type { ContextParser, ParseLineResult } from "./ci-types.js";
 import type { ParseContext, ToolParser } from "./parser-types.js";
 import type { ParserRegistry } from "./registry.js";
 import { sanitizeForTelemetry } from "./sanitize.js";
@@ -65,6 +65,7 @@ export class Extractor {
    * 2. Fall back to generic parser for patterns not matched by dedicated parsers
    * 3. Deduplicate results to avoid duplicates
    */
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: main extraction loop requires handling multi-line parsers, context tracking, deduplication, and error recovery in a single pass
   extract(output: string, ctxParser: ContextParser): ExtractedError[] {
     const extracted: ExtractedError[] = [];
     // Use Set for O(1) lookup - more efficient than Map<string, boolean>
@@ -108,7 +109,7 @@ export class Extractor {
 
       // Use the context parser to extract CI context and clean the line
       // SECURITY: Wrap in try-catch to handle malformed input gracefully
-      let parseResult;
+      let parseResult: ParseLineResult | null = null;
       try {
         parseResult = ctxParser.parseLine(line);
       } catch {

@@ -489,11 +489,13 @@ class RustParser extends MultiLineParser {
     // Determine severity - only "error" or "warning" are valid
     let severity: "error" | "warning" =
       this.state.errorLevel === "warning" ? "warning" : "error";
-    if (severity === "warning") {
-      // Check if this Clippy lint should be treated as error
-      if (this.state.clippyLint && criticalClippyLints[this.state.clippyLint]) {
-        severity = "error";
-      }
+    // Check if this Clippy lint should be treated as error
+    if (
+      severity === "warning" &&
+      this.state.clippyLint &&
+      criticalClippyLints[this.state.clippyLint]
+    ) {
+      severity = "error";
     }
 
     // Determine rule ID

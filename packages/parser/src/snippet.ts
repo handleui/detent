@@ -262,6 +262,7 @@ const truncateUTF8 = (str: string, maxBytes: number): string => {
 
   // Walk back to find a valid UTF-8 start byte
   let byte = buffer[end];
+  // biome-ignore lint/suspicious/noBitwiseOperators: Required for UTF-8 byte boundary detection (0xC0 = 11000000, 0x80 = 10000000)
   while (end > 0 && byte !== undefined && (byte & 0xc0) === 0x80) {
     end--;
     byte = buffer[end];
@@ -290,6 +291,7 @@ export const extractSnippet = async (
   filePath: string,
   line: number,
   contextLines: number = DefaultContextLines
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: File reading with security checks is inherently complex; splitting would reduce readability
 ): Promise<CodeSnippet | null> => {
   // Validate inputs
   if (!filePath || line <= 0 || contextLines < 0) {
@@ -436,6 +438,7 @@ interface ErrorWithPath {
 const extractSnippetsBatched = async (
   filePath: string,
   errorsInFile: ErrorWithPath[]
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Batch file reading with security validation is inherently complex; splitting would reduce readability
 ): Promise<{ succeeded: number; failed: number }> => {
   // Security: Normalize the path
   const cleanPath = normalize(filePath);
@@ -611,6 +614,7 @@ export const extractSnippetsForErrors = async (
   errors: ExtractedError[];
   succeeded: number;
   failed: number;
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Multi-error processing with security validation is inherently complex; splitting would reduce readability
 }> => {
   // Security: Clean and resolve basePath once if provided
   let cleanBasePath: string | undefined;

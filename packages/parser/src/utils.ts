@@ -20,8 +20,8 @@
  * ReDoS safety: Uses possessive-like character classes [^\x07\x1b]* with bounded alternatives
  * to prevent catastrophic backtracking. The OSC pattern matches non-terminator chars then the terminator.
  */
-// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional ANSI escape sequence matching
 const ansiEscapePattern =
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: intentional ANSI escape sequence matching
   /\x1b\[[0-9;:?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?|\x1b[()][AB012]|\x1b[@-_]/g;
 
 /**

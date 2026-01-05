@@ -254,6 +254,37 @@ const truncateMessage = (msg: string): string => {
   return msg.slice(0, MAX_MESSAGE_LENGTH);
 };
 
+/**
+ * Extract exception message from traceback lines by scanning backwards for
+ * exception or syntax error patterns.
+ */
+const extractExceptionMessage = (lines: readonly string[]): string => {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const lineItem = lines[i];
+    if (!lineItem) {
+      continue;
+    }
+    const line = stripAnsi(lineItem).trim();
+
+    const exMatch = exceptionPattern.exec(line);
+    if (exMatch) {
+      const [, errType, errMsg] = exMatch;
+      if (errType && errMsg) {
+        return `${errType}: ${errMsg}`;
+      }
+    }
+
+    const syntaxMatch = syntaxErrorPattern.exec(line);
+    if (syntaxMatch) {
+      const [, errType, errMsg] = syntaxMatch;
+      if (errType && errMsg) {
+        return `${errType}: ${errMsg}`;
+      }
+    }
+  }
+  return "";
+};
+
 // ============================================================================
 // Traceback State
 // ============================================================================
@@ -315,6 +346,7 @@ export class PythonParser
 
   private readonly traceback: TracebackState = createTracebackState();
 
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Parser requires multiple pattern checks with fast-path optimizations for Python tracebacks, pytest, mypy, ruff, flake8, and pylint formats
   canParse(line: string, _ctx: ParseContext): number {
     const stripped = stripAnsi(line);
 
@@ -551,6 +583,7 @@ export class PythonParser
    *   - Empty lines: Continue accumulating
    *   - Other lines: Signal end, return false
    */
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: State machine for traceback accumulation must handle File lines, code lines, caret lines, chained exceptions, and termination conditions
   private continueTraceback(line: string): boolean {
     const stripped = stripAnsi(line);
 
@@ -648,40 +681,13 @@ export class PythonParser
 
   private finishTraceback(ctx: ParseContext): ParseResult {
     const stackTrace = this.traceback.stackTrace.join("\n");
-    const lines = this.traceback.stackTrace;
 
-    // Extract the exception message from the last line
-    let message = "";
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const lineItem = lines[i];
-      if (!lineItem) {
-        continue;
-      }
-      const line = stripAnsi(lineItem).trim();
-      const exMatch = exceptionPattern.exec(line);
-      if (exMatch) {
-        const [, errType, errMsg] = exMatch;
-        if (errType && errMsg) {
-          message = `${errType}: ${errMsg}`;
-          break;
-        }
-      }
-      const syntaxMatch = syntaxErrorPattern.exec(line);
-      if (syntaxMatch) {
-        const [, errType, errMsg] = syntaxMatch;
-        if (errType && errMsg) {
-          message = `${errType}: ${errMsg}`;
-          break;
-        }
-      }
-    }
-
-    // If no exception message found, use a generic one
+    // Extract exception message, falling back to generic
+    let message = extractExceptionMessage(this.traceback.stackTrace);
     if (message === "") {
       message = "Python exception";
     }
 
-    // Check if message will be truncated
     const messageTruncated = message.length > MAX_MESSAGE_LENGTH;
     message = truncateMessage(message);
 
