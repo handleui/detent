@@ -24,7 +24,9 @@ export class GitRepositoryNotFoundError extends PreflightError {
  * Error thrown when the act binary is not installed.
  */
 export class ActNotInstalledError extends PreflightError {
-  constructor(message = "act is not installed - run installation to continue") {
+  constructor(
+    message = "act is not installed\n\nInstall with: brew install act\nOr visit: https://github.com/nektos/act#installation"
+  ) {
     super(message);
     this.name = "ActNotInstalledError";
     Object.setPrototypeOf(this, ActNotInstalledError.prototype);
@@ -36,7 +38,7 @@ export class ActNotInstalledError extends PreflightError {
  */
 export class DockerNotRunningError extends PreflightError {
   constructor(
-    message = "Docker daemon is not running or not accessible - please start Docker"
+    message = "Docker daemon is not running or not accessible\n\nMake sure Docker Desktop is running, or start the daemon with:\n  sudo systemctl start docker"
   ) {
     super(message);
     this.name = "DockerNotRunningError";

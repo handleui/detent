@@ -1,3 +1,4 @@
+// biome-ignore-all lint/performance/noBarrelFile: index file for preflight module exports
 import {
   checkActInstalled,
   checkDockerRunning,

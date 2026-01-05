@@ -43,29 +43,29 @@ export const checkGitRepository = async (): Promise<PreflightResult> => {
  *
  * @returns PreflightResult indicating if the check passed
  */
-export const checkActInstalled = async (): Promise<PreflightResult> => {
+export const checkActInstalled = (): Promise<PreflightResult> => {
   try {
     const installed = isInstalled();
     if (installed) {
-      return {
+      return Promise.resolve({
         passed: true,
         message: "act is installed",
-      };
+      });
     }
-    return {
+    return Promise.resolve({
       passed: false,
       message: "act binary not found",
       error: new ActNotInstalledError(),
-    };
+    });
   } catch (error) {
-    return {
+    return Promise.resolve({
       passed: false,
       message: "failed to check act installation",
       error:
         error instanceof Error
           ? new ActNotInstalledError(error.message)
           : new ActNotInstalledError(),
-    };
+    });
   }
 };
 
