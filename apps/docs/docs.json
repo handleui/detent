@@ -1,6 +1,6 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
+  "theme": "aspen",
   "name": "Detent Docs",
   "colors": {
     "primary": "#17DB4E",
@@ -8,10 +8,9 @@
     "dark": "#17DB4E"
   },
   "appearance": {
-    "default": "system",
-    "strict": false
+    "default": "light",
+    "strict": true
   },
-  "favicon": "/favicon.svg",
   "subdirectory": "docs",
   "navigation": {
     "tabs": [
@@ -65,27 +64,23 @@
       ]
     }
   },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
   "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "https://github.com/handleui/detent/issues"
-      }
-    ]
+    "links": []
   },
   "footer": {
     "socials": {
-      "github": "https://github.com/handleui/detent"
+      "github": "https://github.com/handleui/detent",
+      "x": "https://x.com/handleui"
     }
   },
   "background": {
     "color": {
       "dark": "#000000"
     },
-    "decoration": "grid"
+    "decoration": "gradient"
+  },
+  "styling": {
+    "eyebrows": "section",
+    "latex": false
   }
 }
