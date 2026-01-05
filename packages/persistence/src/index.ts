@@ -179,3 +179,38 @@ export {
   saveConfig,
   trustRepo,
 } from "./config.js";
+
+// ============================================================================
+// Validation
+// ============================================================================
+
+export {
+  ErrEmptyRequired,
+  ErrFieldTooLong,
+  ErrIDTooLong,
+  ErrInvalidConfidence,
+  ErrInvalidID,
+  ErrInvalidPath,
+  ErrInvalidStatus,
+  ErrPathTraversal,
+  MaxDiffLength,
+  MaxExplanationLength,
+  // Constants
+  MaxIDLength,
+  MaxOutputLength,
+  MaxPathLength,
+  MaxReasonLength,
+  // Error classes
+  ValidationError,
+  validateAssignment,
+  validateAssignmentStatus,
+  validateConfidence,
+  validateFilePaths,
+  validateFixStatus,
+  // Validation functions
+  validateID,
+  validateOptionalID,
+  validatePath,
+  validateStringLength,
+  validateSuggestedFix,
+} from "./validation.js";

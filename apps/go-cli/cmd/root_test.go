@@ -104,44 +104,6 @@ func TestExecute(t *testing.T) {
 	// The function existence is verified at compile time
 }
 
-func TestEnsureAPIKeyNotInitialized(t *testing.T) {
-	// Store original cfg
-	originalCfg := cfg
-	defer func() { cfg = originalCfg }()
-
-	// Set cfg to nil to test error handling
-	cfg = nil
-
-	_, err := ensureAPIKey()
-	if err == nil {
-		t.Error("ensureAPIKey() should return error when cfg is nil")
-	}
-
-	expectedMsg := "internal error: configuration not initialized"
-	if err.Error() != expectedMsg {
-		t.Errorf("ensureAPIKey() error = %q, want %q", err.Error(), expectedMsg)
-	}
-}
-
-func TestEnsureTrustedRepoNotInitialized(t *testing.T) {
-	// Store original cfg
-	originalCfg := cfg
-	defer func() { cfg = originalCfg }()
-
-	// Set cfg to nil to test error handling
-	cfg = nil
-
-	err := ensureTrustedRepo()
-	if err == nil {
-		t.Error("ensureTrustedRepo() should return error when cfg is nil")
-	}
-
-	expectedMsg := "internal error: configuration not initialized"
-	if err.Error() != expectedMsg {
-		t.Errorf("ensureTrustedRepo() error = %q, want %q", err.Error(), expectedMsg)
-	}
-}
-
 func TestCommandSilenceSettings(t *testing.T) {
 	tests := []struct {
 		name           string

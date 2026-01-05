@@ -21,10 +21,12 @@ const BATCH_SIZE = 500; // Batch size for error inserts (matches Go)
 /**
  * Compute content hash for error deduplication.
  * Normalizes the message and computes SHA256 hash.
+ * Removes :line:col patterns to group errors across line number changes.
  */
 export const computeContentHash = (message: string): string => {
-  // Normalize: trim whitespace, lowercase
-  const normalized = message.trim().toLowerCase();
+  // Normalize: trim whitespace, lowercase, remove line:col numbers
+  let normalized = message.trim().toLowerCase();
+  normalized = normalized.replace(/:\d+:\d+/g, "");
   return createHash("sha256").update(normalized).digest("hex");
 };
 

@@ -15,7 +15,6 @@ import (
 
 	"github.com/Masterminds/semver/v3"
 	"github.com/detent/go-cli/internal/util"
-	"github.com/detent/go-cli/internal/persistence"
 )
 
 const (
@@ -27,6 +26,9 @@ const (
 
 	// maxResponseSize limits manifest response to prevent memory exhaustion
 	maxResponseSize = 64 * 1024 // 64KB should be plenty for a version manifest
+
+	// DetentHomeEnv is the environment variable that overrides the default .detent directory.
+	DetentHomeEnv = "DETENT_HOME"
 )
 
 // manifestURL is the URL to fetch the manifest from.
@@ -43,8 +45,21 @@ type cache struct {
 	LatestVersion string    `json:"latestVersion"`
 }
 
+// getDetentDir returns the .detent directory in the user's home directory.
+// If DETENT_HOME is set, uses that instead.
+func getDetentDir() (string, error) {
+	if dir := os.Getenv(DetentHomeEnv); dir != "" {
+		return dir, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".detent"), nil
+}
+
 func getCachePath() (string, error) {
-	dir, err := persistence.GetDetentDir()
+	dir, err := getDetentDir()
 	if err != nil {
 		return "", err
 	}

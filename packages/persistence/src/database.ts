@@ -37,8 +37,13 @@ export class ErrHealLockHeld extends Error {
 
 /**
  * Get the detent directory path: ~/.detent
+ * Supports DETENT_HOME environment variable override
  */
 export const getDetentDir = (): string => {
+  const override = process.env.DETENT_HOME;
+  if (override) {
+    return override;
+  }
   return join(homedir(), ".detent");
 };
 

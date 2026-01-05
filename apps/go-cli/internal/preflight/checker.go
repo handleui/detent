@@ -10,7 +10,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/detent/go-cli/internal/actbin"
 	"github.com/detent/go-cli/internal/docker"
-	"github.com/detent/go-cli/internal/persistence"
 	"github.com/detent/go-cli/internal/tui"
 	"github.com/detentsh/core/git"
 	"github.com/detentsh/core/workflow"
@@ -60,13 +59,9 @@ func RunPreflightChecks(ctx context.Context, workflowPath, repoRoot, runID, work
 			program.Send(tui.PreflightDoneMsg{Err: err})
 		}
 
-		// Load config and get job overrides for this repo
+		// NOTE: Job overrides config has been migrated to TypeScript CLI
+		// Pass nil for job overrides
 		var jobOverrides map[string]string
-		if cfg, cfgErr := persistence.Load(); cfgErr == nil {
-			if repoSHA, shaErr := git.GetFirstCommitSHA(repoRoot); shaErr == nil && repoSHA != "" {
-				jobOverrides = cfg.GetJobOverrides(repoSHA)
-			}
-		}
 
 		program.Send(tui.PreflightUpdateMsg("Validating repository"))
 		err := git.ValidateNoEscapingSymlinks(ctx, repoRoot)

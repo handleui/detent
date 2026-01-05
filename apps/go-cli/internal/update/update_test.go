@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
-
-	"github.com/detent/go-cli/internal/persistence"
 )
 
 // TestCompareVersions tests version comparison logic
@@ -235,7 +233,7 @@ func TestCheck_WithMockServer(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tmpDir := t.TempDir()
-			t.Setenv(persistence.DetentHomeEnv, tmpDir)
+			t.Setenv(DetentHomeEnv, tmpDir)
 
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(tt.responseCode)
@@ -307,7 +305,7 @@ func TestCheck_MalformedResponses(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tmpDir := t.TempDir()
-			t.Setenv(persistence.DetentHomeEnv, tmpDir)
+			t.Setenv(DetentHomeEnv, tmpDir)
 
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusOK)
@@ -332,7 +330,7 @@ func TestCheck_MalformedResponses(t *testing.T) {
 func TestCheck_CacheBehavior(t *testing.T) {
 	t.Run("uses cached value within cache duration", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		t.Setenv(persistence.DetentHomeEnv, tmpDir)
+		t.Setenv(DetentHomeEnv, tmpDir)
 
 		cacheData := cache{
 			LastCheck:     time.Now(),
@@ -371,7 +369,7 @@ func TestCheck_CacheBehavior(t *testing.T) {
 
 	t.Run("fetches new value when cache expired", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		t.Setenv(persistence.DetentHomeEnv, tmpDir)
+		t.Setenv(DetentHomeEnv, tmpDir)
 
 		cacheData := cache{
 			LastCheck:     time.Now().Add(-25 * time.Hour),
@@ -410,7 +408,7 @@ func TestCheck_CacheBehavior(t *testing.T) {
 
 	t.Run("fetches when no cache exists", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		t.Setenv(persistence.DetentHomeEnv, tmpDir)
+		t.Setenv(DetentHomeEnv, tmpDir)
 
 		requestCount := 0
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -439,7 +437,7 @@ func TestCheck_CacheBehavior(t *testing.T) {
 
 	t.Run("falls back to cache when fetch fails", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		t.Setenv(persistence.DetentHomeEnv, tmpDir)
+		t.Setenv(DetentHomeEnv, tmpDir)
 
 		cacheData := cache{
 			LastCheck:     time.Now().Add(-25 * time.Hour),
@@ -472,7 +470,7 @@ func TestCheck_CacheBehavior(t *testing.T) {
 
 	t.Run("saves cache after successful fetch", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		t.Setenv(persistence.DetentHomeEnv, tmpDir)
+		t.Setenv(DetentHomeEnv, tmpDir)
 
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
@@ -529,7 +527,7 @@ func TestCheck_CacheMalformed(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tmpDir := t.TempDir()
-			t.Setenv(persistence.DetentHomeEnv, tmpDir)
+			t.Setenv(DetentHomeEnv, tmpDir)
 
 			cachePath := filepath.Join(tmpDir, cacheFile)
 			if err := os.WriteFile(cachePath, []byte(tt.cacheContent), 0o600); err != nil {
@@ -567,7 +565,7 @@ func TestCheck_CacheMalformed(t *testing.T) {
 func TestClearCache(t *testing.T) {
 	t.Run("removes existing cache file", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		t.Setenv(persistence.DetentHomeEnv, tmpDir)
+		t.Setenv(DetentHomeEnv, tmpDir)
 
 		cachePath := filepath.Join(tmpDir, cacheFile)
 		if err := os.WriteFile(cachePath, []byte(`{"lastCheck": "2024-01-01T00:00:00Z"}`), 0o600); err != nil {
@@ -589,7 +587,7 @@ func TestClearCache(t *testing.T) {
 
 	t.Run("returns nil when cache file does not exist", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		t.Setenv(persistence.DetentHomeEnv, tmpDir)
+		t.Setenv(DetentHomeEnv, tmpDir)
 
 		if err := ClearCache(); err != nil {
 			t.Errorf("ClearCache() error = %v, want nil for non-existent file", err)
@@ -598,7 +596,7 @@ func TestClearCache(t *testing.T) {
 
 	t.Run("returns nil for empty detent directory", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		t.Setenv(persistence.DetentHomeEnv, tmpDir)
+		t.Setenv(DetentHomeEnv, tmpDir)
 
 		if err := ClearCache(); err != nil {
 			t.Errorf("ClearCache() error = %v, want nil", err)
@@ -711,7 +709,7 @@ func TestFetchLatestVersion_Timeout(t *testing.T) {
 func TestLoadCache(t *testing.T) {
 	t.Run("returns nil for non-existent cache", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		t.Setenv(persistence.DetentHomeEnv, tmpDir)
+		t.Setenv(DetentHomeEnv, tmpDir)
 
 		c := loadCache()
 		if c != nil {
@@ -721,7 +719,7 @@ func TestLoadCache(t *testing.T) {
 
 	t.Run("returns nil for invalid JSON", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		t.Setenv(persistence.DetentHomeEnv, tmpDir)
+		t.Setenv(DetentHomeEnv, tmpDir)
 
 		cachePath := filepath.Join(tmpDir, cacheFile)
 		if err := os.WriteFile(cachePath, []byte(`invalid json`), 0o600); err != nil {
@@ -736,7 +734,7 @@ func TestLoadCache(t *testing.T) {
 
 	t.Run("loads valid cache", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		t.Setenv(persistence.DetentHomeEnv, tmpDir)
+		t.Setenv(DetentHomeEnv, tmpDir)
 
 		now := time.Now().Truncate(time.Second)
 		cacheData := cache{
@@ -763,7 +761,7 @@ func TestLoadCache(t *testing.T) {
 func TestSaveCache(t *testing.T) {
 	t.Run("creates cache file", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		t.Setenv(persistence.DetentHomeEnv, tmpDir)
+		t.Setenv(DetentHomeEnv, tmpDir)
 
 		c := &cache{
 			LastCheck:     time.Now(),
@@ -781,7 +779,7 @@ func TestSaveCache(t *testing.T) {
 	t.Run("creates detent directory if needed", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		nestedDir := filepath.Join(tmpDir, "nested", "detent")
-		t.Setenv(persistence.DetentHomeEnv, nestedDir)
+		t.Setenv(DetentHomeEnv, nestedDir)
 
 		c := &cache{
 			LastCheck:     time.Now(),
@@ -819,7 +817,7 @@ func TestConstants(t *testing.T) {
 // TestCheck_NetworkError tests Check behavior when network is unavailable
 func TestCheck_NetworkError(t *testing.T) {
 	tmpDir := t.TempDir()
-	t.Setenv(persistence.DetentHomeEnv, tmpDir)
+	t.Setenv(DetentHomeEnv, tmpDir)
 
 	originalURL := manifestURL
 	manifestURL = "http://localhost:1"
@@ -838,7 +836,7 @@ func TestCheck_NetworkError(t *testing.T) {
 // TestCheck_LargeResponse tests that large responses are handled safely
 func TestCheck_LargeResponse(t *testing.T) {
 	tmpDir := t.TempDir()
-	t.Setenv(persistence.DetentHomeEnv, tmpDir)
+	t.Setenv(DetentHomeEnv, tmpDir)
 
 	// Create a response that's large but still within 64KB limit
 	// Each version entry is about 10 bytes, so 1000 entries ~= 10KB
@@ -874,7 +872,7 @@ func TestCheck_LargeResponse(t *testing.T) {
 // TestCheck_OversizedResponse tests that responses over 64KB are truncated
 func TestCheck_OversizedResponse(t *testing.T) {
 	tmpDir := t.TempDir()
-	t.Setenv(persistence.DetentHomeEnv, tmpDir)
+	t.Setenv(DetentHomeEnv, tmpDir)
 
 	// Create a response larger than maxResponseSize (64KB)
 	// This should cause a JSON decode error due to truncation
@@ -908,7 +906,7 @@ func TestCheck_OversizedResponse(t *testing.T) {
 // BenchmarkCheck benchmarks the Check function with cached data
 func BenchmarkCheck_Cached(b *testing.B) {
 	tmpDir := b.TempDir()
-	b.Setenv(persistence.DetentHomeEnv, tmpDir)
+	b.Setenv(DetentHomeEnv, tmpDir)
 
 	cacheData := cache{
 		LastCheck:     time.Now(),

@@ -6,7 +6,6 @@ import (
 	"os"
 
 	"github.com/detent/go-cli/internal/debug"
-	"github.com/detent/go-cli/internal/persistence"
 	"github.com/detent/go-cli/internal/preflight"
 	"github.com/detent/go-cli/internal/tui"
 	"github.com/detentsh/core/git"
@@ -135,13 +134,9 @@ func (p *WorkflowPreparer) runValidationChecks(ctx context.Context, verbose bool
 
 // prepareWorkflowsAndWorktree prepares workflow files and creates worktree in parallel.
 func (p *WorkflowPreparer) prepareWorkflowsAndWorktree(ctx context.Context, verbose bool) (*PrepareResult, error) {
-	// Load config and get job overrides for this repo (before goroutines)
+	// NOTE: Job overrides config has been migrated to TypeScript CLI
+	// Pass nil for job overrides
 	var jobOverrides map[string]string
-	if cfg, cfgErr := persistence.Load(); cfgErr == nil {
-		if repoSHA, shaErr := git.GetFirstCommitSHA(p.config.RepoRoot); shaErr == nil && repoSHA != "" {
-			jobOverrides = cfg.GetJobOverrides(repoSHA)
-		}
-	}
 
 	type workflowResult struct {
 		tmpDir           string

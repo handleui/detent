@@ -8,7 +8,6 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/detent/go-cli/internal/persistence"
 	"github.com/detent/go-cli/internal/runner"
 	"github.com/detent/go-cli/internal/signal"
 	"github.com/detent/go-cli/internal/tui"
@@ -25,10 +24,6 @@ var (
 	workflowFile string
 )
 
-// cfg holds the loaded and merged configuration, available to all commands.
-// Initialized in PersistentPreRunE.
-var cfg *persistence.Config
-
 // agentInfo holds the detected AI agent environment info.
 // Initialized once in PersistentPreRunE, available to all commands.
 var agentInfo agent.Info
@@ -36,6 +31,10 @@ var agentInfo agent.Info
 // StartTime holds the command start time for duration calculation.
 // Set in PersistentPreRunE, used by commands to calculate elapsed time.
 var StartTime time.Time
+
+// trustedRepos tracks which repos have been trusted in this session.
+// Maps first commit SHA to true if trusted.
+var trustedRepos = make(map[string]bool)
 
 var rootCmd = &cobra.Command{
 	Use:   "detent",
@@ -75,18 +74,6 @@ Requirements:
 		// Branding header
 		fmt.Println(tui.Header(Version, cmd.Name()))
 
-		// Load config
-		loadedCfg, configErr := persistence.Load()
-		if configErr != nil {
-			fmt.Fprintf(os.Stderr, "%s Config error: %s\n",
-				tui.WarningStyle.Render("!"),
-				tui.MutedStyle.Render(configErr.Error()))
-			fmt.Fprintf(os.Stderr, "%s Run: detent config reset\n\n", tui.Bullet())
-			// Use default config instead of retrying Load()
-			loadedCfg = persistence.NewConfigWithDefaults()
-		}
-		cfg = loadedCfg
-
 		// Trust check - FIRST thing before any command runs
 		// This ensures we never execute repo code without explicit trust
 		if err := ensureTrustedRepo(); err != nil {
@@ -124,28 +111,15 @@ REQUIREMENTS
 
 CORE COMMANDS
   detent check:       Run workflows locally and extract errors
-  detent heal:        Auto-fix CI errors using AI (requires API key)
-  detent workflows:   Manage which workflow jobs run (enable/disable)
-  detent allow:       Manage allowed shell commands for this repo
-  detent config:      View and manage detent configuration
-  detent clean:       Clean up orphaned worktrees and old run data
 
   Pass --help to any command for specific help
   (e.g., detent check --help)
 
 TYPICAL WORKFLOW
   1. Run detent check to see all CI errors locally
-  2. Fix errors manually, or run detent heal for AI assistance
+  2. Fix errors manually
   3. Re-run detent check to verify fixes
   4. Push with confidence
-
-CONFIGURATION
-  API key for heal command:
-    - Set ANTHROPIC_API_KEY environment variable, or
-    - Run detent config set api-key <key>
-
-  Workflow job control:
-    - Run detent workflows to enable/disable specific jobs
 
 LEARN MORE
   GitHub:   https://github.com/handleui/detent
@@ -170,56 +144,9 @@ func init() {
 	rootCmd.SetHelpFunc(customHelpFunc)
 }
 
-// ensureAPIKey checks for API key and prompts interactively if missing.
-// Uses cfg and saves the key if prompted.
-// Returns the API key or an error if unavailable.
-func ensureAPIKey() (string, error) {
-	if cfg == nil {
-		// This indicates a programming error - config should always be loaded
-		// before commands that need API keys are run
-		return "", fmt.Errorf("internal error: configuration not initialized")
-	}
-
-	// Config already has merged API key (env > global)
-	if cfg.APIKey != "" {
-		return cfg.APIKey, nil
-	}
-
-	// No key found - prompt if interactive terminal
-	if !isatty.IsTerminal(os.Stdin.Fd()) {
-		return "", fmt.Errorf("no API key found: set ANTHROPIC_API_KEY environment variable or run 'detent config show' for configuration options")
-	}
-
-	// Show interactive prompt
-	model := tui.NewAPIKeyPromptModel()
-	program := tea.NewProgram(model)
-
-	if _, runErr := program.Run(); runErr != nil {
-		return "", fmt.Errorf("prompt failed: %w", runErr)
-	}
-
-	result := model.GetResult()
-	if result == nil || result.Cancelled {
-		return "", fmt.Errorf("API key input cancelled")
-	}
-
-	// Save key to config
-	if saveErr := cfg.SetAPIKey(result.Key); saveErr != nil {
-		return "", fmt.Errorf("failed to save API key: %w", saveErr)
-	}
-
-	fmt.Fprintf(os.Stderr, "%s API key saved\n\n", tui.SuccessStyle.Render("✓"))
-
-	return result.Key, nil
-}
-
 // ensureTrustedRepo checks if the current repository is trusted, prompts if not.
 // Returns error if user declines trust, not in a git repo, or not interactive.
 func ensureTrustedRepo() error {
-	if cfg == nil {
-		return fmt.Errorf("internal error: configuration not initialized")
-	}
-
 	repoRoot, err := filepath.Abs(".")
 	if err != nil {
 		return fmt.Errorf("resolving current directory: %w", err)
@@ -233,8 +160,8 @@ func ensureTrustedRepo() error {
 		return fmt.Errorf("repository has no commits yet")
 	}
 
-	// Check if already trusted
-	if cfg.IsTrustedRepo(firstCommitSHA) {
+	// Check if already trusted in this session
+	if trustedRepos[firstCommitSHA] {
 		return nil
 	}
 
@@ -280,10 +207,8 @@ func ensureTrustedRepo() error {
 		return fmt.Errorf("repository trust declined")
 	}
 
-	// Save trust to config
-	if trustErr := cfg.TrustRepo(firstCommitSHA, remoteURL); trustErr != nil {
-		return fmt.Errorf("failed to save trust: %w", trustErr)
-	}
+	// Mark as trusted for this session
+	trustedRepos[firstCommitSHA] = true
 
 	fmt.Fprintf(os.Stderr, "%s Repository trusted\n\n", tui.SuccessStyle.Render("✓"))
 	return nil

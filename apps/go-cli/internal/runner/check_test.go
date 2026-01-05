@@ -640,6 +640,7 @@ func TestCheckRunner_PrepareWithSpecificWorkflowFile(t *testing.T) {
 }
 
 // TestCheckRunner_PersistWithoutWorktreeInfo tests Persist when worktreeInfo is nil
+// NOTE: Persistence has been migrated to TypeScript, so Persist is now a stub that always returns nil.
 func TestCheckRunner_PersistWithoutWorktreeInfo(t *testing.T) {
 	cfg := &RunConfig{
 		RepoRoot:     "/test",
@@ -663,13 +664,10 @@ func TestCheckRunner_PersistWithoutWorktreeInfo(t *testing.T) {
 		RunID:     cfg.RunID,
 	}
 
+	// Persist is now a stub that always returns nil (migrated to TypeScript)
 	err := runner.Persist()
-	if err == nil {
-		t.Fatal("Persist() should fail when worktreeInfo is nil")
-	}
-
-	if !strings.Contains(err.Error(), "worktree") {
-		t.Errorf("Error should mention 'worktree', got: %v", err)
+	if err != nil {
+		t.Fatalf("Persist() should succeed (stub), got: %v", err)
 	}
 }
 
