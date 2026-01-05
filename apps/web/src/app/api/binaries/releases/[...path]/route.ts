@@ -6,7 +6,7 @@ import { type NextRequest, NextResponse } from "next/server";
  * This allows a stable URL (detent.sh/api/binaries/...) regardless of blob store ID.
  */
 export const GET = async (
-  request: NextRequest,
+  _request: NextRequest,
   { params }: { params: Promise<{ path: string[] }> }
 ): Promise<NextResponse> => {
   const { path } = await params;

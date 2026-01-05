@@ -1,15 +1,12 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
+  "theme": "maple",
   "name": "Detent Docs",
   "colors": {
-    "primary": "#313131",
-    "light": "#F58514",
-    "dark": "#F58514"
+    "primary": "#2e2e2e"
   },
   "appearance": {
-    "default": "dark",
-    "strict": true
+    "default": "light"
   },
   "subdirectory": "docs",
   "navigation": {
@@ -63,12 +60,7 @@
     ]
   },
   "navbar": {
-    "links": [
-      {
-        "label": "Get Started",
-        "href": "/docs/cli/quickstart"
-      }
-    ]
+    "links": []
   },
   "footer": {
     "socials": {
@@ -78,7 +70,7 @@
   },
   "background": {
     "color": {
-      "dark": "#000000"
+      "light": "#f8f8f8"
     }
   },
   "styling": {

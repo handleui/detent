@@ -2,147 +2,75 @@
 
 ## Overview
 
-Detent fixes CI failures automatically. Two environments:
-
-- **CLI**: Local execution with `act`, git worktrees, Go healing
-- **Cloud**: GitHub webhooks, E2B sandboxes, TS healing
+Detent fixes CI failures automatically using the CLI with `act`, git worktrees, and Claude-based healing.
 
 ## Current State
 
 ```
-packages/core/              # Go - shared parsing logic
-├── errors/                 # Error types, severity, grouping
-├── extract/                # Extract errors from CI logs
-├── tools/*                 # Language parsers (Go, TS, Rust, ESLint)
-├── workflow/               # GitHub Actions YAML parsing
-├── git/                    # Git operations (CLI uses worktrees)
-├── heal/                   # Go healing loop (CLI only)
-├── act/                    # Act runner (CLI only)
-├── ci/                     # CI metadata types
-└── progress/               # Progress reporter interface
+apps/cli/                   # TypeScript CLI (main)
+├── src/commands/           # CLI commands (check, heal, etc.)
+├── src/runner/             # Act runner, workflow execution
+├── src/tui/                # Terminal UI components
+└── scripts/                # Build & upload scripts
 
-apps/go-cli/                # Go CLI (renamed, deprecated)
+apps/go-cli/                # Go CLI (deprecated)
 apps/web/                   # Next.js landing
+apps/docs/                  # Documentation
+
+packages/parser/            # TypeScript error parsing
+├── src/parsers/            # Language parsers (Go, TS, Rust, Python, ESLint)
+├── src/extractor.ts        # Extract errors from CI logs
+└── src/types.ts            # Error types
+
+packages/git/               # Git operations (worktrees, branches)
+packages/healing/           # Claude-based healing loop
+packages/persistence/       # Caching & state persistence
+packages/core/              # Go shared logic (legacy)
+packages/ui/                # Shared UI components
+packages/typescript-config/ # Shared TS config
 ```
 
-## Cloud Architecture (Planned)
+## CLI Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        GitHub                                    │
-│  workflow fails → webhook (workflow_run.completed)              │
+│                        detent check                              │
 └─────────────────────────────┬───────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  apps/api (Hono on Cloudflare Workers)                          │
-│  ├── Better Auth (user accounts)                                │
-│  ├── POST /webhooks/github                                      │
-│  ├── Fetch GHA logs via GitHub API                              │
-│  └── Orchestrate parsing + healing                              │
-└──────────────┬─────────────────────────────┬────────────────────┘
-               │                             │
-               ▼                             ▼
-┌──────────────────────────┐   ┌──────────────────────────────────┐
-│  apps/parser (Go/Fly.io) │   │  E2B Sandbox                     │
-│  POST /parse             │   │  ├── Clone repo                  │
-│  └── Uses core/extract   │   │  ├── TS healing loop             │
-│  └── Returns errors JSON │   │  ├── read_file → sandbox.fs      │
-└──────────────────────────┘   │  ├── edit_file → sandbox.fs      │
-                               │  ├── run_command → sandbox.proc  │
-                               │  └── Return fix diff             │
-                               └──────────────────────────────────┘
-                                              │
-                                              ▼
-                               ┌──────────────────────────────────┐
-                               │  Create PR with fix              │
-                               └──────────────────────────────────┘
+│  apps/cli                                                        │
+│  ├── Parse .github/workflows/*.yml                              │
+│  ├── Run workflows with act (in worktree)                       │
+│  ├── Extract errors via packages/parser                         │
+│  └── (Healing: packages/healing with Claude)                    │
+└─────────────────────────────────────────────────────────────────┘
 ```
-
-## Healing: CLI vs Cloud
-
-Same algorithm, different runtimes:
-
-| Step | CLI (Go) | Cloud (TS) |
-|------|----------|------------|
-| Get errors | `core/extract` | `apps/parser` API |
-| Prompt | `core/heal/prompt` | `apps/api/healer.ts` |
-| Claude call | Anthropic Go SDK | Anthropic TS SDK |
-| read_file | `os.ReadFile()` | `sandbox.fs.read()` |
-| edit_file | `os.WriteFile()` | `sandbox.fs.write()` |
-| run_command | `exec.Command()` | `sandbox.process.start()` |
-| Isolation | Git worktree | E2B sandbox |
-
-Not duplicated logic - same algorithm, different execution environments.
-
-## Shared Types (OpenAPI)
-
-When building cloud, create `specs/parser.yaml`:
-
-```yaml
-openapi: 3.0.0
-paths:
-  /parse:
-    post:
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                logs:
-                  type: string
-      responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/ExtractedError'
-
-components:
-  schemas:
-    ExtractedError:
-      type: object
-      properties:
-        file: { type: string }
-        line: { type: integer }
-        message: { type: string }
-        category: { type: string, enum: [lint, type, test, compile, runtime] }
-        severity: { type: string, enum: [error, warning, info] }
-```
-
-Generate types:
-- Go: `oapi-codegen`
-- TS: `@hey-api/openapi-ts`
 
 ## Package Responsibilities
 
-| Package | CLI | Cloud | Notes |
-|---------|-----|-------|-------|
-| `core/errors` | ✅ | ✅ | Shared types |
-| `core/extract` | ✅ | ✅ | Parser service wraps this |
-| `core/tools/*` | ✅ | ✅ | Language parsers |
-| `core/workflow` | ✅ | ✅ | YAML parsing |
-| `core/git` | ✅ | ❌ | Cloud uses E2B, not worktrees |
-| `core/heal` | ✅ | ❌ | Cloud has TS heal in apps/api |
-| `core/act` | ✅ | ❌ | Cloud uses real GHA |
-| `core/progress` | ✅ | ✅ | Reporter interface |
-| `core/agent` | ✅ | ❌ | CLI verbose mode for AI agents |
+| Package | Purpose |
+|---------|---------|
+| `packages/parser` | Parse CI logs, extract errors (TS, Go, Rust, Python, ESLint) |
+| `packages/git` | Git operations, worktree management |
+| `packages/healing` | Claude-based error healing loop |
+| `packages/persistence` | Cache parsed errors, healing state |
+| `packages/core` | Legacy Go shared logic |
 
-## Cost Projection
+## Release Flow
 
-| Service | Free Tier | Paid |
-|---------|-----------|------|
-| Cloudflare Workers | 100k req/day | $5/mo |
-| Fly.io | 3 shared-cpu VMs | $3-5/mo |
-| E2B | ? | Usage-based |
+1. **Changesets**: Create changesets for changes
+2. **PR Merge**: Changesets action creates release PR
+3. **Release PR Merge**: Bumps versions, creates git tag
+4. **Build**: Compiles binaries for all platforms (Bun compile)
+5. **Sign**: Cosign signs checksums
+6. **Distribute**:
+   - GitHub Release with assets
+   - Vercel Blob for `curl -fsSL https://detent.sh/install.sh | bash`
 
 ## Key Decisions
 
-1. **No WASM**: TinyGo regex broken, Cloudflare 1MB limit
-2. **Go parser service**: 8K LOC regex too complex to port to TS
-3. **TS healing in cloud**: E2B SDK is TS, better async/await
-4. **Separate heal implementations**: Same algorithm, different tool backends
-5. **OpenAPI for types**: Single source of truth, generate for both languages
+1. **TypeScript CLI**: Bun compile for standalone binaries
+2. **TypeScript parser**: Replaced Go parser, runs locally in CLI
+3. **Git worktrees**: Isolated healing without affecting working directory
+4. **Act**: Local GitHub Actions runner for testing workflows

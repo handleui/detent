@@ -7,6 +7,10 @@
     {
       "source": "/docs/:match*",
       "destination": "https://handle-604f6e43.mintlify.dev/docs/:match*"
+    },
+    {
+      "source": "/api/binaries/:path*",
+      "destination": "https://pnjskr95aabi2pql.public.blob.vercel-storage.com/:path*"
     }
   ]
 }

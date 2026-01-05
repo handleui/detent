@@ -23,6 +23,7 @@
       "dependencies": {
         "@detent/git": "*",
         "@detent/healing": "*",
+        "@detent/parser": "*",
         "@detent/persistence": "*",
         "@inkjs/ui": "^2.0.0",
         "citty": "^0.1.6",
@@ -37,6 +38,7 @@
         "@types/js-yaml": "^4.0.9",
         "@types/node": "^25.0.3",
         "@types/react": "^18.3.3",
+        "@types/semver": "^7.7.1",
         "@types/tar": "^6.1.13",
         "@types/unzipper": "^0.10.11",
         "@vercel/blob": "^0.27.1",
@@ -745,6 +747,8 @@
     "@types/react": ["@types/react@18.3.27", "", { "dependencies": { "@types/prop-types": "*", "csstype": "^3.2.2" } }, "sha512-cisd7gxkzjBKU2GgdYrTdtQx1SORymWyaAFhaxQPK9bYO9ot3Y5OikQRvY0VYQtvwjeQnizCINJAenh/V7MK2w=="],
 
     "@types/react-dom": ["@types/react-dom@19.2.2", "", { "peerDependencies": { "@types/react": "^19.2.0" } }, "sha512-9KQPoO6mZCi7jcIStSnlOWn2nEF3mNmyr3rIAsGnAbQKYbRLyqmeSc39EVgtxXVia+LMT8j3knZLAZAh+xLmrw=="],
+
+    "@types/semver": ["@types/semver@7.7.1", "", {}, "sha512-FmgJfu+MOcQ370SD0ev7EI8TlCAfKYU+B4m5T3yXc1CiRN94g/SZPtsCkk506aUDtlMnFZvasDwHHUcZUEaYuA=="],
 
     "@types/tar": ["@types/tar@6.1.13", "", { "dependencies": { "@types/node": "*", "minipass": "^4.0.0" } }, "sha512-IznnlmU5f4WcGTh2ltRu/Ijpmk8wiWXfF0VA4s+HPjHZgvFggk1YaIkbo5krX/zUCzWF8N/l4+W/LNxnvAJ8nw=="],
 

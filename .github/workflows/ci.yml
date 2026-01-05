@@ -140,7 +140,7 @@ jobs:
           bun-version: latest
 
       - name: Install dependencies
-        run: bun ci
+        run: bun install --frozen-lockfile
 
       - name: Setup Turbo cache
         uses: actions/cache@v4
@@ -168,7 +168,7 @@ jobs:
           bun-version: latest
 
       - name: Install dependencies
-        run: bun ci
+        run: bun install --frozen-lockfile
 
       - name: Setup Turbo cache
         uses: actions/cache@v4
@@ -197,7 +197,7 @@ jobs:
           bun-version: latest
 
       - name: Install dependencies
-        run: bun ci
+        run: bun install --frozen-lockfile
 
       - name: Setup Turbo cache
         uses: actions/cache@v4
