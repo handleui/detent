@@ -166,9 +166,11 @@ export { Recorder } from "./recorder.js";
 // Config
 // ============================================================================
 
+export type { ValidationResult } from "./config.js";
 export {
   formatBudget,
   getAllowedCommands,
+  getAllowedModels,
   getConfigPath,
   getDetentDir as getConfigDetentDir,
   isTrustedRepo,
@@ -178,6 +180,11 @@ export {
   matchesCommand,
   saveConfig,
   trustRepo,
+  validateApiKey,
+  validateBudgetMonthly,
+  validateBudgetPerRun,
+  validateModel,
+  validateTimeout,
 } from "./config.js";
 
 // ============================================================================

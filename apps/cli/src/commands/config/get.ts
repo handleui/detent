@@ -19,10 +19,24 @@ export const configGetCommand = defineCommand({
 
     if (!isConfigKey(key)) {
       console.error(`Unknown key: ${key}`);
+      console.error(`Valid keys: ${CONFIG_KEYS.join(", ")}`);
       process.exit(1);
     }
 
-    const config = loadConfig();
-    console.log(config[key]);
+    try {
+      const config = loadConfig();
+      const value = config[key];
+
+      if (value === undefined || value === null) {
+        console.log("");
+      } else {
+        console.log(value);
+      }
+    } catch (error) {
+      console.error(
+        `Error loading config: ${error instanceof Error ? error.message : "unknown error"}`
+      );
+      process.exit(1);
+    }
   },
 });

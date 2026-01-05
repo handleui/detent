@@ -1,6 +1,3 @@
-import { render } from "ink";
-import type { ReactElement } from "react";
-
 /**
  * Determines if the CLI should use interactive TUI mode.
  *
@@ -15,8 +12,4 @@ export const shouldUseTUI = (): boolean => {
 
   // TUI requires a TTY for interactive input/output
   return Boolean(process.stdout.isTTY && process.stdin.isTTY);
-};
-
-export const renderApp = (element: ReactElement) => {
-  return render(element, { exitOnCtrlC: true });
 };

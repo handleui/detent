@@ -31,6 +31,18 @@ const MAX_BUDGET_USD = 100.0;
 const MAX_BUDGET_MONTHLY_USD = 1000.0;
 const MODEL_PREFIX = "claude-";
 
+// API Key validation patterns
+const API_KEY_PREFIXES = ["sk-ant-"] as const;
+const API_KEY_MIN_LENGTH = 20;
+const API_KEY_MAX_LENGTH = 200;
+
+// Allowed models (canonical list - only 4.5 generation)
+const ALLOWED_MODELS = [
+  "claude-opus-4-5",
+  "claude-sonnet-4-5",
+  "claude-haiku-4-5",
+] as const;
+
 // ============================================================================
 // Path Helpers
 // ============================================================================
@@ -330,3 +342,145 @@ export const formatBudget = (usd: number): string => {
   }
   return `$${usd.toFixed(2)}`;
 };
+
+// ============================================================================
+// Validation Helpers
+// ============================================================================
+
+export interface ValidationResult {
+  valid: boolean;
+  error?: string;
+}
+
+/**
+ * Validates an API key format.
+ * Keys must start with a known prefix and be within length bounds.
+ */
+export const validateApiKey = (key: string): ValidationResult => {
+  if (!key || key.trim() === "") {
+    return { valid: false, error: "API key is required" };
+  }
+
+  const trimmed = key.trim();
+
+  if (trimmed.length < API_KEY_MIN_LENGTH) {
+    return {
+      valid: false,
+      error:
+        "API key is too short. Expected format: sk-ant-api03-... (get yours from console.anthropic.com)",
+    };
+  }
+
+  if (trimmed.length > API_KEY_MAX_LENGTH) {
+    return {
+      valid: false,
+      error:
+        "API key is too long. Expected format: sk-ant-api03-... (get yours from console.anthropic.com)",
+    };
+  }
+
+  const hasValidPrefix = API_KEY_PREFIXES.some((prefix) =>
+    trimmed.startsWith(prefix)
+  );
+  if (!hasValidPrefix) {
+    return {
+      valid: false,
+      error: `Invalid API key format. Must start with ${API_KEY_PREFIXES.join(" or ")} (e.g., sk-ant-api03-...). Get your key from console.anthropic.com`,
+    };
+  }
+
+  return { valid: true };
+};
+
+/**
+ * Validates a model name.
+ * Must be in the allowed models list or start with claude- prefix.
+ */
+export const validateModel = (model: string): ValidationResult => {
+  if (!model || model.trim() === "") {
+    return { valid: false, error: "Model name is required" };
+  }
+
+  const trimmed = model.trim();
+
+  if (ALLOWED_MODELS.includes(trimmed as (typeof ALLOWED_MODELS)[number])) {
+    return { valid: true };
+  }
+
+  if (!trimmed.startsWith(MODEL_PREFIX)) {
+    return {
+      valid: false,
+      error: `Model must start with "${MODEL_PREFIX}" or be one of: ${ALLOWED_MODELS.join(", ")}`,
+    };
+  }
+
+  return { valid: true };
+};
+
+/**
+ * Validates a budget value.
+ */
+export const validateBudgetPerRun = (value: number): ValidationResult => {
+  if (Number.isNaN(value)) {
+    return { valid: false, error: "Budget must be a number" };
+  }
+  if (value < MIN_BUDGET_USD) {
+    return { valid: false, error: "Budget cannot be negative" };
+  }
+  if (value > MAX_BUDGET_USD) {
+    return {
+      valid: false,
+      error: `Budget cannot exceed $${MAX_BUDGET_USD}`,
+    };
+  }
+  return { valid: true };
+};
+
+/**
+ * Validates a monthly budget value.
+ */
+export const validateBudgetMonthly = (value: number): ValidationResult => {
+  if (Number.isNaN(value)) {
+    return { valid: false, error: "Monthly budget must be a number" };
+  }
+  if (value < 0) {
+    return { valid: false, error: "Monthly budget cannot be negative" };
+  }
+  if (value > MAX_BUDGET_MONTHLY_USD) {
+    return {
+      valid: false,
+      error: `Monthly budget cannot exceed $${MAX_BUDGET_MONTHLY_USD}`,
+    };
+  }
+  return { valid: true };
+};
+
+/**
+ * Validates a timeout value in minutes.
+ */
+export const validateTimeout = (value: number): ValidationResult => {
+  if (Number.isNaN(value)) {
+    return { valid: false, error: "Timeout must be a number" };
+  }
+  if (value < 0) {
+    return { valid: false, error: "Timeout cannot be negative" };
+  }
+  if (value > 0 && value < MIN_TIMEOUT_MINS) {
+    return {
+      valid: false,
+      error: `Timeout must be at least ${MIN_TIMEOUT_MINS} minute(s)`,
+    };
+  }
+  if (value > MAX_TIMEOUT_MINS) {
+    return {
+      valid: false,
+      error: `Timeout cannot exceed ${MAX_TIMEOUT_MINS} minutes`,
+    };
+  }
+  return { valid: true };
+};
+
+/**
+ * Gets the list of allowed models
+ */
+export const getAllowedModels = (): readonly string[] => ALLOWED_MODELS;

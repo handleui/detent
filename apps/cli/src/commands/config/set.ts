@@ -2,23 +2,63 @@ import {
   type GlobalConfig,
   loadGlobalConfig,
   saveConfig,
+  type ValidationResult,
+  validateApiKey,
+  validateBudgetMonthly,
+  validateBudgetPerRun,
+  validateModel,
+  validateTimeout,
 } from "@detent/persistence";
 import { defineCommand } from "citty";
 import { CONFIG_KEYS, type ConfigKey, isConfigKey } from "./constants.js";
 
-const parseValue = (key: ConfigKey, value: string): unknown => {
-  if (
-    key === "budgetPerRunUsd" ||
-    key === "budgetMonthlyUsd" ||
-    key === "timeoutMins"
-  ) {
-    const num = Number(value);
-    if (Number.isNaN(num)) {
-      throw new Error(`Invalid number: ${value}`);
+// Helper to parse and validate string values (apiKey, model)
+const parseStringValue = (
+  value: string,
+  validate: (v: string) => ValidationResult,
+  errorFallback: string
+): string | undefined => {
+  if (value && value.trim() !== "") {
+    const result = validate(value);
+    if (!result.valid) {
+      throw new Error(result.error ?? errorFallback);
     }
-    return num;
   }
-  return value;
+  return value || undefined;
+};
+
+// Helper to parse and validate numeric values
+const parseNumberValue = (
+  value: string,
+  validate: (v: number) => ValidationResult,
+  errorFallback: string
+): number => {
+  const num = Number(value);
+  if (Number.isNaN(num)) {
+    throw new Error(`Invalid number: ${value}`);
+  }
+  const result = validate(num);
+  if (!result.valid) {
+    throw new Error(result.error ?? errorFallback);
+  }
+  return num;
+};
+
+// Validator map for each config key
+const validators: Record<ConfigKey, (value: string) => unknown> = {
+  apiKey: (v) => parseStringValue(v, validateApiKey, "Invalid API key format"),
+  model: (v) => parseStringValue(v, validateModel, "Invalid model name"),
+  budgetPerRunUsd: (v) =>
+    parseNumberValue(v, validateBudgetPerRun, "Invalid budget value"),
+  budgetMonthlyUsd: (v) =>
+    parseNumberValue(v, validateBudgetMonthly, "Invalid monthly budget value"),
+  timeoutMins: (v) =>
+    parseNumberValue(v, validateTimeout, "Invalid timeout value"),
+};
+
+const parseAndValidate = (key: ConfigKey, value: string): unknown => {
+  const validator = validators[key];
+  return validator(value);
 };
 
 export const configSetCommand = defineCommand({
@@ -48,7 +88,7 @@ export const configSetCommand = defineCommand({
     }
 
     try {
-      const parsed = parseValue(key, rawValue);
+      const parsed = parseAndValidate(key, rawValue);
       const config = loadGlobalConfig();
       const updated: GlobalConfig = { ...config, [key]: parsed };
       saveConfig(updated);
