@@ -1,15 +1,15 @@
+import {
+  actParser,
+  createExtractor,
+  createGenericParser,
+  createGolangParser,
+  createPythonParser,
+  createRegistry,
+  createRustParser,
+  createTypeScriptParser,
+  type ExtractedError,
+} from "@detent/parser";
 import type { ParsedError } from "../runner/types.js";
-import { formatError } from "../utils/error.js";
-
-/**
- * Request payload for the parser service.
- */
-export interface ParserRequest {
-  /**
-   * Raw log output to be parsed for errors.
-   */
-  readonly logs: string;
-}
 
 /**
  * Response from the parser service.
@@ -22,62 +22,15 @@ export interface ParserResponse {
 }
 
 /**
- * HTTP client for communicating with the parser service.
- * The parser service analyzes workflow execution logs and extracts structured errors.
+ * Parser client that uses the local @detent/parser package to extract errors from logs.
+ * Replaces the previous HTTP-based parser service.
  */
 export class ParserClient {
-  private readonly baseUrl: string;
-  private readonly timeout: number;
   private static readonly MAX_LOG_SIZE = 100 * 1024 * 1024; // 100MB limit
 
-  /**
-   * Creates a new parser client instance.
-   *
-   * @param config - Optional configuration
-   * @param config.baseUrl - Base URL of the parser service (defaults to PARSER_URL env var or http://localhost:8080)
-   * @param config.timeout - Request timeout in milliseconds (defaults to 30000ms)
-   */
   constructor(config?: { baseUrl?: string; timeout?: number }) {
-    const rawUrl =
-      config?.baseUrl ?? process.env.PARSER_URL ?? "http://localhost:8080";
-    this.baseUrl = this.validateAndNormalizeUrl(rawUrl);
-    this.timeout = config?.timeout ?? 30_000; // 30s default for potentially large log parsing
-  }
-
-  /**
-   * Validates and normalizes the base URL to prevent injection attacks.
-   *
-   * @param url - The URL to validate
-   * @returns Normalized URL without trailing slash
-   * @throws Error if URL is invalid or uses an unsafe protocol
-   */
-  private validateAndNormalizeUrl(url: string): string {
-    if (!url || typeof url !== "string") {
-      throw new Error("Parser service URL must be a non-empty string");
-    }
-
-    if (url.includes("\0") || url.includes("\n") || url.includes("\r")) {
-      throw new Error(
-        "Parser service URL contains invalid characters (null bytes or newlines)"
-      );
-    }
-
-    let parsedUrl: URL;
-    try {
-      parsedUrl = new URL(url);
-    } catch {
-      throw new Error(
-        `Parser service URL is invalid: ${url}. Must be a valid HTTP(S) URL.`
-      );
-    }
-
-    if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") {
-      throw new Error(
-        `Parser service URL must use HTTP or HTTPS protocol, got: ${parsedUrl.protocol}`
-      );
-    }
-
-    return parsedUrl.origin + parsedUrl.pathname.replace(/\/$/, "");
+    // Config is no longer used - kept for backwards compatibility
+    void config;
   }
 
   /**
@@ -85,7 +38,7 @@ export class ParserClient {
    *
    * @param logs - Raw log output from workflow execution
    * @returns Parsed errors from the logs
-   * @throws Error if the request fails, times out, or returns a non-200 status
+   * @throws Error if logs are invalid or too large
    */
   async parse(logs: string): Promise<ParserResponse> {
     if (!logs || typeof logs !== "string") {
@@ -99,63 +52,84 @@ export class ParserClient {
       );
     }
 
-    const signal = AbortSignal.timeout(this.timeout);
-    const url = `${this.baseUrl}/parse`;
+    // Create registry and register all tool parsers
+    const registry = createRegistry();
+    registry.register(createGolangParser());
+    registry.register(createTypeScriptParser());
+    registry.register(createPythonParser());
+    registry.register(createRustParser());
+    registry.register(createGenericParser());
+    registry.initNoiseChecker();
 
-    try {
-      const response = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ logs } satisfies ParserRequest),
-        signal,
-      });
+    // Create extractor with the registry
+    const extractor = createExtractor(registry);
 
-      if (!response.ok) {
-        const errorText = await response.text().catch(() => "Unknown error");
-        throw new Error(
-          `Parser service returned ${response.status}: ${errorText}`
-        );
-      }
+    // Extract errors using the act context parser
+    const extractedErrors = extractor.extract(logs, actParser);
 
-      let data: unknown;
-      try {
-        data = await response.json();
-      } catch (error) {
-        throw new Error(
-          `Failed to parse parser service response: ${formatError(error)}`
-        );
-      }
+    // Convert ExtractedError[] to ParsedError[]
+    const parsedErrors = this.convertToParsedErrors(extractedErrors);
 
-      if (!data || typeof data !== "object" || Array.isArray(data)) {
-        throw new Error("Parser service response must be an object");
-      }
+    return { errors: parsedErrors };
+  }
 
-      const responseObj = data as Record<string, unknown>;
+  /**
+   * Converts ExtractedError from @detent/parser to ParsedError format.
+   *
+   * @param extractedErrors - Errors from the parser
+   * @returns Errors in ParsedError format
+   */
+  private convertToParsedErrors(
+    extractedErrors: readonly ExtractedError[]
+  ): ParsedError[] {
+    return extractedErrors.map((err) => ({
+      errorId: this.generateErrorId(err),
+      contentHash: this.generateContentHash(err),
+      filePath: err.file,
+      message: err.message,
+      severity: err.severity ?? "error",
+    }));
+  }
 
-      if (!("errors" in responseObj && Array.isArray(responseObj.errors))) {
-        throw new Error("Parser service response missing 'errors' array");
-      }
+  /**
+   * Generates a unique error ID.
+   *
+   * @param err - Extracted error
+   * @returns Unique error ID
+   */
+  private generateErrorId(err: ExtractedError): string {
+    const timestamp = Date.now();
+    const random = Math.random().toString(36).slice(2, 11);
+    const fileHash = err.file ? this.simpleHash(err.file) : "nofile";
+    return `${timestamp}-${fileHash}-${random}`;
+  }
 
-      return { errors: responseObj.errors } as ParserResponse;
-    } catch (error) {
-      // Handle timeout specifically
-      if (error instanceof Error && error.name === "AbortError") {
-        throw new Error(
-          `Parser service request timed out after ${this.timeout}ms`
-        );
-      }
+  /**
+   * Generates a content hash for deduplication.
+   *
+   * @param err - Extracted error
+   * @returns Content hash
+   */
+  private generateContentHash(err: ExtractedError): string {
+    const content = `${err.message}|${err.file ?? ""}|${err.line ?? 0}`;
+    return this.simpleHash(content);
+  }
 
-      // Handle network errors
-      if (error instanceof TypeError) {
-        throw new Error(
-          `Failed to connect to parser service at ${this.baseUrl}: ${error.message}`
-        );
-      }
-
-      // Re-throw other errors as-is
-      throw error;
+  /**
+   * Simple hash function for generating IDs and hashes.
+   *
+   * @param str - String to hash
+   * @returns Hash string
+   */
+  private simpleHash(str: string): string {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      const char = str.charCodeAt(i);
+      // biome-ignore lint/suspicious/noBitwiseOperators: intentional hash computation
+      hash = (hash << 5) - hash + char;
+      // biome-ignore lint/suspicious/noBitwiseOperators: convert to 32-bit integer
+      hash &= hash;
     }
+    return Math.abs(hash).toString(36);
   }
 }
