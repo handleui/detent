@@ -5,12 +5,13 @@
  * Creates archives and checksums for distribution.
  */
 
+declare const Bun: typeof globalThis.Bun;
+
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import * as tar from "tar";
 import {
   formatChecksumLine,
   TARGETS,
@@ -75,8 +76,9 @@ const createTarGz = async (
   archivePath: string
 ): Promise<void> => {
   const dir = dirname(binaryPath);
+  const { create } = await import("tar");
 
-  await tar.create(
+  await create(
     {
       gzip: true,
       file: archivePath,
@@ -146,7 +148,7 @@ const generateChecksums = async (archivePaths: string[]): Promise<void> => {
   }
 
   const checksumsPath = join(DIST_DIR, "checksums.txt");
-  await writeFile(checksumsPath, checksums.join("\n") + "\n");
+  await writeFile(checksumsPath, `${checksums.join("\n")}\n`);
   log("Generated checksums.txt");
 };
 
