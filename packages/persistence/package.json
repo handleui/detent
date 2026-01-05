@@ -1,0 +1,23 @@
+{
+  "name": "@detent/persistence",
+  "version": "0.0.1",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "check-types": "tsc --noEmit"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.0.0"
+  },
+  "devDependencies": {
+    "@detent/typescript-config": "*",
+    "@types/better-sqlite3": "^7.6.0",
+    "typescript": "5.9.2"
+  }
+}
