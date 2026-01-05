@@ -1,3 +1,4 @@
+// biome-ignore-all lint/performance/noBarrelFile: This is the package entry point
 export { cleanupOrphanedWorktrees } from "./cleanup.js";
 export {
   commitAllChanges,

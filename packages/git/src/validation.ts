@@ -79,6 +79,7 @@ export const validateNoEscapingSymlinks = async (
 
   let symlinksChecked = 0;
 
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Security-critical symlink validation requires thorough checks
   const walkDir = async (currentPath: string, depth: number): Promise<void> => {
     const rel = relative(absRepoRoot, currentPath);
 

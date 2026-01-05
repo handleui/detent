@@ -47,6 +47,7 @@ describe("run-id", () => {
     const validRunID = "a1b2c3d4e5f60123" as RunID;
     const path = createEphemeralWorktreePath(validRunID);
     expect(path).toContain(`detent-${validRunID}`);
+    expect(path).toMatch(/detent-[0-9a-f]+-[0-9a-z]+-[0-9a-z]+/);
   });
 
   test("createEphemeralWorktreePath rejects empty runID", () => {

@@ -18,6 +18,7 @@ export const cleanupOrphanedWorktrees = async (
   return cleanOrphanedTempDirs(repoRoot);
 };
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Security-critical symlink and path validation
 const cleanOrphanedTempDirs = (repoRoot: string): number => {
   const tempDir = tmpdir();
   let entries: string[];
@@ -40,7 +41,7 @@ const cleanOrphanedTempDirs = (repoRoot: string): number => {
     }
 
     const fullPath = join(tempDir, entry);
-    let info;
+    let info: ReturnType<typeof lstatSync> | undefined;
 
     try {
       info = lstatSync(fullPath);
@@ -84,7 +85,7 @@ const cleanOrphanedTempDirs = (repoRoot: string): number => {
 const isWorktreeForRepo = (worktreePath: string, repoRoot: string): boolean => {
   const gitPath = join(worktreePath, ".git");
 
-  let info;
+  let info: ReturnType<typeof lstatSync> | undefined;
   try {
     info = lstatSync(gitPath);
   } catch {

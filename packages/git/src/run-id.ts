@@ -35,7 +35,13 @@ export const createEphemeralWorktreePath = (runID: RunID): string => {
   }
 
   const tempDir = tmpdir();
-  const proposedPath = join(tempDir, `${WORKTREE_PREFIX}${runID}`);
+  const timestamp = Date.now().toString(36);
+  const randomSuffix = Math.random().toString(36).substring(2, 6);
+  const uniqueSuffix = `${timestamp}-${randomSuffix}`;
+  const proposedPath = join(
+    tempDir,
+    `${WORKTREE_PREFIX}${runID}-${uniqueSuffix}`
+  );
 
   const normalizedTemp = normalize(resolve(tempDir));
   const normalizedProposed = normalize(resolve(proposedPath));

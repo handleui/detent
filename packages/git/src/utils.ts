@@ -59,6 +59,7 @@ export const safeGitEnv = (): Readonly<Record<string, string>> => {
 export const execGit = async (
   args: string[],
   options: GitExecOptions = {}
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Input validation requires thorough checks
 ): Promise<GitExecResult> => {
   const { execFile } = await import("node:child_process");
   const { promisify } = await import("node:util");
@@ -134,7 +135,7 @@ export const execGit = async (
         );
       }
 
-      const stdout =
+      const _stdout =
         typeof execError.stdout === "string" ? execError.stdout.trim() : "";
       const stderr =
         typeof execError.stderr === "string" ? execError.stderr.trim() : "";

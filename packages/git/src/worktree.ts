@@ -74,9 +74,28 @@ export const prepareWorktree = async (
 
   validatePath(finalPath);
 
-  await execGit(["worktree", "add", "-d", finalPath, commitSHA], {
-    cwd: repoRoot,
-  });
+  try {
+    await execGit(["worktree", "add", "-d", finalPath, commitSHA], {
+      cwd: repoRoot,
+    });
+  } catch (err) {
+    const error = err as Error;
+    if (error.message.includes("already exists")) {
+      try {
+        await execGit(["worktree", "remove", "--force", finalPath], {
+          cwd: repoRoot,
+        });
+      } catch {
+        // Ignore cleanup errors
+      }
+
+      await execGit(["worktree", "add", "-d", finalPath, commitSHA], {
+        cwd: repoRoot,
+      });
+    } else {
+      throw error;
+    }
+  }
 
   await syncDirtyFiles(repoRoot, finalPath);
 
