@@ -1,23 +1,24 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "aspen",
+  "theme": "mint",
   "name": "Detent Docs",
   "colors": {
-    "primary": "#17DB4E",
-    "light": "#17DB4E",
-    "dark": "#17DB4E"
+    "primary": "#313131",
+    "light": "#F58514",
+    "dark": "#F58514"
   },
   "appearance": {
-    "strict": false
+    "default": "dark",
+    "strict": true
   },
   "subdirectory": "docs",
   "navigation": {
     "global": {
       "anchors": [
         {
-          "anchor": "GitHub",
-          "icon": "github",
-          "href": "https://github.com/handleui/detent"
+          "anchor": "Contact",
+          "icon": "envelope",
+          "href": "https://detent.sh/contact"
         },
         {
           "anchor": "Pricing",
@@ -33,43 +34,41 @@
     },
     "products": [
       {
-        "product": "Parser",
-        "description": "Parse and validate data",
-        "icon": "code",
+        "product": "Detent CLI",
+        "description": "Run CI locally and fix errors with AI",
         "groups": [
           {
-            "group": "Getting Started",
+            "group": "Get Started",
             "pages": [
-              "parser/index",
-              "parser/getting-started",
-              "parser/installation"
+              "cli/welcome",
+              "cli/quickstart",
+              "cli/installation",
+              "cli/concepts"
             ]
           },
           {
-            "group": "Reference",
-            "pages": ["parser/api-reference"]
-          }
-        ]
-      },
-      {
-        "product": "Detent CLI",
-        "description": "Command-line interface",
-        "icon": "terminal",
-        "groups": [
-          {
-            "group": "Getting Started",
-            "pages": ["cli/index", "cli/getting-started", "cli/installation"]
+            "group": "Core",
+            "pages": ["cli/check", "cli/heal"]
           },
           {
-            "group": "Usage",
-            "pages": ["cli/commands", "cli/configuration"]
+            "group": "Healing",
+            "pages": ["cli/how-healing-works", "cli/budget", "cli/tools"]
+          },
+          {
+            "group": "Configuration",
+            "pages": ["cli/settings", "cli/workflows", "cli/trust"]
           }
         ]
       }
     ]
   },
   "navbar": {
-    "links": []
+    "links": [
+      {
+        "label": "Get Started",
+        "href": "/docs/cli/quickstart"
+      }
+    ]
   },
   "footer": {
     "socials": {
