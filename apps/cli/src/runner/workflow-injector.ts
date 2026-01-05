@@ -72,6 +72,125 @@ const jobHasNeeds = (job: Record<string, unknown>): boolean => {
 };
 
 /**
+ * YAML dump options for consistent serialization.
+ */
+const YAML_DUMP_OPTIONS = {
+  indent: 2,
+  lineWidth: 80,
+  noRefs: true,
+  sortKeys: false,
+  quotingType: '"' as const,
+  forceQuotes: false,
+};
+
+/**
+ * Parses and validates workflow YAML content.
+ * @returns The parsed workflow object
+ * @throws Error if YAML is invalid or not an object
+ */
+const parseWorkflowYaml = (yamlContent: string): Record<string, unknown> => {
+  if (yamlContent.trim().length === 0) {
+    throw new Error("Workflow YAML content is empty");
+  }
+
+  let workflow: unknown;
+  try {
+    workflow = load(yamlContent);
+  } catch (error) {
+    throw new Error(`Failed to parse workflow YAML: ${formatError(error)}`);
+  }
+
+  if (!workflow || typeof workflow !== "object" || Array.isArray(workflow)) {
+    throw new Error("Workflow YAML must be an object");
+  }
+
+  return workflow as Record<string, unknown>;
+};
+
+/**
+ * Validates and extracts the jobs object from a workflow.
+ * @returns The jobs object or null if no jobs defined
+ * @throws Error if jobs is not an object
+ */
+const extractJobsObject = (
+  workflowObj: Record<string, unknown>
+): Record<string, unknown> | null => {
+  if (!("jobs" in workflowObj)) {
+    return null;
+  }
+
+  const jobs = workflowObj.jobs;
+  if (!jobs || typeof jobs !== "object" || Array.isArray(jobs)) {
+    throw new Error("Workflow 'jobs' must be an object");
+  }
+
+  return jobs as Record<string, unknown>;
+};
+
+/**
+ * Converts a raw job object to a Job type for sensitivity checking.
+ */
+const convertToJobForCheck = (jobObj: Record<string, unknown>): Job => ({
+  name: typeof jobObj.name === "string" ? jobObj.name : undefined,
+  steps: Array.isArray(jobObj.steps)
+    ? (jobObj.steps as readonly Record<string, unknown>[]).map((s) => ({
+        uses: typeof s.uses === "string" ? s.uses : undefined,
+        run: typeof s.run === "string" ? s.run : undefined,
+      }))
+    : undefined,
+  needs: parseNeeds(jobObj.needs),
+});
+
+/**
+ * Checks if a job is a reusable workflow (uses external workflow).
+ */
+const isReusableWorkflow = (jobObj: Record<string, unknown>): boolean =>
+  typeof jobObj.uses === "string" && jobObj.uses.length > 0;
+
+/**
+ * Applies injection modifications to a sensitive job.
+ * Sets if: false to skip the job.
+ */
+const applySensitiveJobModifications = (
+  jobObj: Record<string, unknown>
+): void => {
+  jobObj.if = "false";
+};
+
+/**
+ * Applies injection modifications to a non-sensitive job.
+ * Adds continue-on-error and handles if: always() for jobs with dependencies.
+ */
+const applyNonSensitiveJobModifications = (
+  jobObj: Record<string, unknown>
+): void => {
+  jobObj["continue-on-error"] = true;
+
+  if (jobHasNeeds(jobObj)) {
+    const existingIf = jobObj.if;
+    if (typeof existingIf === "string" && existingIf.length > 0) {
+      jobObj.if = `always() && (${existingIf})`;
+    } else {
+      jobObj.if = "always()";
+    }
+  }
+};
+
+/**
+ * Serializes a workflow object to YAML.
+ * @throws Error if serialization fails
+ */
+const serializeWorkflowYaml = (
+  workflowObj: Record<string, unknown>
+): string => {
+  try {
+    return dump(workflowObj, YAML_DUMP_OPTIONS);
+  } catch (error) {
+    throw new Error(`Failed to serialize workflow YAML: ${formatError(error)}`);
+  }
+};
+
+/**
  * Injects workflow modifications for safe local execution.
  *
  * This function:
@@ -88,35 +207,13 @@ export const injectWorkflow = (
   yamlContent: string,
   skipSensitive = true
 ): InjectionResult => {
-  if (yamlContent.trim().length === 0) {
-    throw new Error("Workflow YAML content is empty");
-  }
+  const workflowObj = parseWorkflowYaml(yamlContent);
+  const jobsObj = extractJobsObject(workflowObj);
 
-  let workflow: unknown;
-
-  try {
-    workflow = load(yamlContent);
-  } catch (error) {
-    throw new Error(`Failed to parse workflow YAML: ${formatError(error)}`);
-  }
-
-  if (!workflow || typeof workflow !== "object" || Array.isArray(workflow)) {
-    throw new Error("Workflow YAML must be an object");
-  }
-
-  const workflowObj = workflow as Record<string, unknown>;
-
-  if (!("jobs" in workflowObj)) {
+  if (!jobsObj) {
     return { content: yamlContent, skippedJobs: [] };
   }
 
-  const jobs = workflowObj.jobs;
-
-  if (!jobs || typeof jobs !== "object" || Array.isArray(jobs)) {
-    throw new Error("Workflow 'jobs' must be an object");
-  }
-
-  const jobsObj = jobs as Record<string, unknown>;
   const skippedJobs: string[] = [];
 
   for (const jobId of Object.keys(jobsObj)) {
@@ -128,58 +225,23 @@ export const injectWorkflow = (
 
     const jobObj = job as Record<string, unknown>;
 
-    // Skip reusable workflows (they don't support if: at job level)
-    if (typeof jobObj.uses === "string" && jobObj.uses.length > 0) {
+    if (isReusableWorkflow(jobObj)) {
       continue;
     }
 
-    // Check if job is sensitive
-    const jobForCheck: Job = {
-      name: typeof jobObj.name === "string" ? jobObj.name : undefined,
-      steps: Array.isArray(jobObj.steps)
-        ? (jobObj.steps as readonly Record<string, unknown>[]).map((s) => ({
-            uses: typeof s.uses === "string" ? s.uses : undefined,
-            run: typeof s.run === "string" ? s.run : undefined,
-          }))
-        : undefined,
-      needs: parseNeeds(jobObj.needs),
-    };
-
+    const jobForCheck = convertToJobForCheck(jobObj);
     const sensitive = skipSensitive && isSensitiveJob(jobId, jobForCheck);
 
     if (sensitive) {
-      // Force skip by setting if: false
-      jobObj.if = "false";
+      applySensitiveJobModifications(jobObj);
       skippedJobs.push(jobId);
     } else {
-      // Add continue-on-error for non-sensitive jobs
-      jobObj["continue-on-error"] = true;
-
-      // Add if: always() for jobs with dependencies so they run even if deps fail
-      if (jobHasNeeds(jobObj)) {
-        const existingIf = jobObj.if;
-        if (typeof existingIf === "string" && existingIf.length > 0) {
-          jobObj.if = `always() && (${existingIf})`;
-        } else {
-          jobObj.if = "always()";
-        }
-      }
+      applyNonSensitiveJobModifications(jobObj);
     }
   }
 
-  try {
-    const content = dump(workflowObj, {
-      indent: 2,
-      lineWidth: 80,
-      noRefs: true,
-      sortKeys: false,
-      quotingType: '"',
-      forceQuotes: false,
-    });
-    return { content, skippedJobs };
-  } catch (error) {
-    throw new Error(`Failed to serialize workflow YAML: ${formatError(error)}`);
-  }
+  const content = serializeWorkflowYaml(workflowObj);
+  return { content, skippedJobs };
 };
 
 /**
@@ -307,6 +369,83 @@ export const buildManifest = (
 };
 
 /**
+ * Gets valid job IDs that can receive markers (excludes reusable workflows).
+ */
+const getValidJobIdsForMarkers = (
+  jobsObj: Record<string, unknown>
+): readonly string[] =>
+  Object.keys(jobsObj)
+    .filter((id) => {
+      const job = jobsObj[id] as Record<string, unknown>;
+      return isValidJobId(id) && !isReusableWorkflow(job);
+    })
+    .sort();
+
+/**
+ * Finds the first job ID without dependencies for manifest injection.
+ */
+const findFirstJobWithoutDeps = (
+  jobsObj: Record<string, unknown>,
+  validJobIds: readonly string[]
+): string | undefined => {
+  const jobsWithoutDeps = validJobIds.filter((id) => {
+    const job = jobsObj[id] as Record<string, unknown>;
+    return !jobHasNeeds(job);
+  });
+  return jobsWithoutDeps[0] ?? validJobIds[0];
+};
+
+/**
+ * Injects marker steps into a job's steps array.
+ */
+const injectMarkerSteps = (
+  jobId: string,
+  originalSteps: readonly Record<string, unknown>[],
+  manifestB64: string | null,
+  isManifestJob: boolean
+): Record<string, unknown>[] => {
+  const newSteps: Record<string, unknown>[] = [];
+
+  // Add manifest step if this is the designated manifest job
+  if (manifestB64 && isManifestJob) {
+    newSteps.push({
+      name: "detent: manifest",
+      run: `echo '::detent::manifest::v2::b64::${manifestB64}'`,
+    });
+  }
+
+  // Add job-start marker
+  newSteps.push({
+    name: "detent: job start",
+    run: `echo '::detent::job-start::${jobId}'`,
+  });
+
+  // Add step markers before each original step
+  for (let i = 0; i < originalSteps.length; i++) {
+    const step = originalSteps[i];
+    if (!step) {
+      continue;
+    }
+
+    const stepName = sanitizeForShellEcho(getStepDisplayName(step));
+    newSteps.push({
+      name: `detent: step ${i}`,
+      run: `echo '::detent::step-start::${jobId}::${i}::${stepName}'`,
+    });
+    newSteps.push(step);
+  }
+
+  // Add job-end marker (with always() to capture success/failure)
+  newSteps.push({
+    name: "detent: job end",
+    if: "always()",
+    run: `echo '::detent::job-end::${jobId}::\${{ job.status }}'`,
+  });
+
+  return newSteps;
+};
+
+/**
  * Injects detent lifecycle markers into workflow for reliable job/step tracking.
  * This is the key to real-time TUI updates - markers are parsed from act output.
  *
@@ -320,124 +459,37 @@ export const injectJobMarkers = (
   yamlContent: string,
   skipSensitive = true
 ): string => {
-  if (yamlContent.trim().length === 0) {
-    throw new Error("Workflow YAML content is empty");
-  }
+  const workflowObj = parseWorkflowYaml(yamlContent);
+  const jobsObj = extractJobsObject(workflowObj);
 
-  let workflow: unknown;
-  try {
-    workflow = load(yamlContent);
-  } catch (error) {
-    throw new Error(`Failed to parse workflow YAML: ${formatError(error)}`);
-  }
-
-  if (!workflow || typeof workflow !== "object" || Array.isArray(workflow)) {
-    throw new Error("Workflow YAML must be an object");
-  }
-
-  const workflowObj = workflow as Record<string, unknown>;
-
-  if (!("jobs" in workflowObj)) {
+  if (!jobsObj) {
     return yamlContent;
   }
-
-  const jobs = workflowObj.jobs;
-  if (!jobs || typeof jobs !== "object" || Array.isArray(jobs)) {
-    throw new Error("Workflow 'jobs' must be an object");
-  }
-
-  const jobsObj = jobs as Record<string, unknown>;
 
   // Build manifest from all jobs
   const manifest = buildManifest(jobsObj, skipSensitive);
   const manifestJson = JSON.stringify(manifest);
   const manifestB64 = Buffer.from(manifestJson).toString("base64");
 
-  // Find valid jobs that can receive markers (sorted alphabetically for determinism)
-  const validJobIds = Object.keys(jobsObj)
-    .filter((id) => {
-      const job = jobsObj[id] as Record<string, unknown>;
-      return (
-        isValidJobId(id) && !(typeof job.uses === "string" && job.uses.length)
-      );
-    })
-    .sort();
+  const validJobIds = getValidJobIdsForMarkers(jobsObj);
+  const firstJobId = findFirstJobWithoutDeps(jobsObj, validJobIds);
 
-  // Find the best job for manifest injection:
-  // Prefer jobs with NO dependencies (they run first), then fall back to first alphabetically
-  const jobsWithoutDeps = validJobIds.filter((id) => {
-    const job = jobsObj[id] as Record<string, unknown>;
-    const needs = job.needs;
-    if (!needs) {
-      return true;
-    }
-    if (typeof needs === "string") {
-      return needs.length === 0;
-    }
-    if (Array.isArray(needs)) {
-      return needs.length === 0;
-    }
-    return true;
-  });
-  const firstJobId = jobsWithoutDeps[0] ?? validJobIds[0];
-
-  // Inject markers into each valid job (using sorted order to ensure manifest goes in first job)
+  // Inject markers into each valid job
   for (const jobId of validJobIds) {
-    // validJobIds already filters for valid IDs and non-reusable workflows
     const jobObj = jobsObj[jobId] as Record<string, unknown>;
-
     const originalSteps = Array.isArray(jobObj.steps)
       ? (jobObj.steps as Record<string, unknown>[])
       : [];
-    const newSteps: Record<string, unknown>[] = [];
 
-    // Add manifest step (first job only)
-    if (jobId === firstJobId) {
-      newSteps.push({
-        name: "detent: manifest",
-        run: `echo '::detent::manifest::v2::b64::${manifestB64}'`,
-      });
-    }
-
-    // Add job-start marker
-    newSteps.push({
-      name: "detent: job start",
-      run: `echo '::detent::job-start::${jobId}'`,
-    });
-
-    // Add step markers before each original step
-    for (let i = 0; i < originalSteps.length; i++) {
-      const step = originalSteps[i];
-      if (!step) {
-        continue;
-      }
-
-      const stepName = sanitizeForShellEcho(getStepDisplayName(step));
-      newSteps.push({
-        name: `detent: step ${i}`,
-        run: `echo '::detent::step-start::${jobId}::${i}::${stepName}'`,
-      });
-      newSteps.push(step);
-    }
-
-    // Add job-end marker (with always() to capture success/failure)
-    newSteps.push({
-      name: "detent: job end",
-      if: "always()",
-      run: `echo '::detent::job-end::${jobId}::\${{ job.status }}'`,
-    });
-
-    jobObj.steps = newSteps;
+    jobObj.steps = injectMarkerSteps(
+      jobId,
+      originalSteps,
+      manifestB64,
+      jobId === firstJobId
+    );
   }
 
-  return dump(workflowObj, {
-    indent: 2,
-    lineWidth: 80,
-    noRefs: true,
-    sortKeys: false,
-    quotingType: '"',
-    forceQuotes: false,
-  });
+  return serializeWorkflowYaml(workflowObj);
 };
 
 /**
@@ -587,101 +639,31 @@ export const buildCombinedManifest = (
 export const injectMarkersWithManifest = (
   yamlContent: string,
   manifestB64: string | null,
-  manifestJobId: string | null,
-  skipSensitive = true
+  manifestJobId: string | null
 ): string => {
-  if (yamlContent.trim().length === 0) {
-    throw new Error("Workflow YAML content is empty");
-  }
+  const workflowObj = parseWorkflowYaml(yamlContent);
+  const jobsObj = extractJobsObject(workflowObj);
 
-  let workflow: unknown;
-  try {
-    workflow = load(yamlContent);
-  } catch (error) {
-    throw new Error(`Failed to parse workflow YAML: ${formatError(error)}`);
-  }
-
-  if (!workflow || typeof workflow !== "object" || Array.isArray(workflow)) {
-    throw new Error("Workflow YAML must be an object");
-  }
-
-  const workflowObj = workflow as Record<string, unknown>;
-
-  if (!("jobs" in workflowObj)) {
+  if (!jobsObj) {
     return yamlContent;
   }
 
-  const jobs = workflowObj.jobs;
-  if (!jobs || typeof jobs !== "object" || Array.isArray(jobs)) {
-    throw new Error("Workflow 'jobs' must be an object");
-  }
-
-  const jobsObj = jobs as Record<string, unknown>;
-
-  // Find valid jobs for marker injection
-  const validJobIds = Object.keys(jobsObj)
-    .filter((id) => {
-      const job = jobsObj[id] as Record<string, unknown>;
-      return (
-        isValidJobId(id) && !(typeof job.uses === "string" && job.uses.length)
-      );
-    })
-    .sort();
+  const validJobIds = getValidJobIdsForMarkers(jobsObj);
 
   // Inject markers into each valid job
   for (const jobId of validJobIds) {
     const jobObj = jobsObj[jobId] as Record<string, unknown>;
-
     const originalSteps = Array.isArray(jobObj.steps)
       ? (jobObj.steps as Record<string, unknown>[])
       : [];
-    const newSteps: Record<string, unknown>[] = [];
 
-    // Add manifest step ONLY to the designated job
-    if (manifestB64 && manifestJobId && jobId === manifestJobId) {
-      newSteps.push({
-        name: "detent: manifest",
-        run: `echo '::detent::manifest::v2::b64::${manifestB64}'`,
-      });
-    }
-
-    // Add job-start marker
-    newSteps.push({
-      name: "detent: job start",
-      run: `echo '::detent::job-start::${jobId}'`,
-    });
-
-    // Add step markers before each original step
-    for (let i = 0; i < originalSteps.length; i++) {
-      const step = originalSteps[i];
-      if (!step) {
-        continue;
-      }
-
-      const stepName = sanitizeForShellEcho(getStepDisplayName(step));
-      newSteps.push({
-        name: `detent: step ${i}`,
-        run: `echo '::detent::step-start::${jobId}::${i}::${stepName}'`,
-      });
-      newSteps.push(step);
-    }
-
-    // Add job-end marker (with always() to capture success/failure)
-    newSteps.push({
-      name: "detent: job end",
-      if: "always()",
-      run: `echo '::detent::job-end::${jobId}::\${{ job.status }}'`,
-    });
-
-    jobObj.steps = newSteps;
+    jobObj.steps = injectMarkerSteps(
+      jobId,
+      originalSteps,
+      manifestB64,
+      manifestJobId !== null && jobId === manifestJobId
+    );
   }
 
-  return dump(workflowObj, {
-    indent: 2,
-    lineWidth: 80,
-    noRefs: true,
-    sortKeys: false,
-    quotingType: '"',
-    forceQuotes: false,
-  });
+  return serializeWorkflowYaml(workflowObj);
 };

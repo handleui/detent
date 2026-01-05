@@ -84,6 +84,7 @@ export const readLockPid = (lockPath: string): number | undefined => {
  * @param worktreePath - Path to the worktree directory
  * @returns Lock result with release function on success
  */
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Security-critical lock acquisition with proper error handling
 export const tryAcquireLock = (worktreePath: string): LockResult => {
   const lockPath = join(worktreePath, LOCK_FILE_NAME);
   const ourPid = process.pid;

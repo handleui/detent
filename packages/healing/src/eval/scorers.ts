@@ -29,8 +29,12 @@ export const iterationEfficiencyScore = ({
   expected: HealingTestCase["expected"];
 }): number => {
   const maxExpected = expected.maxIterations ?? 10;
-  if (output.iterations <= 1) return 1;
-  if (output.iterations >= maxExpected) return 0;
+  if (output.iterations <= 1) {
+    return 1;
+  }
+  if (output.iterations >= maxExpected) {
+    return 0;
+  }
   return 1 - (output.iterations - 1) / (maxExpected - 1);
 };
 
@@ -46,8 +50,12 @@ export const costEfficiencyScore = ({
   expected: HealingTestCase["expected"];
 }): number => {
   const maxExpected = expected.maxCostUSD ?? 1.0;
-  if (output.costUSD <= 0) return 1;
-  if (output.costUSD >= maxExpected) return 0;
+  if (output.costUSD <= 0) {
+    return 1;
+  }
+  if (output.costUSD >= maxExpected) {
+    return 0;
+  }
   return 1 - output.costUSD / maxExpected;
 };
 
@@ -62,7 +70,9 @@ export const keywordPresenceScore = ({
   expected: HealingTestCase["expected"];
 }): number => {
   const keywords = expected.expectedKeywords;
-  if (!keywords || keywords.length === 0) return 1;
+  if (!keywords || keywords.length === 0) {
+    return 1;
+  }
 
   const message = output.finalMessage.toLowerCase();
   const found = keywords.filter((kw) => message.includes(kw.toLowerCase()));

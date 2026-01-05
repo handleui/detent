@@ -28,11 +28,6 @@ export interface ParserResponse {
 export class ParserClient {
   private static readonly MAX_LOG_SIZE = 100 * 1024 * 1024; // 100MB limit
 
-  constructor(config?: { baseUrl?: string; timeout?: number }) {
-    // Config is no longer used - kept for backwards compatibility
-    void config;
-  }
-
   /**
    * Parses workflow execution logs and extracts errors.
    *
@@ -40,7 +35,7 @@ export class ParserClient {
    * @returns Parsed errors from the logs
    * @throws Error if logs are invalid or too large
    */
-  async parse(logs: string): Promise<ParserResponse> {
+  parse(logs: string): ParserResponse {
     if (!logs || typeof logs !== "string") {
       throw new Error("Logs must be a non-empty string");
     }

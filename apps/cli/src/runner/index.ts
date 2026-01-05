@@ -24,11 +24,196 @@ export class CheckRunner {
   private debugLogger?: DebugLogger;
   private executor?: ActExecutor;
   private aborted = false;
+  private startTime = 0;
 
   constructor(config: RunConfig, eventEmitter?: TUIEventEmitter) {
     this.config = config;
     this.eventEmitter = eventEmitter;
   }
+
+  /**
+   * Initializes the debug logger with run ID and logs initial configuration.
+   */
+  private readonly initializeDebugLogger = async (): Promise<void> => {
+    const { computeCurrentRunID } = await import("@detent/git");
+    const runIDInfo = await computeCurrentRunID(this.config.repoRoot);
+    this.debugLogger = new DebugLogger(runIDInfo.runID);
+
+    this.debugLogger.logHeader({
+      verbose: this.config.verbose,
+      workflow: this.config.workflow,
+      job: this.config.job,
+      repoRoot: this.config.repoRoot,
+    });
+    await this.debugLogger.logEnvironment();
+  };
+
+  /**
+   * Logs preparation results and emits warnings for skipped items.
+   */
+  private readonly logPreparationResults = (
+    prepareResult: PrepareResult
+  ): void => {
+    this.debugLogger?.log(`Repository: ${this.config.repoRoot}`);
+    this.debugLogger?.log(`Worktree: ${prepareResult.worktreePath}`);
+    this.debugLogger?.log(
+      `Workflows: ${prepareResult.workflows.map((w) => w.name).join(", ")}`
+    );
+
+    const skippedCount =
+      (prepareResult.skippedWorkflows?.length ?? 0) +
+      (prepareResult.skippedJobs?.length ?? 0);
+
+    if (skippedCount > 0 && this.eventEmitter) {
+      this.eventEmitter.emit({
+        type: "warning",
+        message: `Skipped ${skippedCount} sensitive workflow${skippedCount === 1 ? "" : "s"}/job${skippedCount === 1 ? "" : "s"} for safety`,
+        category: "skipped",
+      });
+    }
+  };
+
+  /**
+   * Executes workflows and logs results.
+   */
+  private readonly runExecutionPhase = async (
+    prepareResult: PrepareResult
+  ): Promise<ExecuteResult> => {
+    if (this.config.verbose) {
+      console.log("[Execute] Running act...\n");
+    }
+    this.debugLogger?.logSection("ACT EXECUTION");
+    this.debugLogger?.startPhase("Execute");
+
+    const executeResult = await this.execute(prepareResult);
+
+    this.debugLogger?.endPhase("Execute");
+    this.debugLogger?.log(
+      `Exit code: ${executeResult.exitCode}, Duration: ${executeResult.duration}ms`
+    );
+
+    return executeResult;
+  };
+
+  /**
+   * Processes execution output and emits warnings if needed.
+   */
+  private readonly runProcessingPhase = async (
+    executeResult: ExecuteResult
+  ): Promise<ProcessResult> => {
+    if (this.config.verbose) {
+      console.log("\n[Process] Parsing results...");
+    }
+    this.debugLogger?.logSection("ERROR PARSING");
+
+    const processResult = await this.process(executeResult);
+
+    this.debugLogger?.log(`Total errors found: ${processResult.errorCount}`);
+
+    if (processResult.parserFailed && this.eventEmitter) {
+      this.eventEmitter.emit({
+        type: "warning",
+        message: "Parser failed to extract errors from output",
+        category: "parser",
+      });
+    }
+
+    return processResult;
+  };
+
+  /**
+   * Builds and logs the final run result.
+   */
+  private readonly buildRunResult = (
+    prepareResult: PrepareResult,
+    executeResult: ExecuteResult,
+    processResult: ProcessResult
+  ): RunResult => {
+    const duration = Date.now() - this.startTime;
+    const success =
+      processResult.errorCount === 0 && executeResult.exitCode === 0;
+
+    this.debugLogger?.logSection("SUMMARY");
+    this.debugLogger?.log(`Status: ${success ? "SUCCESS" : "FAILED"}`);
+    this.debugLogger?.log(`Total duration: ${duration}ms`);
+    this.debugLogger?.log(`Error count: ${processResult.errorCount}`);
+    this.debugLogger?.log(`Exit code: ${executeResult.exitCode}`);
+
+    if (this.eventEmitter) {
+      this.eventEmitter.emit({
+        type: "done",
+        duration,
+        exitCode: executeResult.exitCode,
+        errorCount: processResult.errorCount,
+        cancelled: false,
+      });
+    }
+
+    return {
+      runID: prepareResult.runID,
+      success,
+      errors: processResult.errors,
+      duration,
+    };
+  };
+
+  /**
+   * Handles errors during run execution.
+   */
+  private readonly handleRunError = (error: unknown): never => {
+    this.debugLogger?.logError(error, "RunError");
+
+    if (this.eventEmitter) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      this.eventEmitter.emit({
+        type: "error",
+        error: error instanceof Error ? error : new Error(String(error)),
+        message: errorMessage,
+      });
+    }
+
+    const debugPath = this.debugLogger?.path;
+    if (debugPath && error instanceof Error) {
+      const enhancedError = new Error(
+        `${error.message}\n\nDebug log: ${debugPath}`
+      );
+      enhancedError.stack = error.stack;
+      throw enhancedError;
+    }
+
+    throw error;
+  };
+
+  /**
+   * Performs cleanup of worktree resources.
+   */
+  private readonly performCleanup = async (
+    prepareResult: PrepareResult | undefined
+  ): Promise<void> => {
+    if (!prepareResult) {
+      return;
+    }
+
+    try {
+      if (this.config.verbose) {
+        console.log("[Cleanup] Removing worktree...");
+      }
+      this.debugLogger?.logPhase("Cleanup", "Removing worktree");
+      await this.cleanup(prepareResult);
+      this.debugLogger?.logPhase("Cleanup", "Cleanup complete");
+      if (this.config.verbose) {
+        console.log("[Cleanup] Done\n");
+      }
+    } catch (cleanupError) {
+      this.debugLogger?.logError(cleanupError, "Cleanup");
+      if (this.config.verbose) {
+        console.warn(
+          `[Cleanup] Warning: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`
+        );
+      }
+    }
+  };
 
   /**
    * Aborts the current run and triggers cleanup.
@@ -54,161 +239,28 @@ export class CheckRunner {
    *
    * @returns Result containing run metadata, success status, and any errors found
    */
-  async run(): Promise<RunResult> {
-    const startTime = Date.now();
+  run = async (): Promise<RunResult> => {
+    this.startTime = Date.now();
     let prepareResult: PrepareResult | undefined;
 
     try {
-      // Step 0.5: Create early runID for debug logger
-      const { computeCurrentRunID } = await import("@detent/git");
-      const runIDInfo = await computeCurrentRunID(this.config.repoRoot);
-      this.debugLogger = new DebugLogger(runIDInfo.runID);
+      await this.initializeDebugLogger();
 
-      // Log configuration and environment
-      this.debugLogger.logHeader({
-        verbose: this.config.verbose,
-        workflow: this.config.workflow,
-        job: this.config.job,
-        repoRoot: this.config.repoRoot,
-      });
-      await this.debugLogger.logEnvironment();
-
-      // Step 1: Prepare execution environment
-      this.debugLogger.logSection("PREPARATION");
+      this.debugLogger?.logSection("PREPARATION");
       prepareResult = await this.prepare();
+      this.logPreparationResults(prepareResult);
 
-      // Log preparation results
-      this.debugLogger.log(`Repository: ${this.config.repoRoot}`);
-      this.debugLogger.log(`Worktree: ${prepareResult.worktreePath}`);
-      this.debugLogger.log(
-        `Workflows: ${prepareResult.workflows.map((w) => w.name).join(", ")}`
-      );
+      const executeResult = await this.runExecutionPhase(prepareResult);
+      const processResult = await this.runProcessingPhase(executeResult);
 
-      // Emit warning for skipped sensitive items
-      const skippedCount =
-        (prepareResult.skippedWorkflows?.length ?? 0) +
-        (prepareResult.skippedJobs?.length ?? 0);
-      if (skippedCount > 0 && this.eventEmitter) {
-        this.eventEmitter.emit({
-          type: "warning",
-          message: `Skipped ${skippedCount} sensitive workflow${skippedCount === 1 ? "" : "s"}/job${skippedCount === 1 ? "" : "s"} for safety`,
-          category: "skipped",
-        });
-      }
-
-      // Note: Manifest event is now emitted by the ActOutputParser when it
-      // parses the ::detent::manifest:: marker from act output. This provides
-      // accurate job IDs and step names from the injected workflow markers.
-
-      // Step 2: Execute workflows
-      if (this.config.verbose) {
-        console.log("[Execute] Running act...\n");
-      }
-      this.debugLogger.logSection("ACT EXECUTION");
-      this.debugLogger.startPhase("Execute");
-      const executeResult = await this.execute(prepareResult);
-      this.debugLogger.endPhase("Execute");
-      this.debugLogger.log(
-        `Exit code: ${executeResult.exitCode}, Duration: ${executeResult.duration}ms`
-      );
-
-      // Step 3: Process execution output
-      if (this.config.verbose) {
-        console.log("\n[Process] Parsing results...");
-      }
-      this.debugLogger.logSection("ERROR PARSING");
-      const processResult = await this.process(executeResult);
-      this.debugLogger.log(`Total errors found: ${processResult.errorCount}`);
-
-      // Emit warning if parser failed
-      if (processResult.parserFailed && this.eventEmitter) {
-        this.eventEmitter.emit({
-          type: "warning",
-          message: "Parser failed to extract errors from output",
-          category: "parser",
-        });
-      }
-
-      const duration = Date.now() - startTime;
-      const success =
-        processResult.errorCount === 0 && executeResult.exitCode === 0;
-
-      this.debugLogger.logSection("SUMMARY");
-      this.debugLogger.log(`Status: ${success ? "SUCCESS" : "FAILED"}`);
-      this.debugLogger.log(`Total duration: ${duration}ms`);
-      this.debugLogger.log(`Error count: ${processResult.errorCount}`);
-      this.debugLogger.log(`Exit code: ${executeResult.exitCode}`);
-
-      // Emit done event for TUI
-      if (this.eventEmitter) {
-        this.eventEmitter.emit({
-          type: "done",
-          duration,
-          exitCode: executeResult.exitCode,
-          errorCount: processResult.errorCount,
-          cancelled: false,
-        });
-      }
-
-      return {
-        runID: prepareResult.runID,
-        success,
-        errors: processResult.errors,
-        duration,
-      };
+      return this.buildRunResult(prepareResult, executeResult, processResult);
     } catch (error) {
-      // Log error to debug log
-      this.debugLogger?.logError(error, "RunError");
-
-      // Emit error event for TUI
-      if (this.eventEmitter) {
-        const errorMessage =
-          error instanceof Error ? error.message : String(error);
-        this.eventEmitter.emit({
-          type: "error",
-          error: error instanceof Error ? error : new Error(String(error)),
-          message: errorMessage,
-        });
-      }
-
-      // Enhance error message with debug log path
-      const debugPath = this.debugLogger?.path;
-      if (debugPath && error instanceof Error) {
-        const enhancedError = new Error(
-          `${error.message}\n\nDebug log: ${debugPath}`
-        );
-        enhancedError.stack = error.stack;
-        throw enhancedError;
-      }
-
-      throw error;
+      return this.handleRunError(error);
     } finally {
-      // Step 4: Cleanup (always runs, even on error)
-      if (prepareResult) {
-        try {
-          if (this.config.verbose) {
-            console.log("[Cleanup] Removing worktree...");
-          }
-          this.debugLogger?.logPhase("Cleanup", "Removing worktree");
-          await this.cleanup(prepareResult);
-          this.debugLogger?.logPhase("Cleanup", "Cleanup complete");
-          if (this.config.verbose) {
-            console.log("[Cleanup] ✓ Done\n");
-          }
-        } catch (cleanupError) {
-          this.debugLogger?.logError(cleanupError, "Cleanup");
-          if (this.config.verbose) {
-            console.warn(
-              `[Cleanup] Warning: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`
-            );
-          }
-        }
-      }
-
-      // Close debug logger
+      await this.performCleanup(prepareResult);
       this.debugLogger?.close();
     }
-  }
+  };
 
   /**
    * Prepares the execution environment.

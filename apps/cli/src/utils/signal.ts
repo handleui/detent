@@ -59,7 +59,9 @@ export const createSignalController = (): SignalController => {
   process.on("SIGTERM", handleSignal);
 
   const cleanup = (): void => {
-    if (cleaned) return;
+    if (cleaned) {
+      return;
+    }
     cleaned = true;
     process.off("SIGINT", handleSignal);
     process.off("SIGTERM", handleSignal);

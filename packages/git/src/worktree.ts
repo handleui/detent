@@ -18,14 +18,7 @@ export interface PrepareWorktreeResult {
   readonly cleanup: () => Promise<void>;
 }
 
-export const prepareWorktree = async (
-  options: PrepareWorktreeOptions
-): Promise<PrepareWorktreeResult> => {
-  const { repoRoot, worktreePath } = options;
-
-  const commitResult = await execGit(["rev-parse", "HEAD"], { cwd: repoRoot });
-  const commitSHA = commitResult.stdout as CommitSHA;
-
+const validateWorktreePath = (worktreePath: string | undefined): string => {
   if (!worktreePath) {
     throw new Error("worktreePath is required");
   }
@@ -42,29 +35,28 @@ export const prepareWorktree = async (
     throw new Error("worktreePath exceeds maximum length of 4096 bytes");
   }
 
-  const finalPath = worktreePath;
+  return worktreePath;
+};
 
-  const validatePath = (path: string): void => {
-    try {
-      const info = lstatSync(path);
-      if (info.isSymbolicLink()) {
-        throw new Error(
-          `worktree path ${path} is a symlink, refusing to proceed`
-        );
-      }
-      if (!info.isDirectory()) {
-        throw new Error(`worktree path ${path} is not a directory`);
-      }
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-        throw err;
-      }
+const validatePathSecurity = (path: string): void => {
+  try {
+    const info = lstatSync(path);
+    if (info.isSymbolicLink()) {
+      throw new Error(
+        `worktree path ${path} is a symlink, refusing to proceed`
+      );
     }
-  };
+    if (!info.isDirectory()) {
+      throw new Error(`worktree path ${path} is not a directory`);
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw err;
+    }
+  }
+};
 
-  validatePath(finalPath);
-
-  // Check if worktree exists and is locked by another process
+const checkExistingWorktreeLock = (finalPath: string): void => {
   try {
     lstatSync(finalPath);
     const lockStatus = checkLockStatus(finalPath);
@@ -79,7 +71,9 @@ export const prepareWorktree = async (
       throw err;
     }
   }
+};
 
+const createWorktreeDirectory = (finalPath: string): void => {
   try {
     mkdirSync(finalPath, { recursive: true, mode: DIRECTORY_MODE });
   } catch (err) {
@@ -88,60 +82,75 @@ export const prepareWorktree = async (
       throw new Error(`creating worktree directory: ${error.message}`);
     }
   }
+};
 
-  validatePath(finalPath);
-
+const addGitWorktree = async (
+  repoRoot: string,
+  finalPath: string,
+  commitSHA: CommitSHA
+): Promise<void> => {
   try {
     await execGit(["worktree", "add", "-d", finalPath, commitSHA], {
       cwd: repoRoot,
     });
+    return;
   } catch (err) {
     const error = err as Error;
-    if (error.message.includes("already exists")) {
-      try {
-        await execGit(["worktree", "remove", "--force", finalPath], {
-          cwd: repoRoot,
-        });
-      } catch {
-        // Ignore cleanup errors
-      }
-
-      await execGit(["worktree", "add", "-d", finalPath, commitSHA], {
-        cwd: repoRoot,
-      });
-    } else {
+    if (!error.message.includes("already exists")) {
       throw error;
     }
   }
 
-  await syncDirtyFiles(repoRoot, finalPath);
-
-  // Acquire lock on the worktree
-  const lockResult = tryAcquireLock(finalPath);
-  if (!lockResult.success) {
-    // Clean up the worktree we just created since we couldn't lock it
-    try {
-      await execGit(["worktree", "remove", "--force", finalPath], {
-        cwd: repoRoot,
-      });
-    } catch {
-      // Best effort
-    }
-    throw new Error(
-      `Failed to acquire lock on worktree: ${lockResult.reason}${
-        lockResult.error ? ` - ${lockResult.error.message}` : ""
-      }`
-    );
+  try {
+    await execGit(["worktree", "remove", "--force", finalPath], {
+      cwd: repoRoot,
+    });
+  } catch {
+    // Ignore cleanup errors
   }
 
-  const worktreeInfo: WorktreeInfo = {
-    path: finalPath,
-    commitSHA,
-  };
+  await execGit(["worktree", "add", "-d", finalPath, commitSHA], {
+    cwd: repoRoot,
+  });
+};
 
-  const cleanup = async (): Promise<void> => {
-    // Release the lock first
-    lockResult.release();
+const removeWorktreeSilently = async (
+  repoRoot: string,
+  finalPath: string
+): Promise<void> => {
+  try {
+    await execGit(["worktree", "remove", "--force", finalPath], {
+      cwd: repoRoot,
+    });
+  } catch {
+    // Best effort
+  }
+};
+
+const acquireWorktreeLock = async (
+  repoRoot: string,
+  finalPath: string
+): Promise<{ release: () => void }> => {
+  const lockResult = tryAcquireLock(finalPath);
+  if (lockResult.success) {
+    return { release: lockResult.release };
+  }
+
+  await removeWorktreeSilently(repoRoot, finalPath);
+  throw new Error(
+    `Failed to acquire lock on worktree: ${lockResult.reason}${
+      lockResult.error ? ` - ${lockResult.error.message}` : ""
+    }`
+  );
+};
+
+const createCleanupFunction = (
+  repoRoot: string,
+  finalPath: string,
+  release: () => void
+): (() => Promise<void>) => {
+  return async (): Promise<void> => {
+    release();
 
     const timeoutPromise = new Promise<never>((_, reject) => {
       setTimeout(() => {
@@ -153,9 +162,7 @@ export const prepareWorktree = async (
 
     const cleanupPromise = execGit(
       ["worktree", "remove", "--force", finalPath],
-      {
-        cwd: repoRoot,
-      }
+      { cwd: repoRoot }
     );
 
     try {
@@ -164,6 +171,33 @@ export const prepareWorktree = async (
       throw new Error(`failed to remove worktree at ${finalPath}: ${err}`);
     }
   };
+};
+
+export const prepareWorktree = async (
+  options: PrepareWorktreeOptions
+): Promise<PrepareWorktreeResult> => {
+  const { repoRoot, worktreePath } = options;
+
+  const commitResult = await execGit(["rev-parse", "HEAD"], { cwd: repoRoot });
+  const commitSHA = commitResult.stdout as CommitSHA;
+
+  const finalPath = validateWorktreePath(worktreePath);
+  validatePathSecurity(finalPath);
+  checkExistingWorktreeLock(finalPath);
+  createWorktreeDirectory(finalPath);
+  validatePathSecurity(finalPath);
+
+  await addGitWorktree(repoRoot, finalPath, commitSHA);
+  await syncDirtyFiles(repoRoot, finalPath);
+
+  const { release } = await acquireWorktreeLock(repoRoot, finalPath);
+
+  const worktreeInfo: WorktreeInfo = {
+    path: finalPath,
+    commitSHA,
+  };
+
+  const cleanup = createCleanupFunction(repoRoot, finalPath, release);
 
   return { worktreeInfo, cleanup };
 };

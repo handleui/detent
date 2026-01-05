@@ -120,6 +120,148 @@ interface CheckTUIProps {
 }
 
 /**
+ * Finalizes step statuses when a job completes
+ */
+const finalizeJobSteps = (job: TrackedJob, success: boolean): void => {
+  for (const step of job.steps) {
+    if (step.status === "running") {
+      step.status = success ? "success" : "failed";
+    } else if (step.status === "pending") {
+      step.status = success ? "success" : "cancelled";
+    }
+  }
+};
+
+/**
+ * Updates a running job to its final state
+ */
+const finalizeRunningJob = (job: TrackedJob, hasErrors: boolean): void => {
+  finalizeJobSteps(job, !hasErrors);
+  job.status = hasErrors ? "failed" : "success";
+};
+
+/**
+ * Updates a pending job to cancelled state
+ */
+const finalizePendingJob = (job: TrackedJob): void => {
+  for (const step of job.steps) {
+    step.status = "cancelled";
+  }
+  job.status = job.isSensitive ? "skipped_security" : "failed";
+};
+
+/**
+ * Updates all jobs to their final state when workflow completes
+ */
+const finalizeAllJobs = (
+  jobs: TrackedJob[],
+  hasErrors: boolean
+): TrackedJob[] => {
+  const newJobs = [...jobs];
+  for (const job of newJobs) {
+    if (job.status === "running") {
+      finalizeRunningJob(job, hasErrors);
+    } else if (job.status === "pending") {
+      finalizePendingJob(job);
+    }
+  }
+  return newJobs;
+};
+
+/**
+ * Marks a job as started
+ */
+const startJob = (job: TrackedJob): void => {
+  job.status = "running";
+};
+
+/**
+ * Marks a job as finished with success/failure
+ */
+const finishJob = (job: TrackedJob, success: boolean): void => {
+  finalizeJobSteps(job, success);
+  job.status = success ? "success" : "failed";
+};
+
+/**
+ * Marks a job and all its steps as skipped
+ */
+const skipJob = (job: TrackedJob): void => {
+  for (const step of job.steps) {
+    step.status = "skipped";
+  }
+  job.status = job.isSensitive ? "skipped_security" : "skipped";
+};
+
+/**
+ * Applies a job action to update job state
+ */
+const applyJobAction = (
+  job: TrackedJob,
+  action: "start" | "finish" | "skip",
+  success?: boolean
+): void => {
+  switch (action) {
+    case "start":
+      startJob(job);
+      break;
+    case "finish":
+      finishJob(job, success ?? false);
+      break;
+    case "skip":
+      skipJob(job);
+      break;
+    default:
+      break;
+  }
+};
+
+/**
+ * Updates jobs array based on a job event
+ */
+const updateJobsForEvent = (
+  prevJobs: TrackedJob[],
+  event: JobEvent
+): TrackedJob[] => {
+  const newJobs = [...prevJobs];
+  const job = newJobs.find((j) => j.id === event.jobId);
+  if (!job) {
+    return prevJobs;
+  }
+  applyJobAction(job, event.action, event.success);
+  return newJobs;
+};
+
+/**
+ * Updates jobs array based on a step event
+ */
+const updateJobsForStepEvent = (
+  prevJobs: TrackedJob[],
+  event: StepEvent
+): TrackedJob[] => {
+  const newJobs = [...prevJobs];
+  const job = newJobs.find((j) => j.id === event.jobId);
+  if (!job || event.stepIdx < 0 || event.stepIdx >= job.steps.length) {
+    return prevJobs;
+  }
+
+  if (job.currentStep >= 0 && job.currentStep < job.steps.length) {
+    const prevStep = job.steps[job.currentStep];
+    if (prevStep?.status === "running") {
+      prevStep.status = "success";
+    }
+  }
+
+  job.currentStep = event.stepIdx;
+  const step = job.steps[event.stepIdx];
+  if (step) {
+    step.status = "running";
+  }
+
+  return newJobs;
+};
+
+/**
  * Main TUI component for the check command
  * Replicates Go CLI TUI behavior with real-time job/step tracking
  */
@@ -136,13 +278,20 @@ export const CheckTUI = ({ onEvent, onCancel }: CheckTUIProps): JSX.Element => {
   const [errorMessage, setErrorMessage] = useState<string | undefined>();
   const [warnings, setWarnings] = useState<string[]>([]);
 
+  // Track if we're cancelling to prevent duplicate abort calls
+  const [cancelling, setCancelling] = useState(false);
+
   // Handle Ctrl+C cancellation
+  // IMPORTANT: We do NOT call exit() here. Instead, we call onCancel() which
+  // aborts the runner. The runner will emit a "done" event after cleanup,
+  // and handleDone() will call exit(). This ensures proper cleanup order.
   useInput((input, key) => {
-    if (key.ctrl && input === "c") {
+    if (key.ctrl && input === "c" && !cancelling) {
+      setCancelling(true);
       if (onCancel) {
         onCancel();
       }
-      exit();
+      // Do NOT call exit() - wait for the "done" event from the runner
     }
   });
 
@@ -159,22 +308,86 @@ export const CheckTUI = ({ onEvent, onCancel }: CheckTUIProps): JSX.Element => {
 
   // Subscribe to events
   useEffect(() => {
+    const processManifest = (event: ManifestEvent): void => {
+      // CRITICAL: Ignore duplicate manifests from retries to prevent TUI restart
+      // When act retries (exit code != 0), it emits a new manifest which would
+      // reset all job state. We only process the first manifest received.
+      if (!waiting) {
+        return;
+      }
+
+      const trackedJobs: TrackedJob[] = event.jobs.map((job) => ({
+        id: job.id,
+        name: job.name,
+        status: "pending" as JobStatus,
+        isReusable: Boolean(job.uses),
+        isSensitive: job.sensitive,
+        steps: job.steps.map((stepName, index) => ({
+          index,
+          name: stepName,
+          status: "pending" as const,
+        })),
+        currentStep: -1,
+        needs: job.needs,
+      }));
+
+      setJobs(trackedJobs);
+      setWaiting(false);
+
+      const firstJob = trackedJobs[0];
+      if (firstJob) {
+        setCurrentStepName(firstJob.name);
+      }
+    };
+
+    const processJobEvent = (event: JobEvent): void => {
+      setJobs((prevJobs) => {
+        const newJobs = updateJobsForEvent(prevJobs, event);
+        if (newJobs !== prevJobs && event.action === "start") {
+          const job = newJobs.find((j) => j.id === event.jobId);
+          if (job) {
+            setCurrentStepName(job.name);
+          }
+        }
+        return newJobs;
+      });
+    };
+
+    const processStepEvent = (event: StepEvent): void => {
+      setJobs((prevJobs) => {
+        const newJobs = updateJobsForStepEvent(prevJobs, event);
+        if (newJobs !== prevJobs) {
+          setCurrentStepName(event.stepName);
+        }
+        return newJobs;
+      });
+    };
+
+    const processDone = (event: DoneEvent): void => {
+      setDone(true);
+      setDoneInfo(event);
+      setJobs((prevJobs) => finalizeAllJobs(prevJobs, event.errorCount > 0));
+
+      setTimeout(() => {
+        exit();
+      }, 100);
+    };
+
     const unsubscribe = onEvent((event) => {
       switch (event.type) {
         case "manifest":
-          handleManifest(event);
+          processManifest(event);
           break;
         case "job":
-          handleJobEvent(event);
+          processJobEvent(event);
           break;
         case "step":
-          handleStepEvent(event);
+          processStepEvent(event);
           break;
         case "done":
-          handleDone(event);
+          processDone(event);
           break;
         case "error":
-          // Error handling - store message and exit TUI
           setErrorMessage(event.message);
           setDone(true);
           setTimeout(() => {
@@ -184,143 +397,13 @@ export const CheckTUI = ({ onEvent, onCancel }: CheckTUIProps): JSX.Element => {
         case "warning":
           setWarnings((prev) => [...prev, event.message]);
           break;
+        default:
+          break;
       }
     });
 
     return unsubscribe;
-  }, [onEvent, exit]);
-
-  const handleManifest = (event: ManifestEvent): void => {
-    // CRITICAL: Ignore duplicate manifests from retries to prevent TUI restart
-    // When act retries (exit code != 0), it emits a new manifest which would
-    // reset all job state. We only process the first manifest received.
-    if (!waiting) {
-      return;
-    }
-
-    const trackedJobs: TrackedJob[] = event.jobs.map((job) => ({
-      id: job.id,
-      name: job.name,
-      status: "pending" as JobStatus,
-      isReusable: Boolean(job.uses),
-      isSensitive: job.sensitive,
-      steps: job.steps.map((stepName, index) => ({
-        index,
-        name: stepName,
-        status: "pending" as const,
-      })),
-      currentStep: -1,
-      needs: job.needs,
-    }));
-
-    setJobs(trackedJobs);
-    setWaiting(false);
-
-    // Update current step name to first job
-    const firstJob = trackedJobs[0];
-    if (firstJob) {
-      setCurrentStepName(firstJob.name);
-    }
-  };
-
-  const handleJobEvent = (event: JobEvent): void => {
-    setJobs((prevJobs) => {
-      const newJobs = [...prevJobs];
-      const job = newJobs.find((j) => j.id === event.jobId);
-      if (!job) return prevJobs;
-
-      switch (event.action) {
-        case "start":
-          job.status = "running";
-          setCurrentStepName(job.name);
-          break;
-        case "finish":
-          finalizeJobSteps(job, event.success ?? false);
-          job.status = event.success ? "success" : "failed";
-          break;
-        case "skip":
-          for (const step of job.steps) {
-            step.status = "skipped";
-          }
-          job.status = job.isSensitive ? "skipped_security" : "skipped";
-          break;
-      }
-
-      return newJobs;
-    });
-  };
-
-  const handleStepEvent = (event: StepEvent): void => {
-    setJobs((prevJobs) => {
-      const newJobs = [...prevJobs];
-      const job = newJobs.find((j) => j.id === event.jobId);
-      if (!job || event.stepIdx < 0 || event.stepIdx >= job.steps.length) {
-        return prevJobs;
-      }
-
-      // Mark previous running step as success
-      if (job.currentStep >= 0 && job.currentStep < job.steps.length) {
-        const prevStep = job.steps[job.currentStep];
-        if (prevStep?.status === "running") {
-          prevStep.status = "success";
-        }
-      }
-
-      // Update current step
-      job.currentStep = event.stepIdx;
-      const step = job.steps[event.stepIdx];
-      if (step) {
-        step.status = "running";
-      }
-
-      setCurrentStepName(event.stepName);
-
-      return newJobs;
-    });
-  };
-
-  const handleDone = (event: DoneEvent): void => {
-    setDone(true);
-    setDoneInfo(event);
-
-    // Mark all running jobs as complete
-    setJobs((prevJobs) => {
-      const newJobs = [...prevJobs];
-      const hasErrors = event.errorCount > 0;
-
-      for (const job of newJobs) {
-        if (job.status === "running") {
-          finalizeJobSteps(job, !hasErrors);
-          job.status = hasErrors ? "failed" : "success";
-        } else if (job.status === "pending") {
-          for (const step of job.steps) {
-            step.status = "cancelled";
-          }
-          job.status = job.isSensitive ? "skipped_security" : "failed";
-        }
-      }
-
-      return newJobs;
-    });
-
-    // Exit after a brief delay to show final state
-    setTimeout(() => {
-      exit();
-    }, 100);
-  };
-
-  const finalizeJobSteps = (job: TrackedJob, success: boolean): void => {
-    for (const step of job.steps) {
-      switch (step.status) {
-        case "running":
-          step.status = success ? "success" : "failed";
-          break;
-        case "pending":
-          step.status = success ? "success" : "cancelled";
-          break;
-      }
-    }
-  };
+  }, [onEvent, exit, waiting]);
 
   if (done) {
     return renderCompletionView(
@@ -467,8 +550,8 @@ const renderCompletionView = (
       )}
       {warnings.length > 0 && (
         <Box flexDirection="column" marginTop={1}>
-          {warnings.map((warning, idx) => (
-            <Text color={colors.muted} key={idx}>
+          {warnings.map((warning) => (
+            <Text color={colors.muted} key={warning}>
               i {warning}
             </Text>
           ))}
@@ -494,6 +577,8 @@ const getJobIcon = (status: JobStatus, isReusable: boolean): string => {
       case "skipped":
       case "skipped_security":
         return "⟲";
+      default:
+        return "⟲";
     }
   }
 
@@ -510,6 +595,8 @@ const getJobIcon = (status: JobStatus, isReusable: boolean): string => {
       return "—";
     case "skipped_security":
       return "⊘";
+    default:
+      return "·";
   }
 };
 
@@ -539,6 +626,8 @@ const getJobIconColor = (status: JobStatus, isReusable: boolean): string => {
       return colors.muted;
     case "skipped_security":
       return colors.muted;
+    default:
+      return colors.muted;
   }
 };
 
@@ -559,6 +648,8 @@ const getJobTextColor = (status: JobStatus): string => {
     case "skipped":
       return colors.text;
     case "skipped_security":
+      return colors.muted;
+    default:
       return colors.muted;
   }
 };
@@ -743,8 +834,11 @@ const renderErrorsView = (
                 </Text>
               </Box>
 
-              {fileGroup.errors.map((error, idx) => (
-                <Box key={idx} marginLeft={2}>
+              {fileGroup.errors.map((error) => (
+                <Box
+                  key={`${error.file ?? ""}:${error.line ?? 0}:${error.column ?? 0}:${error.ruleId ?? error.message}`}
+                  marginLeft={2}
+                >
                   <Text color={colors.muted}>
                     {error.line ?? 0}:{error.column ?? 0}{" "}
                   </Text>

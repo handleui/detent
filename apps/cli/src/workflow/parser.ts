@@ -82,6 +82,97 @@ const parseNeeds = (needs: unknown): readonly string[] => {
   return [];
 };
 
+interface DependencyGraph {
+  inDegree: Map<string, number>;
+  dependents: Map<string, string[]>;
+}
+
+/**
+ * Builds the dependency graph for topological sorting.
+ * Returns in-degree map and adjacency list of dependents.
+ */
+const buildDependencyGraph = (
+  jobInfoMap: Map<string, JobInfo>
+): DependencyGraph => {
+  const inDegree = new Map<string, number>();
+  const dependents = new Map<string, string[]>();
+
+  for (const id of jobInfoMap.keys()) {
+    inDegree.set(id, 0);
+  }
+
+  for (const [id, job] of jobInfoMap) {
+    for (const dep of job.needs) {
+      if (!jobInfoMap.has(dep)) {
+        continue;
+      }
+      inDegree.set(id, (inDegree.get(id) ?? 0) + 1);
+      const existing = dependents.get(dep) ?? [];
+      existing.push(id);
+      dependents.set(dep, existing);
+    }
+  }
+
+  return { inDegree, dependents };
+};
+
+/**
+ * Finds all jobs with zero in-degree (no dependencies).
+ */
+const findRootJobs = (inDegree: Map<string, number>): string[] => {
+  const roots: string[] = [];
+  for (const [id, degree] of inDegree) {
+    if (degree === 0) {
+      roots.push(id);
+    }
+  }
+  return roots.sort();
+};
+
+/**
+ * Processes dependents of a job, reducing their in-degree.
+ * Returns jobs that are now ready (in-degree became 0).
+ */
+const processJobDependents = (
+  jobId: string,
+  dependents: Map<string, string[]>,
+  inDegree: Map<string, number>
+): string[] => {
+  const readyJobs: string[] = [];
+  for (const dependent of dependents.get(jobId) ?? []) {
+    const newDegree = (inDegree.get(dependent) ?? 1) - 1;
+    inDegree.set(dependent, newDegree);
+    if (newDegree === 0) {
+      readyJobs.push(dependent);
+    }
+  }
+  return readyJobs.sort();
+};
+
+/**
+ * Adds remaining jobs (from cycles or missing deps) to the result.
+ */
+const appendRemainingJobs = (
+  result: JobInfo[],
+  jobInfoMap: Map<string, JobInfo>
+): void => {
+  if (result.length >= jobInfoMap.size) {
+    return;
+  }
+
+  const addedSet = new Set(result.map((j) => j.id));
+  const remaining = [...jobInfoMap.keys()]
+    .filter((id) => !addedSet.has(id))
+    .sort();
+
+  for (const id of remaining) {
+    const job = jobInfoMap.get(id);
+    if (job) {
+      result.push(job);
+    }
+  }
+};
+
 /**
  * Performs topological sort of jobs based on their needs dependencies.
  * Jobs with no dependencies come first, followed by jobs that depend on them.
@@ -94,35 +185,10 @@ const topologicalSort = (
     return [];
   }
 
-  // Calculate in-degree (number of dependencies) for each job
-  const inDegree = new Map<string, number>();
-  for (const id of jobInfoMap.keys()) {
-    inDegree.set(id, 0);
-  }
-
-  // Build adjacency list: dependents[a] contains all jobs that depend on a
-  const dependents = new Map<string, string[]>();
-  for (const [id, job] of jobInfoMap) {
-    for (const dep of job.needs) {
-      if (jobInfoMap.has(dep)) {
-        inDegree.set(id, (inDegree.get(id) ?? 0) + 1);
-        const existing = dependents.get(dep) ?? [];
-        existing.push(id);
-        dependents.set(dep, existing);
-      }
-    }
-  }
-
-  // Start with jobs that have no dependencies
-  const queue: string[] = [];
-  for (const [id, degree] of inDegree) {
-    if (degree === 0) {
-      queue.push(id);
-    }
-  }
-  queue.sort();
-
+  const { inDegree, dependents } = buildDependencyGraph(jobInfoMap);
+  const queue = findRootJobs(inDegree);
   const result: JobInfo[] = [];
+
   while (queue.length > 0) {
     const current = queue.shift();
     if (!current) {
@@ -134,34 +200,11 @@ const topologicalSort = (
       result.push(job);
     }
 
-    // Find all dependents and reduce their in-degree
-    const nextLevel: string[] = [];
-    for (const dependent of dependents.get(current) ?? []) {
-      const newDegree = (inDegree.get(dependent) ?? 1) - 1;
-      inDegree.set(dependent, newDegree);
-      if (newDegree === 0) {
-        nextLevel.push(dependent);
-      }
-    }
-
-    nextLevel.sort();
-    queue.push(...nextLevel);
+    const readyJobs = processJobDependents(current, dependents, inDegree);
+    queue.push(...readyJobs);
   }
 
-  // Handle cycles or missing dependencies - add remaining jobs alphabetically
-  if (result.length < jobInfoMap.size) {
-    const addedSet = new Set(result.map((j) => j.id));
-    const remaining = [...jobInfoMap.keys()]
-      .filter((id) => !addedSet.has(id))
-      .sort();
-
-    for (const id of remaining) {
-      const job = jobInfoMap.get(id);
-      if (job) {
-        result.push(job);
-      }
-    }
-  }
+  appendRemainingJobs(result, jobInfoMap);
 
   return result;
 };

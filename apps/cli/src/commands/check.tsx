@@ -2,11 +2,120 @@ import { defineCommand } from "citty";
 import { render } from "ink";
 import { TUIEventEmitter } from "../runner/event-emitter.js";
 import { CheckRunner } from "../runner/index.js";
-import type { RunConfig } from "../runner/types.js";
+import type { RunConfig, RunResult } from "../runner/types.js";
 import { CheckTUI } from "../tui/check-tui.js";
 import { printHeaderWithUpdateCheck } from "../tui/components/index.js";
 import { formatError } from "../utils/error.js";
 import { createSignalController, SIGINT_EXIT_CODE } from "../utils/signal.js";
+
+const printVerboseResults = (result: RunResult): void => {
+  console.log("=".repeat(60));
+  console.log("RESULTS");
+  console.log("=".repeat(60));
+  console.log();
+
+  if (result.success) {
+    console.log("✓ No errors found");
+  } else {
+    console.log(`✗ Found ${result.errors.length} error(s):\n`);
+    for (const error of result.errors) {
+      console.log(`  ${error.errorId}`);
+      console.log(`  Message: ${error.message}`);
+      if (error.filePath) {
+        console.log(`  Location: ${error.filePath}`);
+      }
+      console.log();
+    }
+  }
+
+  console.log(`Run ID: ${result.runID}`);
+  console.log(`Duration: ${(result.duration / 1000).toFixed(1)}s`);
+};
+
+const runVerboseMode = async (config: RunConfig): Promise<void> => {
+  const signalCtrl = createSignalController();
+  const runner = new CheckRunner(config);
+
+  // Abort runner when signal received
+  signalCtrl.signal.addEventListener("abort", () => {
+    console.log("\nCancelling...");
+    runner.abort();
+  });
+
+  console.log("Detent check (verbose mode)\n");
+
+  try {
+    const result = await runner.run();
+    signalCtrl.cleanup();
+
+    if (runner.isAborted()) {
+      console.log("\nCancelled. Cleanup complete.");
+      process.exit(SIGINT_EXIT_CODE);
+    }
+
+    const debugLogPath = runner.getDebugLogPath();
+    if (debugLogPath) {
+      console.log(`\nDebug log: ${debugLogPath}\n`);
+    }
+
+    printVerboseResults(result);
+    process.exit(result.success ? 0 : 1);
+  } catch (error) {
+    signalCtrl.cleanup();
+    throw error;
+  }
+};
+
+const runTUIMode = async (config: RunConfig): Promise<void> => {
+  await printHeaderWithUpdateCheck("check");
+
+  const signalCtrl = createSignalController();
+  const eventEmitter = new TUIEventEmitter();
+  const runner = new CheckRunner(config, eventEmitter);
+
+  // Abort runner when process signal received
+  signalCtrl.signal.addEventListener("abort", () => {
+    runner.abort();
+  });
+
+  // Run the workflow - this will emit events to the TUI
+  const runPromise = runner.run();
+
+  // Render TUI with exitOnCtrlC DISABLED - we handle exit ourselves
+  // The TUI will call onCancel when Ctrl+C is pressed, which aborts the runner.
+  // The runner will then emit a "done" event, and the TUI will exit.
+  const { waitUntilExit } = render(
+    <CheckTUI
+      onCancel={() => {
+        runner.abort();
+      }}
+      onEvent={(callback) => eventEmitter.on(callback)}
+    />,
+    {
+      // CRITICAL: Disable auto-exit so we control the shutdown sequence
+      exitOnCtrlC: false,
+    }
+  );
+
+  // Wait for both TUI exit and runner completion
+  // The TUI exits when it receives the "done" event from the runner
+  const [result] = await Promise.all([runPromise, waitUntilExit()]);
+
+  signalCtrl.cleanup();
+
+  if (runner.isAborted()) {
+    console.log("\nCancelled. Cleanup complete.");
+    process.exit(SIGINT_EXIT_CODE);
+  }
+
+  if (!result.success && result.errors.length > 0) {
+    console.log(
+      `\nFound ${result.errors.length} error(s). Run with --verbose for details.`
+    );
+  }
+
+  process.exit(result.success ? 0 : 1);
+};
 
 export const checkCommand = defineCommand({
   meta: {
@@ -46,7 +155,6 @@ export const checkCommand = defineCommand({
     const job = args.job as string | undefined;
     const verbose = args.verbose as boolean;
 
-    // Validate: job requires workflow
     if (job && !workflow) {
       console.error(
         "Error: Job argument requires a workflow to be specified\n" +
@@ -57,7 +165,6 @@ export const checkCommand = defineCommand({
       process.exit(1);
     }
 
-    // Build RunConfig
     const config: RunConfig = {
       workflow,
       job,
@@ -65,140 +172,19 @@ export const checkCommand = defineCommand({
       verbose,
     };
 
-    // Create signal controller for graceful shutdown
-    const signalCtrl = createSignalController();
-
-    // Track if we're in cleanup phase (second signal = force exit)
-    let inCleanup = false;
-
-    // Setup force exit handler for second signal during cleanup
-    const forceExitHandler = (): void => {
-      if (inCleanup) {
-        process.exit(SIGINT_EXIT_CODE);
-      }
-    };
-    process.on("SIGINT", forceExitHandler);
-    process.on("SIGTERM", forceExitHandler);
+    // Clean up orphaned worktrees from previous runs (best-effort, non-blocking)
+    const { cleanupOrphanedWorktrees } = await import("@detent/git");
+    cleanupOrphanedWorktrees(config.repoRoot).catch(() => {
+      // Ignore cleanup errors - best-effort background cleanup
+    });
 
     try {
       if (verbose) {
-        // Verbose mode: run without TUI, show detailed output
-        const runner = new CheckRunner(config);
-
-        // Abort runner when signal received
-        signalCtrl.signal.addEventListener("abort", () => {
-          console.log("\nCancelling...");
-          runner.abort();
-        });
-
-        console.log("Detent check (verbose mode)\n");
-
-        inCleanup = true; // Runner cleanup happens inside run()
-        const result = await runner.run();
-        inCleanup = false;
-
-        // Clean up signal handlers
-        signalCtrl.cleanup();
-        process.off("SIGINT", forceExitHandler);
-        process.off("SIGTERM", forceExitHandler);
-
-        // If aborted, exit cleanly
-        if (runner.isAborted()) {
-          console.log("\nCancelled. Cleanup complete.");
-          process.exit(SIGINT_EXIT_CODE);
-        }
-
-        // Display debug log path
-        const debugLogPath = runner.getDebugLogPath();
-        if (debugLogPath) {
-          console.log(`\nDebug log: ${debugLogPath}\n`);
-        }
-
-        // Display detailed results
-        console.log("=".repeat(60));
-        console.log("RESULTS");
-        console.log("=".repeat(60));
-        console.log();
-
-        if (result.success) {
-          console.log("✓ No errors found");
-        } else {
-          console.log(`✗ Found ${result.errors.length} error(s):\n`);
-          for (const error of result.errors) {
-            console.log(`  ${error.errorId}`);
-            console.log(`  Message: ${error.message}`);
-            if (error.filePath) {
-              console.log(`  Location: ${error.filePath}`);
-            }
-            console.log();
-          }
-        }
-
-        console.log(`Run ID: ${result.runID}`);
-        console.log(`Duration: ${(result.duration / 1000).toFixed(1)}s`);
-
-        process.exit(result.success ? 0 : 1);
+        await runVerboseMode(config);
       } else {
-        // Non-verbose mode: use TUI
-        await printHeaderWithUpdateCheck("check");
-
-        const eventEmitter = new TUIEventEmitter();
-
-        // Create runner with event emitter
-        const runner = new CheckRunner(config, eventEmitter);
-
-        // Abort runner when signal received (process-level handler for TUI mode)
-        signalCtrl.signal.addEventListener("abort", () => {
-          runner.abort();
-        });
-
-        // Render TUI
-        const { waitUntilExit, unmount } = render(
-          <CheckTUI
-            onCancel={() => {
-              runner.abort();
-            }}
-            onEvent={(callback) => eventEmitter.on(callback)}
-          />
-        );
-
-        // Run workflow in background
-        const runPromise = runner.run();
-
-        // Wait for TUI to exit
-        await waitUntilExit();
-
-        // TUI has exited, now wait for runner cleanup
-        inCleanup = true;
-        const result = await runPromise;
-        inCleanup = false;
-
-        // Clean up signal handlers
-        signalCtrl.cleanup();
-        process.off("SIGINT", forceExitHandler);
-        process.off("SIGTERM", forceExitHandler);
-
-        // If aborted, exit cleanly without error message
-        if (runner.isAborted()) {
-          console.log("\nCancelled. Cleanup complete.");
-          process.exit(SIGINT_EXIT_CODE);
-        }
-
-        // Show error summary if failed
-        if (!result.success && result.errors.length > 0) {
-          console.log(
-            `\nFound ${result.errors.length} error(s). Run with --verbose for details.`
-          );
-        }
-
-        process.exit(result.success ? 0 : 1);
+        await runTUIMode(config);
       }
     } catch (error) {
-      // Clean up signal handlers on error
-      signalCtrl.cleanup();
-      process.off("SIGINT", forceExitHandler);
-      process.off("SIGTERM", forceExitHandler);
-
       const message = formatError(error);
       console.error(`\n✗ Check failed: ${message}\n`);
 

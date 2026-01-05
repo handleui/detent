@@ -4,19 +4,8 @@ import type { ExecuteResult, ParsedError, ProcessResult } from "./types.js";
 
 /**
  * Configuration for the error processor.
- * @deprecated Config parameters are no longer used since we switched to local parser.
  */
 interface ProcessorConfig {
-  /**
-   * @deprecated No longer used - parser is now local.
-   */
-  readonly parserUrl?: string;
-
-  /**
-   * @deprecated No longer used - parser is now local.
-   */
-  readonly timeout?: number;
-
   /**
    * Optional debug logger for troubleshooting
    */
@@ -37,10 +26,7 @@ export class ErrorProcessor {
   private readonly debugLogger?: DebugLogger;
 
   constructor(config: ProcessorConfig = {}) {
-    this.parser = new ParserClient({
-      baseUrl: config.parserUrl,
-      timeout: config.timeout,
-    });
+    this.parser = new ParserClient();
     this.debugLogger = config.debugLogger;
   }
 

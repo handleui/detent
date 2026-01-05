@@ -17,6 +17,7 @@ import {
 import { isValidRunID, safeGitEnv } from "./utils.js";
 
 const HEX_16_PATTERN = /^[0-9a-f]{16}$/;
+const WORKTREE_PATH_PATTERN = /detent-[0-9a-f]+-[0-9a-z]+-[0-9a-z]+/;
 
 describe("run-id", () => {
   test("computeRunID is deterministic", () => {
@@ -47,7 +48,7 @@ describe("run-id", () => {
     const validRunID = "a1b2c3d4e5f60123" as RunID;
     const path = createEphemeralWorktreePath(validRunID);
     expect(path).toContain(`detent-${validRunID}`);
-    expect(path).toMatch(/detent-[0-9a-f]+-[0-9a-z]+-[0-9a-z]+/);
+    expect(path).toMatch(WORKTREE_PATH_PATTERN);
   });
 
   test("createEphemeralWorktreePath rejects empty runID", () => {

@@ -409,18 +409,114 @@ const sensitiveActionsSet = new Set(sensitiveActions);
 const sensitiveCommandsSet = new Set(sensitiveCommands);
 
 /**
- * Checks if a string contains any pattern from the set as a substring.
+ * Finds the first matching pattern from a set within a haystack string.
+ * Returns the pattern if found, null otherwise.
  */
-const _containsSensitiveSubstring = (
+const findMatchingPattern = (
   haystack: string,
-  patterns: Set<string>
-): boolean => {
+  patterns: Set<string>,
+  caseInsensitive = false
+): string | null => {
+  const normalizedHaystack = caseInsensitive
+    ? haystack.toLowerCase()
+    : haystack;
   for (const pattern of patterns) {
-    if (haystack.includes(pattern)) {
-      return true;
+    const normalizedPattern = caseInsensitive ? pattern.toLowerCase() : pattern;
+    if (normalizedHaystack.includes(normalizedPattern)) {
+      return pattern;
     }
   }
-  return false;
+  return null;
+};
+
+/**
+ * Generic action patterns that indicate sensitivity.
+ */
+const genericActionPatterns = [
+  "/deploy",
+  "/publish",
+  "/release",
+  "-deploy",
+  "-publish",
+  "-release",
+];
+
+/**
+ * Checks if a job name contains sensitive keywords.
+ */
+const checkJobNameSensitivity = (
+  jobId: string,
+  job: Job
+): SensitivityReason | null => {
+  const nameLower = (job.name || jobId).toLowerCase();
+  const matchedPattern = findMatchingPattern(nameLower, sensitiveJobNamesSet);
+  if (matchedPattern) {
+    return { type: "job-name", pattern: matchedPattern };
+  }
+  return null;
+};
+
+/**
+ * Checks if a step uses a sensitive action.
+ */
+const checkActionSensitivity = (
+  actionName: string
+): SensitivityReason | null => {
+  const actionLower = actionName.toLowerCase();
+
+  const matchedAction = findMatchingPattern(
+    actionLower,
+    sensitiveActionsSet,
+    true
+  );
+  if (matchedAction) {
+    return { type: "action", pattern: matchedAction };
+  }
+
+  for (const pattern of genericActionPatterns) {
+    if (actionLower.includes(pattern)) {
+      return { type: "action-pattern", pattern };
+    }
+  }
+
+  return null;
+};
+
+/**
+ * Checks if a step runs a sensitive command.
+ */
+const checkCommandSensitivity = (command: string): SensitivityReason | null => {
+  const matchedCommand = findMatchingPattern(
+    command,
+    sensitiveCommandsSet,
+    true
+  );
+  if (matchedCommand) {
+    return { type: "command", pattern: matchedCommand };
+  }
+  return null;
+};
+
+/**
+ * Checks all steps of a job for sensitive actions or commands.
+ */
+const checkStepsSensitivity = (job: Job): SensitivityReason | null => {
+  for (const step of job.steps ?? []) {
+    if (step.uses) {
+      const actionReason = checkActionSensitivity(step.uses);
+      if (actionReason) {
+        return actionReason;
+      }
+    }
+
+    if (step.run) {
+      const commandReason = checkCommandSensitivity(step.run);
+      if (commandReason) {
+        return commandReason;
+      }
+    }
+  }
+  return null;
 };
 
 /**
@@ -455,57 +551,12 @@ export const getSensitivityReason = (
   jobId: string,
   job: Job
 ): SensitivityReason | null => {
-  // Check job ID and name for sensitive keywords
-  const nameLower = (job.name || jobId).toLowerCase();
-
-  for (const pattern of sensitiveJobNamesSet) {
-    if (nameLower.includes(pattern)) {
-      return { type: "job-name", pattern };
-    }
+  const jobNameReason = checkJobNameSensitivity(jobId, job);
+  if (jobNameReason) {
+    return jobNameReason;
   }
 
-  // Check steps for sensitive actions or commands
-  for (const step of job.steps ?? []) {
-    // Check for publishing/deployment actions
-    if (step.uses) {
-      const actionLower = step.uses.toLowerCase();
-
-      // Check known dangerous actions
-      for (const pattern of sensitiveActionsSet) {
-        if (actionLower.includes(pattern.toLowerCase())) {
-          return { type: "action", pattern };
-        }
-      }
-
-      // Check generic patterns in action names
-      const genericPatterns = [
-        "/deploy",
-        "/publish",
-        "/release",
-        "-deploy",
-        "-publish",
-        "-release",
-      ];
-      for (const pattern of genericPatterns) {
-        if (actionLower.includes(pattern)) {
-          return { type: "action-pattern", pattern };
-        }
-      }
-    }
-
-    // Check run commands for publishing/deployment
-    if (step.run) {
-      const cmdLower = step.run.toLowerCase();
-
-      for (const pattern of sensitiveCommandsSet) {
-        if (cmdLower.includes(pattern.toLowerCase())) {
-          return { type: "command", pattern };
-        }
-      }
-    }
-  }
-
-  return null;
+  return checkStepsSensitivity(job);
 };
 
 /**

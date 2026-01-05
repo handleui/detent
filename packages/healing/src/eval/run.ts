@@ -35,7 +35,7 @@ import type { HealingEvalResult, HealingTestCase } from "./types.js";
  * Mock task that simulates healing results for testing the eval infrastructure.
  * Replace with real HealLoop integration when ready for live evals.
  */
-const mockTask = async (input: HealingTestCase): Promise<HealingEvalResult> => {
+const mockTask = (input: HealingTestCase): HealingEvalResult => {
   // Simulate varying results based on the test case
   const baseIterations = input.tags?.includes("lint") ? 2 : 4;
   const baseCost = baseIterations * 0.05;

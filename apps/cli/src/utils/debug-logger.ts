@@ -31,7 +31,7 @@ export class DebugLogger {
   private readonly logPath: string;
   private readonly runID: string;
   private closed = false;
-  private phaseStartTimes = new Map<string, number>();
+  private readonly phaseStartTimes = new Map<string, number>();
 
   constructor(runID: string) {
     this.runID = runID;

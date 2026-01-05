@@ -350,80 +350,177 @@ export class WorkflowPreparer {
       buildCombinedManifest,
       findFirstNoDepJob,
     } = await import("./workflow-injector.js");
-    const { load } = await import("js-yaml");
 
     const allSkippedWorkflows: string[] = [];
     const allSkippedJobs: string[] = [];
 
-    // Step 1: Filter sensitive workflows and parse remaining ones
-    const parsedWorkflows: Array<{
-      name: string;
-      originalContent: string;
-      injectedContent: string;
-      jobs: Record<string, unknown>;
+    const parsedWorkflows = this.filterAndParseWorkflows(
+      workflows,
+      isSensitiveWorkflow,
+      injectWorkflow,
+      allSkippedWorkflows,
+      allSkippedJobs
+    );
+
+    const manifestB64 = this.buildManifestBase64(
+      parsedWorkflows,
+      buildCombinedManifest,
+      findFirstNoDepJob
+    );
+
+    await this.writeInjectedWorkflows(
+      worktreePath,
+      parsedWorkflows,
+      manifestB64,
+      injectMarkersWithManifest,
+      findFirstNoDepJob
+    );
+
+    return {
+      skippedWorkflows: allSkippedWorkflows,
+      skippedJobs: allSkippedJobs,
+    };
+  }
+
+  /**
+   * Filters sensitive workflows and parses remaining ones for injection.
+   */
+  private filterAndParseWorkflows(
+    workflows: readonly WorkflowFile[],
+    isSensitiveWorkflow: (name: string) => boolean,
+    injectWorkflow: (content: string) => {
+      content: string;
       skippedJobs: readonly string[];
-    }> = [];
+    },
+    allSkippedWorkflows: string[],
+    allSkippedJobs: string[]
+  ): readonly ParsedWorkflow[] {
+    const parsedWorkflows: ParsedWorkflow[] = [];
 
     for (const workflow of workflows) {
-      // Skip entire workflow if filename indicates sensitivity
       if (isSensitiveWorkflow(workflow.name)) {
         allSkippedWorkflows.push(workflow.name);
-        if (this.config.verbose) {
-          console.log(
-            `[Inject] ! Skipping sensitive workflow: ${workflow.name}`
-          );
-        }
+        this.logSkippedWorkflow(workflow.name);
         continue;
       }
 
-      // Apply sensitivity handling (continue-on-error, skip sensitive jobs)
-      const { content: injectedContent, skippedJobs } = injectWorkflow(
-        workflow.content
+      const result = this.processWorkflow(
+        workflow,
+        injectWorkflow,
+        allSkippedJobs
       );
 
-      if (skippedJobs.length > 0) {
-        for (const jobName of skippedJobs) {
-          allSkippedJobs.push(`${workflow.name}:${jobName}`);
-        }
-        if (this.config.verbose) {
-          console.log(
-            `[Inject] ! Skipping sensitive jobs in ${workflow.name}: ${skippedJobs.join(", ")}`
-          );
-        }
+      if (result) {
+        parsedWorkflows.push(result);
       }
-
-      // Parse to extract jobs for manifest building
-      let parsed: unknown;
-      try {
-        parsed = load(injectedContent);
-      } catch {
-        continue; // Skip unparseable workflows
-      }
-
-      if (
-        !parsed ||
-        typeof parsed !== "object" ||
-        Array.isArray(parsed) ||
-        !("jobs" in parsed)
-      ) {
-        continue;
-      }
-
-      const jobs = (parsed as Record<string, unknown>).jobs;
-      if (!jobs || typeof jobs !== "object" || Array.isArray(jobs)) {
-        continue;
-      }
-
-      parsedWorkflows.push({
-        name: workflow.name,
-        originalContent: workflow.content,
-        injectedContent,
-        jobs: jobs as Record<string, unknown>,
-        skippedJobs,
-      });
     }
 
-    // Step 2: Build combined manifest from ALL workflows
+    return parsedWorkflows;
+  }
+
+  /**
+   * Logs a skipped sensitive workflow if verbose mode is enabled.
+   */
+  private logSkippedWorkflow(workflowName: string): void {
+    if (this.config.verbose) {
+      console.log(`[Inject] ! Skipping sensitive workflow: ${workflowName}`);
+    }
+  }
+
+  /**
+   * Processes a single workflow: injects modifications and parses for jobs.
+   */
+  private processWorkflow(
+    workflow: WorkflowFile,
+    injectWorkflow: (content: string) => {
+      content: string;
+      skippedJobs: readonly string[];
+    },
+    allSkippedJobs: string[]
+  ): ParsedWorkflow | undefined {
+    const { content: injectedContent, skippedJobs } = injectWorkflow(
+      workflow.content
+    );
+
+    this.collectSkippedJobs(workflow.name, skippedJobs, allSkippedJobs);
+
+    const jobs = this.extractJobs(injectedContent);
+    if (!jobs) {
+      return undefined;
+    }
+
+    return {
+      name: workflow.name,
+      injectedContent,
+      jobs,
+    };
+  }
+
+  /**
+   * Collects skipped jobs and logs them if verbose mode is enabled.
+   */
+  private collectSkippedJobs(
+    workflowName: string,
+    skippedJobs: readonly string[],
+    allSkippedJobs: string[]
+  ): void {
+    if (skippedJobs.length === 0) {
+      return;
+    }
+
+    for (const jobName of skippedJobs) {
+      allSkippedJobs.push(`${workflowName}:${jobName}`);
+    }
+
+    if (this.config.verbose) {
+      console.log(
+        `[Inject] ! Skipping sensitive jobs in ${workflowName}: ${skippedJobs.join(", ")}`
+      );
+    }
+  }
+
+  /**
+   * Extracts jobs from injected workflow content.
+   */
+  private extractJobs(content: string): Record<string, unknown> | undefined {
+    let parsed: unknown;
+    try {
+      parsed = load(content);
+    } catch {
+      return undefined;
+    }
+
+    if (
+      !parsed ||
+      typeof parsed !== "object" ||
+      Array.isArray(parsed) ||
+      !("jobs" in parsed)
+    ) {
+      return undefined;
+    }
+
+    const jobs = (parsed as Record<string, unknown>).jobs;
+    if (!jobs || typeof jobs !== "object" || Array.isArray(jobs)) {
+      return undefined;
+    }
+
+    return jobs as Record<string, unknown>;
+  }
+
+  /**
+   * Builds combined manifest and encodes as base64.
+   */
+  private buildManifestBase64(
+    parsedWorkflows: readonly ParsedWorkflow[],
+    buildCombinedManifest: (
+      infos: readonly {
+        name: string;
+        content: string;
+        jobs: Record<string, unknown>;
+      }[]
+    ) => unknown,
+    findFirstNoDepJob: (jobs: Record<string, unknown>) => string | null
+  ): string {
     const workflowInfos = parsedWorkflows.map((pw) => ({
       name: pw.name,
       content: pw.injectedContent,
@@ -432,10 +529,7 @@ export class WorkflowPreparer {
 
     const combinedManifest = buildCombinedManifest(workflowInfos);
     const manifestJson = JSON.stringify(combinedManifest);
-    const manifestB64 = Buffer.from(manifestJson).toString("base64");
 
-    // Step 3: Find manifest injection point for EACH workflow
-    // This ensures whichever workflow runs first will emit the manifest
     const manifestLocations = parsedWorkflows.map((pw) => ({
       name: pw.name,
       jobId: findFirstNoDepJob(pw.jobs),
@@ -445,12 +539,26 @@ export class WorkflowPreparer {
       `[Inject] Manifest locations (per-workflow): ${manifestLocations.map((loc) => `${loc.name}:${loc.jobId ?? "none"}`).join(", ")}`
     );
 
-    // Step 4: Inject markers into each workflow (with manifest in each workflow's first no-dep job)
+    return Buffer.from(manifestJson).toString("base64");
+  }
+
+  /**
+   * Writes injected workflows to the worktree.
+   */
+  private async writeInjectedWorkflows(
+    worktreePath: string,
+    parsedWorkflows: readonly ParsedWorkflow[],
+    manifestB64: string,
+    injectMarkersWithManifest: (
+      content: string,
+      manifest: string | null,
+      jobId: string | null
+    ) => string,
+    findFirstNoDepJob: (jobs: Record<string, unknown>) => string | null
+  ): Promise<void> {
     await Promise.all(
       parsedWorkflows.map(async (pw) => {
-        // Find this workflow's manifest job
         const manifestJobId = findFirstNoDepJob(pw.jobs);
-
         const finalContent = injectMarkersWithManifest(
           pw.injectedContent,
           manifestB64,
@@ -468,10 +576,11 @@ export class WorkflowPreparer {
         }
       })
     );
-
-    return {
-      skippedWorkflows: allSkippedWorkflows,
-      skippedJobs: allSkippedJobs,
-    };
   }
+}
+
+interface ParsedWorkflow {
+  name: string;
+  injectedContent: string;
+  jobs: Record<string, unknown>;
 }

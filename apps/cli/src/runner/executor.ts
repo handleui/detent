@@ -17,6 +17,56 @@ const MAX_BUFFER_SIZE = 1024 * 1024;
 const ABORT_EXIT_CODE = 130;
 
 /**
+ * State for stdout stream processing
+ */
+interface StdoutProcessingState {
+  buffer: string;
+  parser: ActOutputParser;
+}
+
+/**
+ * Truncates buffer if it exceeds max size, keeping content after last newline
+ */
+const truncateBufferIfNeeded = (
+  buffer: string,
+  debugLogger?: DebugLogger
+): string => {
+  if (buffer.length <= MAX_BUFFER_SIZE) {
+    return buffer;
+  }
+  const lastNewline = buffer.lastIndexOf("\n");
+  if (lastNewline > 0) {
+    debugLogger?.log(
+      `[Execute] Buffer exceeded ${MAX_BUFFER_SIZE} bytes, truncating`
+    );
+    return buffer.slice(lastNewline + 1);
+  }
+  return buffer;
+};
+
+/**
+ * Parses lines from buffer and emits TUI events
+ */
+const processLinesForTUI = (
+  state: StdoutProcessingState,
+  eventEmitter: TUIEventEmitter
+): void => {
+  const lines = state.buffer.split("\n");
+  state.buffer = lines.pop() ?? "";
+
+  for (const line of lines) {
+    const events = state.parser.parseLine(line);
+    for (const event of events) {
+      eventEmitter.emit(event);
+    }
+    eventEmitter.emit({
+      type: "log",
+      content: line,
+    });
+  }
+};
+
+/**
  * Configuration for the act executor.
  */
 interface ExecutorConfig {
@@ -208,12 +258,17 @@ export class ActExecutor {
     cwd: string
   ): Promise<ExecuteResult> {
     const startTime = Date.now();
-    const parser = new ActOutputParser();
+    const stdoutState: StdoutProcessingState = {
+      buffer: "",
+      parser: new ActOutputParser(),
+    };
 
     return new Promise((resolve) => {
       const child = spawn(actPath, args, {
         cwd,
         stdio: ["ignore", "pipe", "pipe"],
+        // Create new process group so we can kill all children (including Docker)
+        detached: process.platform !== "win32",
       });
 
       this.currentChild = child;
@@ -221,51 +276,23 @@ export class ActExecutor {
       const stdoutChunks: Buffer[] = [];
       const stderrChunks: Buffer[] = [];
 
-      let stdoutBuffer = "";
-
       child.stdout.on("data", (chunk: Buffer) => {
         stdoutChunks.push(chunk);
         const text = chunk.toString("utf-8");
 
-        // Write to debug log
         this.debugLogger?.logActOutput(text);
 
-        // Stream to stdout in real-time if verbose mode
         if (this.config.verbose) {
           process.stdout.write(chunk);
         }
 
-        // Parse output for TUI events if event emitter is provided
         if (this.eventEmitter) {
-          stdoutBuffer += text;
-
-          // Prevent unbounded buffer growth
-          if (stdoutBuffer.length > MAX_BUFFER_SIZE) {
-            const lastNewline = stdoutBuffer.lastIndexOf("\n");
-            if (lastNewline > 0) {
-              this.debugLogger?.log(
-                `[Execute] Buffer exceeded ${MAX_BUFFER_SIZE} bytes, truncating`
-              );
-              stdoutBuffer = stdoutBuffer.slice(lastNewline + 1);
-            }
-          }
-
-          const lines = stdoutBuffer.split("\n");
-          stdoutBuffer = lines.pop() ?? "";
-
-          for (const line of lines) {
-            // Parse detent markers and emit structured events
-            const events = parser.parseLine(line);
-            for (const event of events) {
-              this.eventEmitter.emit(event);
-            }
-
-            // Also emit raw log event for verbose display
-            this.eventEmitter.emit({
-              type: "log",
-              content: line,
-            });
-          }
+          stdoutState.buffer += text;
+          stdoutState.buffer = truncateBufferIfNeeded(
+            stdoutState.buffer,
+            this.debugLogger
+          );
+          processLinesForTUI(stdoutState, this.eventEmitter);
         }
       });
 

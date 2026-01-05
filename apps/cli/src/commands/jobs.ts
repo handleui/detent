@@ -3,14 +3,14 @@ import { defineCommand } from "citty";
 import { printHeaderWithUpdateCheck } from "../tui/components/index.js";
 import { ANSI_RESET, colors, hexToAnsi } from "../tui/styles.js";
 import { detectAgent } from "../utils/agent.js";
-import type { ParsedWorkflow } from "../workflow/index.js";
+import type { ParsedWorkflow } from "../workflow/parser.js";
+import { parseWorkflowsFromDir } from "../workflow/parser.js";
+import type { SensitivityReason } from "../workflow/sensitivity.js";
 import {
   formatSensitivityReason,
   getSensitivityReason,
   isSensitiveWorkflow,
-  parseWorkflowsFromDir,
-} from "../workflow/index.js";
-import type { SensitivityReason } from "../workflow/sensitivity.js";
+} from "../workflow/sensitivity.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Styling
