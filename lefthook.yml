@@ -16,7 +16,7 @@ pre-commit:
       stage_fixed: true
 
     - name: golangci-lint
-      root: apps/cli
+      root: apps/go-cli
       run: golangci-lint run --fix ./...
-      glob: "apps/cli/**/*.go"
+      glob: "apps/go-cli/**/*.go"
       stage_fixed: true

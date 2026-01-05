@@ -21,7 +21,7 @@ packages/core/              # Go - shared parsing logic
 ├── ci/                     # CI metadata types
 └── progress/               # Progress reporter interface
 
-apps/cli/                   # Go CLI
+apps/go-cli/                # Go CLI (renamed, deprecated)
 apps/web/                   # Next.js landing
 ```
 

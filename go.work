@@ -1,7 +1,7 @@
 go 1.25.5
 
 use (
-	./apps/cli
+	./apps/go-cli
 	./apps/parser
 	./packages/core
 )

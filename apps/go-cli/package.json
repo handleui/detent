@@ -1,0 +1,14 @@
+{
+  "name": "@detent/go-cli",
+  "version": "0.10.0",
+  "private": true,
+  "scripts": {
+    "build": "sh -c 'VERSION=$(node -p \"require(\\\"./package.json\\\").version\") && go build -ldflags \"-X github.com/detent/go-cli/cmd.Version=$VERSION -X github.com/detent/go-cli/internal/sentry.DSN=$SENTRY_DSN\" -o dist/dt'"
+  },
+  "devDependencies": {
+    "@vercel/blob": "^2.0.0"
+  },
+  "dependencies": {
+    "semver": "^7.7.3"
+  }
+}

@@ -8,14 +8,14 @@ Always use Context7 for library/API documentation, code generation, or configura
 - **Run CLI**: `detent <command>` (alias - NEVER use `./dist/dt`). AI runs verbose (no TUI). Use `--force` to skip cache.
 - **Lint/Fix**: `bun run lint` / `bun run fix`
 - **Types**: `bun run check-types`
-- **Go lint**: `cd apps/cli && golangci-lint run ./...`
-- **Go test**: `cd apps/cli && go test ./...`
+- **Go lint**: `cd apps/go-cli && golangci-lint run ./...`
+- **Go test**: `cd apps/go-cli && go test ./...`
 
 ## Git
 - Conventional commits, header only, no description
 
 ## Project Structure
-- Turborepo monorepo: `apps/cli` (Go), `apps/web` (Next.js)
+- Turborepo monorepo: `apps/go-cli` (Go), `apps/web` (Next.js)
 - Shared packages: `packages/*` (ui, parsing business logic, typescript-config)
 - Formatter: Biome via ultracite (`bun run fix` auto-fixes)
 

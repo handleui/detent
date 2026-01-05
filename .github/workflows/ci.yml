@@ -27,13 +27,13 @@ jobs:
         with:
           go-version: "1.25"
           cache: true
-          cache-dependency-path: apps/cli/go.sum
+          cache-dependency-path: apps/go-cli/go.sum
 
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v8
         with:
           version: v2.7
-          working-directory: apps/cli
+          working-directory: apps/go-cli
           args: --timeout=5m
 
   cli-test:
@@ -50,21 +50,21 @@ jobs:
         with:
           go-version: "1.25"
           cache: true
-          cache-dependency-path: apps/cli/go.sum
+          cache-dependency-path: apps/go-cli/go.sum
 
       - name: Download dependencies
-        working-directory: apps/cli
+        working-directory: apps/go-cli
         run: go mod download
 
       - name: Run tests
-        working-directory: apps/cli
+        working-directory: apps/go-cli
         run: go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         with:
-          file: ./apps/cli/coverage.out
+          file: ./apps/go-cli/coverage.out
           flags: cli
           fail_ci_if_error: false
 
@@ -83,7 +83,7 @@ jobs:
         with:
           go-version: "1.25"
           cache: true
-          cache-dependency-path: apps/cli/go.sum
+          cache-dependency-path: apps/go-cli/go.sum
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -97,19 +97,19 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .turbo
-          key: ${{ runner.os }}-turbo-build-cli-${{ github.sha }}
+          key: ${{ runner.os }}-turbo-build-go-cli-${{ github.sha }}
           restore-keys: |
-            ${{ runner.os }}-turbo-build-cli-
+            ${{ runner.os }}-turbo-build-go-cli-
 
       - name: Download Go dependencies
-        working-directory: apps/cli
+        working-directory: apps/go-cli
         run: go mod download
 
       - name: Build CLI with Turbo
-        run: bun run build --filter=@detent/cli
+        run: bun run build --filter=@detent/go-cli
 
       - name: Verify binary
-        working-directory: apps/cli
+        working-directory: apps/go-cli
         run: |
           ./dist/dt --version || ./dist/dt version
           ls -lh dist/dt
@@ -118,7 +118,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: dt-linux-amd64
-          path: apps/cli/dist/dt
+          path: apps/go-cli/dist/dt
           retention-days: 7
 
   web-lint:

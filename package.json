@@ -6,8 +6,8 @@
     "dev": "turbo run dev",
     "lint": "turbo run //#check //#lint:go",
     "check": "ultracite check",
-    "lint:go": "cd apps/cli && golangci-lint run ./...",
-    "fix": "ultracite fix && cd apps/cli && golangci-lint run --fix ./...",
+    "lint:go": "cd apps/go-cli && golangci-lint run ./...",
+    "fix": "ultracite fix && cd apps/go-cli && golangci-lint run --fix ./...",
     "check-types": "turbo run check-types",
     "prepare": "lefthook install"
   },

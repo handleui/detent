@@ -48,7 +48,7 @@ jobs:
         id: tag
         if: steps.changesets.outputs.hasChangesets == 'false'
         run: |
-          VERSION=v$(node -p "require('./apps/cli/package.json').version")
+          VERSION=v$(node -p "require('./apps/go-cli/package.json').version")
           if ! git tag -l | grep -q "^${VERSION}$"; then
             git tag $VERSION
             git push origin $VERSION
