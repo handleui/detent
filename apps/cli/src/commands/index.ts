@@ -11,5 +11,7 @@ export const main = defineCommand({
     version: () => import("./version.js").then((m) => m.versionCommand),
     config: () => import("./config/index.js").then((m) => m.configCommand),
     check: () => import("./check.js").then((m) => m.checkCommand),
+    jobs: () => import("./jobs.js").then((m) => m.jobsCommand),
+    update: () => import("./update.js").then((m) => m.updateCommand),
   },
 });

@@ -20,12 +20,12 @@ const setupMockFS = (config: GlobalConfig = {}) => {
   });
 
   process.env.DETENT_HOME = detentDir;
-  delete process.env.ANTHROPIC_API_KEY;
+  process.env.ANTHROPIC_API_KEY = undefined;
 };
 
 const cleanupMockFS = () => {
   vol.reset();
-  delete process.env.DETENT_HOME;
+  process.env.DETENT_HOME = undefined;
 };
 
 describe("ConfigEditor", () => {
@@ -41,7 +41,7 @@ describe("ConfigEditor", () => {
   });
 
   describe("Config loading", () => {
-    it("should load and display complete config from file system", async () => {
+    it("should load and display complete config from file system", () => {
       setupMockFS({
         apiKey: "sk-ant-api03-test-key-1234567890",
         model: "claude-sonnet-4-5",
@@ -61,7 +61,7 @@ describe("ConfigEditor", () => {
       expect(output).toContain("15 min");
     });
 
-    it("should load partial config and show defaults for missing values", async () => {
+    it("should load partial config and show defaults for missing values", () => {
       setupMockFS({
         apiKey: "sk-ant-api03-partial-config-key",
         model: "claude-opus-4-5",
@@ -76,7 +76,7 @@ describe("ConfigEditor", () => {
       expect(output).toContain("none");
     });
 
-    it("should handle empty config file", async () => {
+    it("should handle empty config file", () => {
       setupMockFS({});
 
       const { lastFrame } = render(<ConfigEditor />);
@@ -88,7 +88,7 @@ describe("ConfigEditor", () => {
       expect(output).toContain("none");
     });
 
-    it("should handle non-existent config file", async () => {
+    it("should handle non-existent config file", () => {
       vol.fromJSON({});
       process.env.DETENT_HOME = "/test-detent";
 
@@ -101,7 +101,7 @@ describe("ConfigEditor", () => {
   });
 
   describe("UI rendering", () => {
-    it("should render header with version and command name", async () => {
+    it("should render header with version and command name", () => {
       setupMockFS({});
 
       const { lastFrame } = render(<ConfigEditor />);
@@ -111,7 +111,7 @@ describe("ConfigEditor", () => {
       expect(output).toContain("config");
     });
 
-    it("should render all config field labels", async () => {
+    it("should render all config field labels", () => {
       setupMockFS({});
 
       const { lastFrame } = render(<ConfigEditor />);
@@ -124,7 +124,7 @@ describe("ConfigEditor", () => {
       expect(output).toContain("Timeout/Run");
     });
 
-    it("should show focus indicator on first field", async () => {
+    it("should show focus indicator on first field", () => {
       setupMockFS({});
 
       const { lastFrame } = render(<ConfigEditor />);
@@ -133,7 +133,7 @@ describe("ConfigEditor", () => {
       expect(output).toContain("›");
     });
 
-    it("should show context-appropriate help text", async () => {
+    it("should show context-appropriate help text", () => {
       setupMockFS({});
 
       const { lastFrame } = render(<ConfigEditor />);
@@ -142,7 +142,7 @@ describe("ConfigEditor", () => {
       expect(output).toContain("type or paste");
     });
 
-    it("should show keyboard shortcuts in footer", async () => {
+    it("should show keyboard shortcuts in footer", () => {
       setupMockFS({});
 
       const { lastFrame } = render(<ConfigEditor />);
@@ -155,7 +155,7 @@ describe("ConfigEditor", () => {
   });
 
   describe("API key masking", () => {
-    it("should mask API key showing only last 4 characters", async () => {
+    it("should mask API key showing only last 4 characters", () => {
       setupMockFS({
         apiKey: "sk-ant-api03-secret-key-abcdef1234",
       });
@@ -168,7 +168,7 @@ describe("ConfigEditor", () => {
       expect(output).not.toContain("abcdef");
     });
 
-    it("should show 'not set' for missing API key", async () => {
+    it("should show 'not set' for missing API key", () => {
       setupMockFS({});
 
       const { lastFrame } = render(<ConfigEditor />);
@@ -182,7 +182,7 @@ describe("ConfigEditor", () => {
   });
 
   describe("Value formatting", () => {
-    it("should format budget values as USD currency", async () => {
+    it("should format budget values as USD currency", () => {
       setupMockFS({
         budgetPerRunUsd: 12.5,
         budgetMonthlyUsd: 250,
@@ -195,7 +195,7 @@ describe("ConfigEditor", () => {
       expect(output).toContain("$250.00");
     });
 
-    it("should show 'unlimited' for zero budget values", async () => {
+    it("should show 'unlimited' for zero budget values", () => {
       setupMockFS({
         budgetPerRunUsd: 0,
         budgetMonthlyUsd: 0,
@@ -214,7 +214,7 @@ describe("ConfigEditor", () => {
       expect(budgetMonthLine).toContain("unlimited");
     });
 
-    it("should format timeout with minutes label", async () => {
+    it("should format timeout with minutes label", () => {
       setupMockFS({
         timeoutMins: 30,
       });
@@ -225,7 +225,7 @@ describe("ConfigEditor", () => {
       expect(output).toContain("30 min");
     });
 
-    it("should show 'none' for zero timeout", async () => {
+    it("should show 'none' for zero timeout", () => {
       setupMockFS({
         timeoutMins: 0,
       });
@@ -239,7 +239,7 @@ describe("ConfigEditor", () => {
       expect(timeoutLine).toContain("none");
     });
 
-    it("should show 'default' for empty model", async () => {
+    it("should show 'default' for empty model", () => {
       setupMockFS({});
 
       const { lastFrame } = render(<ConfigEditor />);
@@ -253,7 +253,7 @@ describe("ConfigEditor", () => {
   });
 
   describe("Edge cases", () => {
-    it("should handle all fields at maximum values", async () => {
+    it("should handle all fields at maximum values", () => {
       setupMockFS({
         apiKey: "sk-ant-api03-max-config-test",
         model: "claude-opus-4-5",
@@ -272,7 +272,7 @@ describe("ConfigEditor", () => {
       expect(output).toContain("60 min");
     });
 
-    it("should handle all model options correctly", async () => {
+    it("should handle all model options correctly", () => {
       const models = [
         "claude-opus-4-5",
         "claude-sonnet-4-5",
