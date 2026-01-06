@@ -10,8 +10,5 @@
       "pattern": "api.detent.sh",
       "custom_domain": true
     }
-  ],
-  "vars": {
-    "WORKOS_SUBDOMAIN": "detent"
-  }
+  ]
 }

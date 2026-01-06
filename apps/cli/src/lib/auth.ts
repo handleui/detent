@@ -132,18 +132,16 @@ export const pollForTokens = async (
 export const refreshAccessToken = async (
   refreshToken: string
 ): Promise<TokenResponse> => {
-  const response = await fetch(
-    `${WORKOS_API_BASE}/user_management/authenticate`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        grant_type: "refresh_token",
-        refresh_token: refreshToken,
-        client_id: WORKOS_CLIENT_ID,
-      }),
-    }
-  );
+  // Use /v1/sessions/token for public clients (CLIs) - doesn't require client_secret
+  const response = await fetch(`${WORKOS_API_BASE}/v1/sessions/token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+      client_id: WORKOS_CLIENT_ID,
+    }),
+  });
 
   if (!response.ok) {
     const error = await response.text();

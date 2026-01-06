@@ -1,6 +1,7 @@
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { webhookSignatureMiddleware } from "../middleware/webhook-signature";
+import { createGitHubService } from "../services/github";
 import type { Env } from "../types/env";
 
 // Type definitions for GitHub webhook payloads
@@ -86,11 +87,11 @@ app.post("/github", webhookSignatureMiddleware, (c: WebhookContext) => {
 });
 
 // Handle workflow_run events (CI completed)
-const handleWorkflowRunEvent = (
+const handleWorkflowRunEvent = async (
   c: WebhookContext,
   payload: WorkflowRunPayload
 ) => {
-  const { action, workflow_run, repository } = payload;
+  const { action, workflow_run, repository, installation } = payload;
 
   // Only process completed runs
   if (action !== "completed") {
@@ -106,31 +107,93 @@ const handleWorkflowRunEvent = (
     `[workflow_run] Failed: ${repository.full_name} / ${workflow_run.name} (run ${workflow_run.id})`
   );
 
-  // TODO: Implement actual handling
-  // 1. Get installation token
-  // 2. Fetch workflow logs
-  // 3. Parse errors with @detent/parser
-  // 4. Post comment on PR (if associated)
+  // Get GitHub service
+  const github = createGitHubService(c.env);
 
-  return c.json({
-    message: "workflow_run received",
-    repository: repository.full_name,
-    workflow: workflow_run.name,
-    runId: workflow_run.id,
-    conclusion: workflow_run.conclusion,
-  });
+  try {
+    // 1. Get installation token
+    const token = await github.getInstallationToken(installation.id);
+
+    // 2. Check if there's an associated PR
+    const prNumber =
+      workflow_run.pull_requests[0]?.number ??
+      (await github.getPullRequestForRun(
+        token,
+        repository.owner.login,
+        repository.name,
+        workflow_run.id
+      ));
+
+    if (!prNumber) {
+      console.log("[workflow_run] No associated PR found, skipping comment");
+      return c.json({
+        message: "workflow_run processed",
+        repository: repository.full_name,
+        runId: workflow_run.id,
+        status: "no_pr",
+      });
+    }
+
+    // 3. Fetch workflow logs
+    const logs = await github.fetchWorkflowLogs(
+      token,
+      repository.owner.login,
+      repository.name,
+      workflow_run.id
+    );
+
+    // TODO: Parse errors with @detent/parser
+    // const errors = parseWorkflowLogs(logs);
+
+    // 4. Post summary comment on PR
+    const commentBody = formatFailureComment(
+      workflow_run.name,
+      workflow_run.id,
+      logs
+    );
+
+    await github.postComment(
+      token,
+      repository.owner.login,
+      repository.name,
+      prNumber,
+      commentBody
+    );
+
+    return c.json({
+      message: "workflow_run processed",
+      repository: repository.full_name,
+      runId: workflow_run.id,
+      prNumber,
+      status: "commented",
+    });
+  } catch (error) {
+    console.error("[workflow_run] Error processing:", error);
+    return c.json(
+      {
+        message: "workflow_run error",
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
+      500
+    );
+  }
 };
 
 // Handle issue_comment events (@detent mentions)
-const handleIssueCommentEvent = (
+const handleIssueCommentEvent = async (
   c: WebhookContext,
   payload: IssueCommentPayload
 ) => {
-  const { action, comment, issue, repository } = payload;
+  const { action, comment, issue, repository, installation } = payload;
 
   // Only process new comments
   if (action !== "created") {
     return c.json({ message: "ignored", reason: "not created" });
+  }
+
+  // Only process PR comments (not issues)
+  if (!issue.pull_request) {
+    return c.json({ message: "ignored", reason: "not a pull request" });
   }
 
   // Check for @detent mention
@@ -146,19 +209,87 @@ const handleIssueCommentEvent = (
   // Parse command
   const command = parseDetentCommand(comment.body);
 
-  // TODO: Implement actual handling
-  // 1. Get installation token
-  // 2. Based on command:
-  //    - "heal": Run healing loop, push fix
-  //    - "status": Report current errors
-  //    - "help": Post help message
+  // Get GitHub service
+  const github = createGitHubService(c.env);
 
-  return c.json({
-    message: "issue_comment received",
-    repository: repository.full_name,
-    issue: issue.number,
-    command,
-  });
+  try {
+    // Get installation token
+    const token = await github.getInstallationToken(installation.id);
+
+    switch (command.type) {
+      case "heal": {
+        // Post acknowledgment
+        await github.postComment(
+          token,
+          repository.owner.login,
+          repository.name,
+          issue.number,
+          `🔧 **Detent** is analyzing the CI failures${command.dryRun ? " (dry run)" : ""}...`
+        );
+
+        // TODO: Implement healing flow
+        // 1. Find latest failed workflow run
+        // 2. Fetch and parse logs
+        // 3. Run healing loop with Claude
+        // 4. Push fix (if not dry run)
+        // 5. Post results
+
+        return c.json({
+          message: "heal command received",
+          repository: repository.full_name,
+          issue: issue.number,
+          dryRun: command.dryRun,
+          status: "acknowledged",
+        });
+      }
+
+      case "status": {
+        // TODO: Report current error status
+        await github.postComment(
+          token,
+          repository.owner.login,
+          repository.name,
+          issue.number,
+          "📊 **Detent** status check is not yet implemented."
+        );
+        return c.json({
+          message: "status command received",
+          status: "not_implemented",
+        });
+      }
+
+      case "help": {
+        await github.postComment(
+          token,
+          repository.owner.login,
+          repository.name,
+          issue.number,
+          formatHelpMessage()
+        );
+        return c.json({ message: "help command received", status: "posted" });
+      }
+
+      default: {
+        await github.postComment(
+          token,
+          repository.owner.login,
+          repository.name,
+          issue.number,
+          `🤔 Unknown command. ${formatHelpMessage()}`
+        );
+        return c.json({ message: "unknown command", status: "posted" });
+      }
+    }
+  } catch (error) {
+    console.error("[issue_comment] Error processing:", error);
+    return c.json(
+      {
+        message: "issue_comment error",
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
+      500
+    );
+  }
 };
 
 // Parse @detent commands from comment body
@@ -179,6 +310,38 @@ const parseDetentCommand = (body: string): DetentCommand => {
   }
 
   return { type: "unknown" };
+};
+
+// Format failure comment for PR
+const formatFailureComment = (
+  workflowName: string,
+  runId: number,
+  _logs: string
+): string => {
+  // TODO: Actually parse and format errors from logs
+  return `## ❌ CI Failed: ${workflowName}
+
+[View workflow run](https://github.com/actions/runs/${runId})
+
+<details>
+<summary>🔍 Error Analysis</summary>
+
+_Error parsing not yet implemented. Log extraction pending._
+
+</details>
+
+---
+💡 **Tip:** Comment \`@detent heal\` to attempt automatic fixes.
+`;
+};
+
+// Format help message
+const formatHelpMessage = (): string => {
+  return `**Available commands:**
+- \`@detent heal\` - Analyze errors and attempt automatic fixes
+- \`@detent heal --dry-run\` - Analyze without pushing changes
+- \`@detent status\` - Show current error status
+- \`@detent help\` - Show this message`;
 };
 
 export default app;
