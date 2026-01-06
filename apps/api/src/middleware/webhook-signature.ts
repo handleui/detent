@@ -57,13 +57,14 @@ export const webhookSignatureMiddleware = async (c: Context, next: Next) => {
 
 // Timing-safe string comparison to prevent timing attacks
 const timingSafeEqual = (a: string, b: string): boolean => {
-  if (a.length !== b.length) {
-    return false;
-  }
+  // Pad to same length to avoid length-based timing leak
+  const maxLen = Math.max(a.length, b.length);
+  const paddedA = a.padEnd(maxLen, "\0");
+  const paddedB = b.padEnd(maxLen, "\0");
 
-  let result = 0;
-  for (let i = 0; i < a.length; i++) {
-    result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  let result = a.length ^ b.length; // Include length difference in result
+  for (let i = 0; i < maxLen; i++) {
+    result |= paddedA.charCodeAt(i) ^ paddedB.charCodeAt(i);
   }
 
   return result === 0;
