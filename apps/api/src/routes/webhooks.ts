@@ -50,9 +50,9 @@ interface DetentCommand {
 }
 
 // Variables stored in context by middleware
-type WebhookVariables = {
+interface WebhookVariables {
   webhookPayload: WorkflowRunPayload | IssueCommentPayload | PingPayload;
-};
+}
 
 type WebhookContext = Context<{ Bindings: Env; Variables: WebhookVariables }>;
 
@@ -60,7 +60,7 @@ const app = new Hono<{ Bindings: Env; Variables: WebhookVariables }>();
 
 // GitHub webhook endpoint
 // Receives: workflow_run, issue_comment events
-app.post("/github", webhookSignatureMiddleware, async (c: WebhookContext) => {
+app.post("/github", webhookSignatureMiddleware, (c: WebhookContext) => {
   const event = c.req.header("X-GitHub-Event");
   const deliveryId = c.req.header("X-GitHub-Delivery");
   const payload = c.get("webhookPayload");

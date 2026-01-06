@@ -52,6 +52,7 @@ export const authMiddleware = async (
     });
 
     await next();
+    return undefined;
   } catch {
     return c.json({ error: "Invalid or expired token" }, 401);
   }

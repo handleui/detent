@@ -10,7 +10,7 @@ interface GitHubServiceConfig {
 }
 
 export const createGitHubService = (env: Env) => {
-  const config: GitHubServiceConfig = {
+  const _config: GitHubServiceConfig = {
     appId: env.GITHUB_APP_ID,
     privateKey: env.GITHUB_APP_PRIVATE_KEY,
     clientId: env.GITHUB_CLIENT_ID,
@@ -18,7 +18,7 @@ export const createGitHubService = (env: Env) => {
 
   return {
     // Get installation access token (expires in 1 hour)
-    getInstallationToken: async (installationId: number): Promise<string> => {
+    getInstallationToken: (installationId: number): Promise<string> => {
       // TODO: Implement JWT generation and token exchange
       // 1. Generate JWT signed with private key
       // 2. POST /app/installations/{id}/access_tokens
@@ -29,8 +29,8 @@ export const createGitHubService = (env: Env) => {
     },
 
     // Fetch workflow run logs
-    fetchWorkflowLogs: async (
-      token: string,
+    fetchWorkflowLogs: (
+      _token: string,
       owner: string,
       repo: string,
       runId: number
@@ -44,12 +44,12 @@ export const createGitHubService = (env: Env) => {
     },
 
     // Post a comment on an issue/PR
-    postComment: async (
-      token: string,
+    postComment: (
+      _token: string,
       owner: string,
       repo: string,
       issueNumber: number,
-      body: string
+      _body: string
     ): Promise<void> => {
       // TODO: Implement comment posting
       // POST /repos/{owner}/{repo}/issues/{issue_number}/comments
@@ -61,13 +61,13 @@ export const createGitHubService = (env: Env) => {
     },
 
     // Push a commit with file changes
-    pushCommit: async (
-      token: string,
+    pushCommit: (
+      _token: string,
       owner: string,
       repo: string,
       branch: string,
-      message: string,
-      files: Array<{ path: string; content: string }>
+      _message: string,
+      _files: Array<{ path: string; content: string }>
     ): Promise<string> => {
       // TODO: Implement commit pushing
       // 1. Get current commit SHA
@@ -81,8 +81,8 @@ export const createGitHubService = (env: Env) => {
     },
 
     // Get PR associated with a workflow run
-    getPullRequestForRun: async (
-      token: string,
+    getPullRequestForRun: (
+      _token: string,
       owner: string,
       repo: string,
       runId: number

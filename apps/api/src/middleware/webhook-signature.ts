@@ -56,15 +56,16 @@ export const webhookSignatureMiddleware = async (c: Context, next: Next) => {
 };
 
 // Timing-safe string comparison to prevent timing attacks
-// biome-ignore lint/suspicious/noBitwiseOperators: XOR required for constant-time comparison
 const timingSafeEqual = (a: string, b: string): boolean => {
   // Pad to same length to avoid length-based timing leak
   const maxLen = Math.max(a.length, b.length);
   const paddedA = a.padEnd(maxLen, "\0");
   const paddedB = b.padEnd(maxLen, "\0");
 
+  // biome-ignore lint/suspicious/noBitwiseOperators: XOR required for constant-time comparison
   let result = a.length ^ b.length;
   for (let i = 0; i < maxLen; i++) {
+    // biome-ignore lint/suspicious/noBitwiseOperators: XOR and OR required for constant-time comparison
     result |= paddedA.charCodeAt(i) ^ paddedB.charCodeAt(i);
   }
 
