@@ -20,7 +20,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
-      - run: bun run lint
+      - run: bun x biome check .
 
   typecheck:
     name: Type Check
@@ -50,3 +50,15 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
       - run: bun run build
+
+  install-script:
+    name: Install Script
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Static analysis
+        run: |
+          cd apps/web/public
+          chmod +x install.sh.test
+          bash install.sh.test

@@ -112,6 +112,15 @@ export const BLOCKED_ENV_SUFFIXES = [
   "_PASSWORD",
   "_CREDS",
   "_AUTH",
+  "_API",
+  "_APIKEY",
+  "_BEARER",
+  "_OAUTH",
+  "_REFRESH",
+  "_SESSION",
+  "_PRIVATE",
+  "_CREDENTIAL",
+  "_CREDENTIALS",
 ];
 
 /**

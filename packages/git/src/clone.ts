@@ -1,6 +1,6 @@
-import { lstatSync, mkdirSync } from "node:fs";
+import { lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { rm } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { checkLockStatus, tryAcquireLock } from "./lock.js";
 import { getDirtyFilesList } from "./operations.js";
 import type { CloneInfo, CommitSHA } from "./types.js";
@@ -8,6 +8,26 @@ import { execGit } from "./utils.js";
 
 const CLEANUP_TIMEOUT = 30_000;
 const DIRECTORY_MODE = 0o700;
+const SHA_REGEX = /^[a-f0-9]{40}$/i;
+
+/**
+ * Validates that a commit SHA is in valid format (40 hex characters).
+ */
+const isValidCommitSHA = (sha: string): boolean => SHA_REGEX.test(sha);
+
+/**
+ * Validates that a file path doesn't escape the base directory via traversal.
+ */
+const isPathWithinBase = (basePath: string, targetPath: string): boolean => {
+  try {
+    const realBase = realpathSync(basePath);
+    const fullTarget = join(realBase, targetPath);
+    const rel = relative(realBase, fullTarget);
+    return !(rel.startsWith("..") || rel.startsWith("/"));
+  } catch {
+    return false;
+  }
+};
 
 export interface PrepareCloneOptions {
   readonly repoRoot: string;
@@ -188,7 +208,11 @@ export const prepareClone = async (
   const { repoRoot, clonePath } = options;
 
   const commitResult = await execGit(["rev-parse", "HEAD"], { cwd: repoRoot });
-  const commitSHA = commitResult.stdout as CommitSHA;
+  const rawSHA = commitResult.stdout.trim();
+  if (!isValidCommitSHA(rawSHA)) {
+    throw new Error(`invalid commit SHA format: ${rawSHA.slice(0, 20)}...`);
+  }
+  const commitSHA = rawSHA as CommitSHA;
 
   const finalPath = validateClonePath(clonePath);
   validatePathSecurity(finalPath);
@@ -211,6 +235,76 @@ export const prepareClone = async (
   return { cloneInfo, cleanup };
 };
 
+interface ParsedGitEntry {
+  filePath: string;
+}
+
+const parseGitStatusEntry = (
+  entry: string,
+  repoRoot: string
+): ParsedGitEntry | null => {
+  if (entry.length < 3) {
+    return null;
+  }
+
+  const status = entry.substring(0, 2);
+  if (status[0] === "D" || status[1] === "D") {
+    return null;
+  }
+
+  let filePath = entry.substring(3).trim();
+  if (filePath.includes(" -> ")) {
+    const parts = filePath.split(" -> ");
+    if (parts.length === 2 && parts[1]) {
+      filePath = parts[1].trim();
+    }
+  }
+
+  if (!isPathWithinBase(repoRoot, filePath)) {
+    return null;
+  }
+
+  return { filePath };
+};
+
+const createDirectoryCache = (): ((dirPath: string) => void) => {
+  const created = new Set<string>();
+  return (dirPath: string): void => {
+    if (created.has(dirPath)) {
+      return;
+    }
+    try {
+      mkdirSync(dirPath, { recursive: true, mode: 0o700 });
+    } catch (err) {
+      const error = err as NodeJS.ErrnoException;
+      if (error.code !== "EEXIST") {
+        throw error;
+      }
+    }
+    created.add(dirPath);
+  };
+};
+
+const copyFileSafely = async (
+  src: string,
+  dst: string,
+  filePath: string,
+  ensureDir: (dir: string) => void
+): Promise<void> => {
+  try {
+    ensureDir(dirname(dst));
+    const { copyFile } = await import("node:fs/promises");
+    await copyFile(src, dst);
+  } catch (err) {
+    const error = err as NodeJS.ErrnoException;
+    if (error.code !== "ENOENT") {
+      console.error(`Warning: failed to copy ${filePath}: ${error.message}`);
+    }
+  }
+};
+
+const SYNC_BATCH_SIZE = 100;
+
 const syncDirtyFiles = async (
   repoRoot: string,
   clonePath: string
@@ -220,73 +314,21 @@ const syncDirtyFiles = async (
     return;
   }
 
-  const directoriesCreated = new Set<string>();
+  const ensureDir = createDirectoryCache();
 
-  const createDirIfNeeded = (dirPath: string): void => {
-    if (directoriesCreated.has(dirPath)) {
-      return;
-    }
-    try {
-      mkdirSync(dirPath, { recursive: true, mode: 0o700 });
-      directoriesCreated.add(dirPath);
-    } catch (err) {
-      const error = err as NodeJS.ErrnoException;
-      if (error.code !== "EEXIST") {
-        throw error;
-      }
-      directoriesCreated.add(dirPath);
-    }
-  };
-
-  const BATCH_SIZE = 100;
-  const batches: string[][] = [];
-  for (let i = 0; i < files.length; i += BATCH_SIZE) {
-    batches.push(files.slice(i, i + BATCH_SIZE));
-  }
-
-  for (const batch of batches) {
+  for (let i = 0; i < files.length; i += SYNC_BATCH_SIZE) {
+    const batch = files.slice(i, i + SYNC_BATCH_SIZE);
     const copyPromises: Promise<void>[] = [];
 
     for (const entry of batch) {
-      if (entry.length < 3) {
+      const parsed = parseGitStatusEntry(entry, repoRoot);
+      if (!parsed) {
         continue;
       }
 
-      const status = entry.substring(0, 2);
-      let filePath = entry.substring(3).trim();
-
-      if (status[0] === "D" || status[1] === "D") {
-        continue;
-      }
-
-      if (filePath.includes(" -> ")) {
-        const parts = filePath.split(" -> ");
-        if (parts.length === 2 && parts[1]) {
-          filePath = parts[1].trim();
-        }
-      }
-
-      const src = join(repoRoot, filePath);
-      const dst = join(clonePath, filePath);
-
-      const copyTask = (async (): Promise<void> => {
-        try {
-          const dstDir = dirname(dst);
-          createDirIfNeeded(dstDir);
-
-          const { copyFile } = await import("node:fs/promises");
-          await copyFile(src, dst);
-        } catch (err) {
-          const error = err as NodeJS.ErrnoException;
-          if (error.code !== "ENOENT") {
-            console.error(
-              `Warning: failed to copy ${filePath}: ${error.message}`
-            );
-          }
-        }
-      })();
-
-      copyPromises.push(copyTask);
+      const src = join(repoRoot, parsed.filePath);
+      const dst = join(clonePath, parsed.filePath);
+      copyPromises.push(copyFileSafely(src, dst, parsed.filePath, ensureDir));
     }
 
     await Promise.allSettled(copyPromises);

@@ -57,7 +57,11 @@ const runRipgrep = (
   timeoutMs: number
 ): Promise<{ stdout: string; stderr: string; exitCode: number | null }> =>
   new Promise((resolve) => {
-    const proc = spawn("rg", args, { cwd });
+    const proc = spawn("rg", args, {
+      cwd,
+      timeout: timeoutMs,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
 
     let stdout = "";
     let stderr = "";

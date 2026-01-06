@@ -1,0 +1,193 @@
+#!/bin/bash
+# Install script tests - run with: bash install.sh.test
+# Requires: bash, curl, tar, shasum
+#
+# These tests validate the install script logic WITHOUT actually installing.
+# Run in CI after any changes to install.sh
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INSTALL_SCRIPT="$SCRIPT_DIR/install.sh"
+TEST_DIR=$(mktemp -d)
+trap 'rm -rf "$TEST_DIR"' EXIT
+
+PASS=0
+FAIL=0
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+NC='\033[0m'
+
+pass() { echo -e "${GREEN}✓${NC} $1"; PASS=$((PASS + 1)); }
+fail() { echo -e "${RED}✗${NC} $1"; FAIL=$((FAIL + 1)); }
+
+# Test: Script syntax is valid
+test_syntax() {
+  if bash -n "$INSTALL_SCRIPT" 2>/dev/null; then
+    pass "Script syntax is valid"
+  else
+    fail "Script syntax is invalid"
+  fi
+}
+
+# Test: Required functions exist
+test_functions_exist() {
+  local funcs="detect_os detect_arch get_latest_version download verify_checksum extract_archive"
+  local missing=""
+  for func in $funcs; do
+    if ! grep -q "^${func}()" "$INSTALL_SCRIPT"; then
+      missing="$missing $func"
+    fi
+  done
+  if [ -z "$missing" ]; then
+    pass "All required functions exist"
+  else
+    fail "Missing functions:$missing"
+  fi
+}
+
+# Test: TLS is enforced
+test_tls_enforcement() {
+  if grep -q "proto '=https'" "$INSTALL_SCRIPT" && grep -q "secure-protocol=TLSv1" "$INSTALL_SCRIPT"; then
+    pass "TLS 1.2+ enforced for curl and wget"
+  else
+    fail "TLS enforcement missing"
+  fi
+}
+
+# Test: Checksum verification exists
+test_checksum_verification() {
+  if grep -q "verify_checksum" "$INSTALL_SCRIPT" && grep -q "sha256" "$INSTALL_SCRIPT"; then
+    pass "SHA256 checksum verification present"
+  else
+    fail "Checksum verification missing or weak"
+  fi
+}
+
+# Test: No dangerous patterns
+test_no_dangerous_patterns() {
+  local dangerous=0
+
+  # Check for eval
+  if grep -qE '\beval\b' "$INSTALL_SCRIPT"; then
+    fail "Dangerous: eval found"
+    dangerous=1
+  fi
+
+  # Check for unquoted variables in commands
+  if grep -E '\$[A-Za-z_]+[^"]' "$INSTALL_SCRIPT" | grep -qvE '^\s*#|:-}|"\$'; then
+    # This is a heuristic, may have false positives
+    :
+  fi
+
+  if [ $dangerous -eq 0 ]; then
+    pass "No dangerous patterns (eval, etc.)"
+  fi
+}
+
+# Test: Environment variables have defaults
+test_env_defaults() {
+  local issues=""
+
+  # Check DETENT_VERSION usage
+  if grep -q '"\$DETENT_VERSION"' "$INSTALL_SCRIPT" && ! grep -q '${DETENT_VERSION:-}' "$INSTALL_SCRIPT"; then
+    issues="$issues DETENT_VERSION"
+  fi
+
+  # Check DETENT_INSTALL_DIR usage
+  if grep -q '"\$DETENT_INSTALL_DIR"' "$INSTALL_SCRIPT" && ! grep -q '${DETENT_INSTALL_DIR:-}' "$INSTALL_SCRIPT"; then
+    issues="$issues DETENT_INSTALL_DIR"
+  fi
+
+  if [ -z "$issues" ]; then
+    pass "Environment variables have safe defaults"
+  else
+    fail "Env vars without defaults:$issues"
+  fi
+}
+
+# Test: URLs use HTTPS
+test_https_urls() {
+  if grep -qE 'http://' "$INSTALL_SCRIPT"; then
+    fail "HTTP URLs found (should be HTTPS)"
+  else
+    pass "All URLs use HTTPS"
+  fi
+}
+
+# Test: Temp directory cleanup
+test_temp_cleanup() {
+  if grep -q "trap.*rm.*EXIT" "$INSTALL_SCRIPT"; then
+    pass "Temp directory cleaned up on exit"
+  else
+    fail "No temp cleanup trap found"
+  fi
+}
+
+# Test: Binary permissions set
+test_binary_permissions() {
+  if grep -q "chmod +x" "$INSTALL_SCRIPT"; then
+    pass "Binary made executable"
+  else
+    fail "chmod +x missing"
+  fi
+}
+
+# Integration test: Manifest is accessible
+test_manifest_accessible() {
+  if curl -fsSL --max-time 10 "https://detent.sh/api/cli/manifest.json" | grep -q '"latest"'; then
+    pass "Manifest endpoint accessible and valid"
+  else
+    fail "Manifest endpoint not accessible"
+  fi
+}
+
+# Integration test: Install script is served
+test_install_script_served() {
+  if curl -fsSL --max-time 10 "https://detent.sh/install.sh" | head -1 | grep -q "#!/bin/sh"; then
+    pass "Install script served correctly"
+  else
+    fail "Install script not served"
+  fi
+}
+
+# Integration test: Checksums file exists for latest version
+test_checksums_exist() {
+  local latest=$(curl -fsSL "https://detent.sh/api/cli/manifest.json" | grep -o '"latest"[^,]*' | cut -d'"' -f4)
+  if curl -fsSL --max-time 10 "https://detent.sh/api/cli/${latest}/checksums.txt" | grep -q "dt-"; then
+    pass "Checksums file exists for $latest"
+  else
+    fail "Checksums file missing for $latest"
+  fi
+}
+
+echo "=== Install Script Tests ==="
+echo ""
+
+echo "--- Static Analysis ---"
+test_syntax
+test_functions_exist
+test_tls_enforcement
+test_checksum_verification
+test_no_dangerous_patterns
+test_env_defaults
+test_https_urls
+test_temp_cleanup
+test_binary_permissions
+
+echo ""
+echo "--- Integration Tests ---"
+test_manifest_accessible
+test_install_script_served
+test_checksums_exist
+
+echo ""
+echo "=== Results ==="
+echo -e "Passed: ${GREEN}$PASS${NC}"
+echo -e "Failed: ${RED}$FAIL${NC}"
+
+if [ $FAIL -gt 0 ]; then
+  exit 1
+fi

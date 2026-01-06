@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { isAbsolute, join, normalize, relative } from "node:path";
 import { errorResult, type ToolResult } from "./types.js";
 
@@ -97,7 +98,7 @@ export interface PathValidationResult {
 
 /**
  * Validates that a path is within the worktree and doesn't escape.
- * Prevents directory traversal attacks via ../ sequences.
+ * Prevents directory traversal attacks via ../ sequences and symlinks.
  */
 export const validatePath = (
   ctx: ToolContext,
@@ -120,6 +121,20 @@ export const validatePath = (
       valid: false,
       error: errorResult(`path escapes worktree: ${relPath}`),
     };
+  }
+
+  try {
+    const realWorktree = realpathSync(ctx.worktreePath);
+    const realPath = realpathSync(absPath);
+    const realRel = relative(realWorktree, realPath);
+    if (realRel.startsWith("..") || isAbsolute(realRel)) {
+      return {
+        valid: false,
+        error: errorResult(`symlink escapes worktree: ${relPath}`),
+      };
+    }
+  } catch {
+    // Path doesn't exist yet, which is fine for write operations
   }
 
   return { valid: true, absPath };

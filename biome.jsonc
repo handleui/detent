@@ -4,5 +4,17 @@
     "ultracite/biome/core",
     "ultracite/biome/react",
     "ultracite/biome/next"
+  ],
+  "overrides": [
+    {
+      "includes": ["packages/*/src/index.ts", "packages/*/src/*/index.ts"],
+      "linter": {
+        "rules": {
+          "performance": {
+            "noBarrelFile": "off"
+          }
+        }
+      }
+    }
   ]
 }

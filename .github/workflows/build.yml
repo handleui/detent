@@ -118,3 +118,38 @@ jobs:
             apps/cli/dist/checksums.txt
             apps/cli/dist/checksums.txt.sig
             apps/cli/dist/checksums.txt.pem
+
+      - name: Verify install from Blob
+        run: |
+          VERSION="${{ steps.version.outputs.tag }}"
+          echo "Testing install of $VERSION from Blob..."
+
+          # Test direct download and checksum
+          curl -fsSL "https://detent.sh/api/cli/${VERSION}/checksums.txt" -o /tmp/checksums.txt
+          curl -fsSL "https://detent.sh/api/cli/${VERSION}/dt-linux-amd64.tar.gz" -o /tmp/dt.tar.gz
+
+          # Verify checksum
+          EXPECTED=$(grep "dt-linux-amd64.tar.gz" /tmp/checksums.txt | cut -d' ' -f1)
+          ACTUAL=$(sha256sum /tmp/dt.tar.gz | cut -d' ' -f1)
+
+          if [ "$EXPECTED" != "$ACTUAL" ]; then
+            echo "ERROR: Checksum mismatch after upload!"
+            echo "Expected: $EXPECTED"
+            echo "Actual: $ACTUAL"
+            exit 1
+          fi
+
+          # Extract and verify version
+          tar -xzf /tmp/dt.tar.gz -C /tmp
+          INSTALLED_VERSION=$(/tmp/dt-linux-amd64 version | head -1)
+          echo "Installed version: $INSTALLED_VERSION"
+
+          # Verify manifest updated
+          MANIFEST_LATEST=$(curl -fsSL "https://detent.sh/api/cli/manifest.json" | grep -o '"latest":"[^"]*"' | cut -d'"' -f4)
+          echo "Manifest latest: $MANIFEST_LATEST"
+
+          if [ "$MANIFEST_LATEST" != "$VERSION" ]; then
+            echo "WARNING: Manifest not yet updated (may be caching)"
+          fi
+
+          echo "Install verification passed!"

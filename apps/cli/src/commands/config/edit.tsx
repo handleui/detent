@@ -225,10 +225,11 @@ export const ConfigEditor = ({ repoRoot }: ConfigEditorProps): JSX.Element => {
   const exitErrorRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (errorMessage) {
-      const timer = setTimeout(() => setErrorMessage(null), 3000);
-      return () => clearTimeout(timer);
+    if (!errorMessage) {
+      return;
     }
+    const timer = setTimeout(() => setErrorMessage(null), 3000);
+    return () => clearTimeout(timer);
   }, [errorMessage]);
 
   const handleUpdate = useCallback((key: ConfigKey, value: unknown) => {

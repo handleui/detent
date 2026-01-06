@@ -1,5 +1,3 @@
-// biome-ignore-all lint/performance/noBarrelFile: This is the context module's public API
-
 /**
  * CI context parsers.
  * Handle CI-specific log FORMAT (prefixes, timestamps, noise filtering).

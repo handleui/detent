@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, normalize, resolve, sep } from "node:path";
 import { getCurrentRefs } from "./operations.js";
@@ -36,7 +36,7 @@ export const createEphemeralClonePath = (runID: RunID): string => {
 
   const tempDir = tmpdir();
   const timestamp = Date.now().toString(36);
-  const randomSuffix = Math.random().toString(36).substring(2, 6);
+  const randomSuffix = randomBytes(4).toString("hex");
   const uniqueSuffix = `${timestamp}-${randomSuffix}`;
   const proposedPath = join(tempDir, `${CLONE_PREFIX}${runID}-${uniqueSuffix}`);
 

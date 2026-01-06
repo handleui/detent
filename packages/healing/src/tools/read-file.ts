@@ -12,6 +12,8 @@ import {
 
 const DEFAULT_READ_LIMIT = 2000;
 const MAX_LINE_LENGTH = 2000;
+const MAX_READ_LIMIT = 10_000;
+const MAX_OFFSET = 1_000_000;
 
 interface ReadFileInput {
   path: string;
@@ -34,8 +36,14 @@ const validateReadParams = (
   if (offset < 1) {
     return errorResult("offset must be at least 1");
   }
+  if (offset > MAX_OFFSET) {
+    return errorResult(`offset must not exceed ${MAX_OFFSET}`);
+  }
   if (limit < 1) {
     return errorResult("limit must be at least 1");
+  }
+  if (limit > MAX_READ_LIMIT) {
+    return errorResult(`limit must not exceed ${MAX_READ_LIMIT}`);
   }
   return null;
 };

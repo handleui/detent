@@ -130,6 +130,7 @@ export const globTool: Tool = {
         dot: false,
         onlyFiles: true,
         suppressErrors: true,
+        followSymbolicLinks: false,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
