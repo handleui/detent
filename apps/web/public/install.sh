@@ -159,7 +159,7 @@ main() {
     log "Detected platform: ${os}/${arch}"
 
     # Determine version
-    if [ -n "$DETENT_VERSION" ]; then
+    if [ -n "${DETENT_VERSION:-}" ]; then
         version="$DETENT_VERSION"
         # Ensure version starts with 'v'
         case "$version" in
@@ -218,7 +218,7 @@ main() {
     extract_archive "$archive_path" "$extract_dir"
 
     # Determine installation directory
-    if [ -n "$DETENT_INSTALL_DIR" ]; then
+    if [ -n "${DETENT_INSTALL_DIR:-}" ]; then
         install_dir="$DETENT_INSTALL_DIR"
     elif [ -d "$HOME/.local/bin" ]; then
         install_dir="$HOME/.local/bin"
