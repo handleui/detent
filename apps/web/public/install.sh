@@ -229,8 +229,8 @@ main() {
         mkdir -p "$install_dir"
     fi
 
-    # Find the binary in extracted files
-    binary_src=$(find "$extract_dir" -name "${BINARY_NAME}${binary_ext}" -type f | head -1)
+    # Find the binary in extracted files (binary is named dt-{os}-{arch})
+    binary_src=$(find "$extract_dir" -name "${BINARY_NAME}*${binary_ext}" -type f | head -1)
     if [ -z "$binary_src" ]; then
         error "Binary not found in archive"
     fi

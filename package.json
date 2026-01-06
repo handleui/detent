@@ -7,6 +7,7 @@
     "lint": "ultracite check",
     "fix": "ultracite fix",
     "check-types": "turbo run check-types",
+    "test": "turbo run test",
     "prepare": "lefthook install",
     "tag": "bash scripts/tag.sh"
   },
