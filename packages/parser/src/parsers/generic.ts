@@ -117,6 +117,12 @@ const noisePatterns: readonly RegExp[] = [
   /(?:cache\s+(hit|restored|saved))/i,
   /(?:from\s+cache)/i,
   /(?:^resolving\s+)/i,
+
+  // === PACKAGE MANAGER / BUILD TOOL NOISE ===
+  /error:\s*prepare\s+script/i, // bun/npm prepare script failures (not code errors)
+  /error:\s*postinstall\s+script/i, // postinstall failures
+  /error:\s*preinstall\s+script/i, // preinstall failures
+  /lefthook.*install/i, // lefthook git hook installer noise
   /(?:^(npm|yarn|pnpm)\s+(warn|notice|info))/i,
   /(?:^\d+\s*packages?\s+)/i, // npm package counts
 

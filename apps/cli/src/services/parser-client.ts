@@ -8,6 +8,7 @@ import {
   createRustParser,
   createTypeScriptParser,
   type ExtractedError,
+  type Extractor,
 } from "@detent/parser";
 import type { ParsedError } from "../runner/types.js";
 
@@ -20,6 +21,24 @@ export interface ParserResponse {
    */
   readonly errors: readonly ParsedError[];
 }
+
+/**
+ * Creates a singleton extractor with all registered parsers.
+ * Lazily initialized on first use.
+ */
+const createSharedExtractor = (): Extractor => {
+  const registry = createRegistry();
+  registry.register(createGolangParser());
+  registry.register(createTypeScriptParser());
+  registry.register(createPythonParser());
+  registry.register(createRustParser());
+  registry.register(createGenericParser());
+  registry.initNoiseChecker();
+  return createExtractor(registry);
+};
+
+// Lazy singleton - created once on first parse() call
+let sharedExtractor: Extractor | undefined;
 
 /**
  * Parser client that uses the local @detent/parser package to extract errors from logs.
@@ -47,20 +66,13 @@ export class ParserClient {
       );
     }
 
-    // Create registry and register all tool parsers
-    const registry = createRegistry();
-    registry.register(createGolangParser());
-    registry.register(createTypeScriptParser());
-    registry.register(createPythonParser());
-    registry.register(createRustParser());
-    registry.register(createGenericParser());
-    registry.initNoiseChecker();
-
-    // Create extractor with the registry
-    const extractor = createExtractor(registry);
+    // Use singleton extractor (created once, reused across all parse calls)
+    if (!sharedExtractor) {
+      sharedExtractor = createSharedExtractor();
+    }
 
     // Extract errors using the act context parser
-    const extractedErrors = extractor.extract(logs, actParser);
+    const extractedErrors = sharedExtractor.extract(logs, actParser);
 
     // Convert ExtractedError[] to ParsedError[]
     const parsedErrors = this.convertToParsedErrors(extractedErrors);
@@ -81,8 +93,13 @@ export class ParserClient {
       errorId: this.generateErrorId(err),
       contentHash: this.generateContentHash(err),
       filePath: err.file,
+      line: err.line,
+      column: err.column,
       message: err.message,
       severity: err.severity ?? "error",
+      ruleId: err.ruleId,
+      category: err.category,
+      source: err.source,
     }));
   }
 

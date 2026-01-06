@@ -10,6 +10,7 @@ export {
 } from "./lock.js";
 export {
   commitAllChanges,
+  findGitRoot,
   getCurrentBranch,
   getCurrentRefs,
   getDirtyFilesList,

@@ -26,13 +26,10 @@ export type {
   HealLock,
   HealRecord,
   HealStatus,
-  RepoCommands,
-  RepoJobOverrides,
   Run,
   SpendLogEntry,
   SuggestedFix,
   SyncStatus,
-  TrustedRepo,
   VerificationRecord,
   VerificationResult,
   WorkflowContext,
@@ -166,20 +163,20 @@ export { Recorder } from "./recorder.js";
 // Config
 // ============================================================================
 
-export type { ValidationResult } from "./config.js";
+export type { ConfigLoadResult, ValidationResult } from "./config.js";
 export {
+  ensureRepoDetentDir,
   formatBudget,
-  getAllowedCommands,
   getAllowedModels,
-  getConfigPath,
-  getDetentDir as getConfigDetentDir,
-  isTrustedRepo,
+  getGlobalDetentDir,
+  getRepoConfigPath,
+  getRepoDetentDir,
+  isRepoInitialized,
   loadConfig,
-  loadGlobalConfig,
+  loadRepoConfig,
+  loadRepoConfigSafe,
   maskApiKey,
-  matchesCommand,
-  saveConfig,
-  trustRepo,
+  saveRepoConfig,
   validateApiKey,
   validateBudgetMonthly,
   validateBudgetPerRun,

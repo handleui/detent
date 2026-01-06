@@ -15,8 +15,11 @@ export const configCommand = defineCommand({
     set: configSetCommand,
     list: configListCommand,
   },
-  run: async () => {
-    const { configEditCommand: editCmd } = await import("./edit.js");
-    await editCmd.run?.({ args: { _: [] }, rawArgs: [], cmd: editCmd });
+  run: () => {
+    configEditCommand.run?.({
+      args: { _: [] },
+      rawArgs: [],
+      cmd: configEditCommand,
+    });
   },
 });

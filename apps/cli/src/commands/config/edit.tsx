@@ -1,10 +1,12 @@
+import { findGitRoot } from "@detent/git";
 import {
+  ensureRepoDetentDir,
   formatBudget,
   type GlobalConfig,
   getAllowedModels,
-  loadGlobalConfig,
+  loadRepoConfig,
   maskApiKey,
-  saveConfig,
+  saveRepoConfig,
   validateApiKey,
 } from "@detent/persistence";
 
@@ -204,11 +206,16 @@ const hasFieldChanged = (
   return String(originalValue) !== String(currentValue);
 };
 
-export const ConfigEditor = (): JSX.Element => {
+interface ConfigEditorProps {
+  repoRoot: string;
+}
+
+export const ConfigEditor = ({ repoRoot }: ConfigEditorProps): JSX.Element => {
   const { exit } = useApp();
-  const originalConfig = useRef<GlobalConfig>(loadGlobalConfig());
-  const [draftConfig, setDraftConfig] =
-    useState<GlobalConfig>(loadGlobalConfig);
+  const originalConfig = useRef<GlobalConfig>(loadRepoConfig(repoRoot));
+  const [draftConfig, setDraftConfig] = useState<GlobalConfig>(() =>
+    loadRepoConfig(repoRoot)
+  );
   const [focusIndex, setFocusIndex] = useState(0);
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState("");
@@ -413,7 +420,8 @@ export const ConfigEditor = (): JSX.Element => {
     );
 
     if (hasActualChanges && !errorMessage) {
-      saveConfig(draftConfig);
+      ensureRepoDetentDir(repoRoot);
+      saveRepoConfig(draftConfig, repoRoot);
       setHasChanges(true); // Update state for exit message
     } else {
       setHasChanges(false); // No actual changes
@@ -422,7 +430,7 @@ export const ConfigEditor = (): JSX.Element => {
     setTimeout(() => {
       exit();
     }, 0);
-  }, [exit, errorMessage, draftConfig]);
+  }, [exit, errorMessage, draftConfig, repoRoot]);
 
   // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Input handler requires comprehensive conditional logic
   useInput((input, key) => {
@@ -594,7 +602,13 @@ export const configEditCommand = defineCommand({
       process.exit(1);
     }
 
-    const { waitUntilExit } = render(<ConfigEditor />);
+    const repoRoot = await findGitRoot(process.cwd());
+    if (!repoRoot) {
+      console.error("Error: Not in a git repository.");
+      process.exit(1);
+    }
+
+    const { waitUntilExit } = render(<ConfigEditor repoRoot={repoRoot} />);
     await waitUntilExit();
   },
 });

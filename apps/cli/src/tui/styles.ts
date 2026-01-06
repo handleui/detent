@@ -11,10 +11,11 @@
 export const colors = {
   brand: "#17DB4E", // Electric green (less harsh than pure #00FF00)
   text: "#FFFFFF", // White
-  muted: "#808080", // Gray
-  error: "#FF0000", // Red
+  muted: "#585858", // Gray (ANSI 240)
+  error: "#ff5f5f", // Red (ANSI 203)
   info: "#5B9CF5", // Blue for update notices
-  warn: "#F5A623", // Orange for warnings/sensitive
+  warn: "#ffaf00", // Yellow/Orange (ANSI 214)
+  success: "#00d787", // Green (ANSI 42)
 } as const;
 
 export type Color = (typeof colors)[keyof typeof colors];

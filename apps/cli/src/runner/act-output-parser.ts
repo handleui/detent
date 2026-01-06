@@ -91,6 +91,11 @@ const createJobEndEvent = (jobId: string, status: string): JobEvent => ({
 });
 
 /**
+ * Maximum length for step names to prevent display issues
+ */
+const MAX_STEP_NAME_LENGTH = 500;
+
+/**
  * Creates a StepEvent if the step index is valid
  */
 const createStepEvent = (
@@ -102,11 +107,16 @@ const createStepEvent = (
   if (Number.isNaN(idx) || idx < 0 || idx > 10_000) {
     return undefined;
   }
+  // Truncate excessively long step names to prevent display issues
+  const truncatedName =
+    stepName.length > MAX_STEP_NAME_LENGTH
+      ? `${stepName.slice(0, MAX_STEP_NAME_LENGTH - 3)}...`
+      : stepName;
   return {
     type: "step",
     jobId,
     stepIdx: idx,
-    stepName,
+    stepName: truncatedName,
   };
 };
 

@@ -1,6 +1,7 @@
+import { findGitRoot } from "@detent/git";
 import {
   formatBudget,
-  getConfigPath,
+  getRepoConfigPath,
   loadConfig,
   maskApiKey,
 } from "@detent/persistence";
@@ -12,9 +13,12 @@ export const configListCommand = defineCommand({
     name: "list",
     description: "List all configuration values",
   },
-  run: () => {
-    const config = loadConfig();
-    const configPath = getConfigPath();
+  run: async () => {
+    const repoRoot = await findGitRoot(process.cwd());
+    const config = loadConfig(repoRoot ?? undefined);
+    const configPath = repoRoot
+      ? getRepoConfigPath(repoRoot)
+      : "(not in a git repository)";
     const hasEnvApiKey = Boolean(process.env.ANTHROPIC_API_KEY);
 
     printHeader("config list");

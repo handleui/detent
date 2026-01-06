@@ -1,8 +1,9 @@
 /**
- * Global config management
- * Ported from Go: apps/go-cli/internal/persistence/config.go
+ * Config management for Detent
  *
- * Handles loading and saving the global config file at ~/.detent/detent.json
+ * Two modes:
+ * - Per-repo: .detent/config.json in repository root (preferred)
+ * - Global: ~/.detent/detent.json (legacy, for shared resources only)
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -15,7 +16,8 @@ import type { Config, GlobalConfig } from "./types.js";
 // ============================================================================
 
 const DETENT_DIR_NAME = ".detent";
-const GLOBAL_CONFIG_FILE = "detent.json";
+const REPO_CONFIG_FILE = "config.json";
+const GLOBAL_CONFIG_FILE = "detent.json"; // Legacy
 const SCHEMA_URL = "./schema.json";
 
 // Defaults
@@ -43,26 +45,89 @@ const ALLOWED_MODELS = [
   "claude-haiku-4-5",
 ] as const;
 
+// Windows drive letter pattern for absolute path validation
+const WINDOWS_DRIVE_PATTERN = /^[A-Za-z]:\\/;
+
 // ============================================================================
 // Path Helpers
 // ============================================================================
 
 /**
- * Gets the detent directory path (~/.detent)
+ * Validates an override path from environment variable.
+ * Returns null if path is invalid (contains traversal sequences or is not absolute).
  */
-export const getDetentDir = (): string => {
+const validateOverridePath = (path: string): string | null => {
+  // Reject paths with traversal sequences
+  if (path.includes("..")) {
+    return null;
+  }
+
+  // Reject non-absolute paths
+  if (!(path.startsWith("/") || WINDOWS_DRIVE_PATTERN.test(path))) {
+    return null;
+  }
+
+  return path;
+};
+
+/**
+ * Gets the global detent directory path (~/.detent)
+ * Used only for shared resources like act binary
+ */
+export const getGlobalDetentDir = (): string => {
   const override = process.env.DETENT_HOME;
   if (override) {
-    return override;
+    const validated = validateOverridePath(override);
+    if (validated) {
+      return validated;
+    }
+    // Invalid override path - fall back to default
   }
   return join(homedir(), DETENT_DIR_NAME);
 };
 
 /**
- * Gets the path to the global config file
+ * @deprecated Use getGlobalDetentDir() instead
+ */
+export const getDetentDir = getGlobalDetentDir;
+
+/**
+ * Gets the per-repo detent directory path (<repo>/.detent)
+ */
+export const getRepoDetentDir = (repoRoot: string): string => {
+  return join(repoRoot, DETENT_DIR_NAME);
+};
+
+/**
+ * Gets the path to the per-repo config file (<repo>/.detent/config.json)
+ */
+export const getRepoConfigPath = (repoRoot: string): string => {
+  return join(getRepoDetentDir(repoRoot), REPO_CONFIG_FILE);
+};
+
+/**
+ * Gets the path to the global config file (legacy)
+ * @deprecated Use getRepoConfigPath() for per-repo config
  */
 export const getConfigPath = (): string => {
-  return join(getDetentDir(), GLOBAL_CONFIG_FILE);
+  return join(getGlobalDetentDir(), GLOBAL_CONFIG_FILE);
+};
+
+/**
+ * Creates the .detent/ directory in a repo if it doesn't exist
+ */
+export const ensureRepoDetentDir = (repoRoot: string): void => {
+  const dir = getRepoDetentDir(repoRoot);
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { mode: 0o700, recursive: true });
+  }
+};
+
+/**
+ * Checks if a repository has been initialized (has config file)
+ */
+export const isRepoInitialized = (repoRoot: string): boolean => {
+  return existsSync(getRepoConfigPath(repoRoot));
 };
 
 // ============================================================================
@@ -70,15 +135,86 @@ export const getConfigPath = (): string => {
 // ============================================================================
 
 /**
- * Loads the global config, returning the resolved Config
+ * Config load result - distinguishes between "not found" and "error"
  */
-export const loadConfig = (): Config => {
-  const global = loadGlobalConfig();
-  return mergeConfig(global);
+export interface ConfigLoadResult {
+  config: GlobalConfig;
+  error?: string;
+}
+
+/**
+ * Loads the per-repo config from .detent/config.json
+ * Returns empty config for missing files, warns for corrupted/inaccessible files.
+ */
+export const loadRepoConfig = (repoRoot: string): GlobalConfig => {
+  const result = loadRepoConfigSafe(repoRoot);
+  if (result.error) {
+    console.error(`warning: ${result.error}`);
+  }
+  return result.config;
 };
 
 /**
- * Loads the raw global config from disk
+ * Loads config with detailed error information.
+ * Use this when you need to distinguish between "not found" and "corrupted".
+ */
+export const loadRepoConfigSafe = (repoRoot: string): ConfigLoadResult => {
+  const configPath = getRepoConfigPath(repoRoot);
+
+  if (!existsSync(configPath)) {
+    return { config: {} };
+  }
+
+  try {
+    const data = readFileSync(configPath, "utf-8");
+    if (!data.trim()) {
+      return { config: {} };
+    }
+    return { config: JSON.parse(data) as GlobalConfig };
+  } catch (err) {
+    const error = err as NodeJS.ErrnoException;
+
+    if (error.code === "EACCES") {
+      return {
+        config: {},
+        error: `cannot read config at ${configPath}: permission denied`,
+      };
+    }
+
+    if (error.code === "EISDIR") {
+      return {
+        config: {},
+        error: `config path is a directory: ${configPath}`,
+      };
+    }
+
+    // JSON parse error or other
+    if (error instanceof SyntaxError) {
+      return {
+        config: {},
+        error: `config file is corrupted: ${configPath} (invalid JSON)`,
+      };
+    }
+
+    return {
+      config: {},
+      error: `failed to load config: ${error.message}`,
+    };
+  }
+};
+
+/**
+ * Loads the config from per-repo .detent/config.json
+ * @param repoRoot - Repository root path (required)
+ */
+export const loadConfig = (repoRoot: string): Config => {
+  const raw = loadRepoConfig(repoRoot);
+  return mergeConfig(raw);
+};
+
+/**
+ * Loads the raw global config from disk (legacy)
+ * @deprecated Use loadRepoConfig() for per-repo config
  */
 export const loadGlobalConfig = (): GlobalConfig => {
   const configPath = getConfigPath();
@@ -151,10 +287,13 @@ const mergeConfig = (global: GlobalConfig): Config => {
 // ============================================================================
 
 /**
- * Saves the global config to disk
+ * Saves config to disk
+ * @param config - Config object to save
+ * @param repoRoot - If provided, saves to per-repo .detent/config.json
  */
-export const saveConfig = (config: GlobalConfig): void => {
-  const dir = getDetentDir();
+export const saveConfig = (config: GlobalConfig, repoRoot?: string): void => {
+  const dir = repoRoot ? getRepoDetentDir(repoRoot) : getGlobalDetentDir();
+  const filename = repoRoot ? REPO_CONFIG_FILE : GLOBAL_CONFIG_FILE;
 
   // Ensure directory exists
   if (!existsSync(dir)) {
@@ -168,9 +307,19 @@ export const saveConfig = (config: GlobalConfig): void => {
   };
 
   const data = `${JSON.stringify(configWithSchema, null, 2)}\n`;
-  const configPath = join(dir, GLOBAL_CONFIG_FILE);
+  const configPath = join(dir, filename);
 
   writeFileSync(configPath, data, { mode: 0o600 });
+};
+
+/**
+ * Saves config to per-repo .detent/config.json
+ */
+export const saveRepoConfig = (
+  config: GlobalConfig,
+  repoRoot: string
+): void => {
+  saveConfig(config, repoRoot);
 };
 
 // ============================================================================
@@ -205,115 +354,6 @@ const clampTimeout = (value: number): number => {
     return MAX_TIMEOUT_MINS;
   }
   return value;
-};
-
-// ============================================================================
-// Trust Helpers
-// ============================================================================
-
-/**
- * Checks if a repository is trusted by its first commit SHA
- */
-export const isTrustedRepo = (
-  config: GlobalConfig,
-  firstCommitSha: string
-): boolean => {
-  return config.trustedRepos?.[firstCommitSha] !== undefined;
-};
-
-/**
- * Marks a repository as trusted
- */
-export const trustRepo = (
-  config: GlobalConfig,
-  firstCommitSha: string,
-  remoteUrl?: string
-): GlobalConfig => {
-  return {
-    ...config,
-    trustedRepos: {
-      ...config.trustedRepos,
-      [firstCommitSha]: {
-        remoteUrl,
-        trustedAt: new Date(),
-      },
-    },
-  };
-};
-
-// ============================================================================
-// Command Helpers
-// ============================================================================
-
-/**
- * Gets the allowed commands for a repo by its first commit SHA
- */
-export const getAllowedCommands = (
-  config: GlobalConfig,
-  repoSha: string
-): string[] => {
-  return config.allowedCommands?.[repoSha]?.commands ?? [];
-};
-
-/**
- * Checks if a command matches the repo's allowlist (supports wildcards)
- */
-export const matchesCommand = (
-  config: GlobalConfig,
-  repoSha: string,
-  cmd: string
-): boolean => {
-  const commands = getAllowedCommands(config, repoSha);
-
-  for (const pattern of commands) {
-    if (cmd === pattern) {
-      return true;
-    }
-
-    // Wildcard pattern: "bun run *" matches "bun run test"
-    if (pattern.endsWith(" *")) {
-      const prefix = pattern.slice(0, -1); // Remove "*"
-      if (cmd.startsWith(prefix)) {
-        const suffix = cmd.slice(prefix.length);
-
-        // Reject dangerous patterns
-        if (containsDangerousPattern(suffix)) {
-          continue;
-        }
-
-        // Reject if suffix contains spaces (wildcard should match single argument)
-        if (suffix.trim().includes(" ")) {
-          continue;
-        }
-
-        return true;
-      }
-    }
-  }
-
-  return false;
-};
-
-const DANGEROUS_PATTERNS = [
-  ";",
-  "&&",
-  "||",
-  "|",
-  ">",
-  "<",
-  ">>",
-  "<<",
-  "$(",
-  "`",
-  "${",
-  "\\",
-  "\n",
-  "\r",
-  "\0",
-];
-
-const containsDangerousPattern = (s: string): boolean => {
-  return DANGEROUS_PATTERNS.some((pattern) => s.includes(pattern));
 };
 
 // ============================================================================

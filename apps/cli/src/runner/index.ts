@@ -1,4 +1,5 @@
 import { DebugLogger } from "../utils/debug-logger.js";
+import { toDisplayErrors } from "../utils/format.js";
 import type { TUIEventEmitter } from "./event-emitter.js";
 import { ActExecutor } from "./executor.js";
 import { WorkflowPreparer } from "./preparer.js";
@@ -184,6 +185,7 @@ export class CheckRunner {
         exitCode: executeResult.exitCode,
         errorCount: processResult.errorCount,
         cancelled: false,
+        errors: toDisplayErrors(processResult.errors),
       });
     }
 

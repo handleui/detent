@@ -262,31 +262,8 @@ export interface HealLock {
 // ============================================================================
 
 /**
- * TrustedRepo stores trust information for a repository
- */
-export interface TrustedRepo {
-  remoteUrl?: string;
-  trustedAt: Date;
-}
-
-/**
- * RepoCommands stores allowed commands for a repository
- */
-export interface RepoCommands {
-  remoteUrl?: string;
-  commands: string[];
-}
-
-/**
- * RepoJobOverrides stores job overrides for a repository
- */
-export interface RepoJobOverrides {
-  remoteUrl?: string;
-  jobs: Record<string, string>;
-}
-
-/**
  * GlobalConfig is the raw structure that gets persisted to disk
+ * Used for both per-repo .detent/config.json and legacy ~/.detent/detent.json
  */
 export interface GlobalConfig {
   $schema?: string;
@@ -295,9 +272,6 @@ export interface GlobalConfig {
   budgetPerRunUsd?: number;
   budgetMonthlyUsd?: number;
   timeoutMins?: number;
-  trustedRepos?: Record<string, TrustedRepo>;
-  allowedCommands?: Record<string, RepoCommands>;
-  jobOverrides?: Record<string, RepoJobOverrides>;
 }
 
 /**

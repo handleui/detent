@@ -1,7 +1,9 @@
+import { findGitRoot } from "@detent/git";
 import {
+  ensureRepoDetentDir,
   type GlobalConfig,
-  loadGlobalConfig,
-  saveConfig,
+  loadRepoConfig,
+  saveRepoConfig,
   type ValidationResult,
   validateApiKey,
   validateBudgetMonthly,
@@ -78,7 +80,7 @@ export const configSetCommand = defineCommand({
       required: true,
     },
   },
-  run: ({ args }) => {
+  run: async ({ args }) => {
     const key = args.key;
     const rawValue = args.value;
 
@@ -88,10 +90,20 @@ export const configSetCommand = defineCommand({
     }
 
     try {
+      const repoRoot = await findGitRoot(process.cwd());
+      if (!repoRoot) {
+        console.error("Error: Not in a git repository.");
+        process.exit(1);
+      }
+
       const parsed = parseAndValidate(key, rawValue);
-      const config = loadGlobalConfig();
+
+      // Ensure .detent/ exists (creates on demand)
+      ensureRepoDetentDir(repoRoot);
+
+      const config = loadRepoConfig(repoRoot);
       const updated: GlobalConfig = { ...config, [key]: parsed };
-      saveConfig(updated);
+      saveRepoConfig(updated, repoRoot);
       console.log("ok");
     } catch (error) {
       console.error(error instanceof Error ? error.message : "unknown error");

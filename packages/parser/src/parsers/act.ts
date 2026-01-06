@@ -30,6 +30,11 @@ import type {
 const ACT_PREFIX_REGEX = /^\[([^\]/]+)(?:\/([^\]]+))?\]\s*/;
 
 /**
+ * Regex to strip act's pipe marker from command output (e.g., "  | error: ..." -> "error: ...")
+ */
+const PIPE_MARKER_REGEX = /^\s*\|\s*/;
+
+/**
  * Patterns that indicate noise lines in Act output.
  * These are debug/metadata lines that should be skipped.
  */
@@ -116,7 +121,9 @@ class ActParser implements ContextParser {
 
     const job = match[1]?.trim() ?? "";
     const step = match[2]?.trim() ?? "";
-    const cleanLine = line.slice(match[0].length);
+    // Strip act's pipe marker for command output (e.g., "  | error: ..." -> "error: ...")
+    const rawCleanLine = line.slice(match[0].length);
+    const cleanLine = rawCleanLine.replace(PIPE_MARKER_REGEX, "");
 
     const isNoise = isNoiseLine(cleanLine);
 

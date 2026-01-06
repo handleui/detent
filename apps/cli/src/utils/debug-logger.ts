@@ -25,6 +25,38 @@ const DEBUG_DIR_NAME = "debug";
 const MAX_LOG_FILES = 10;
 
 /**
+ * Patterns that may indicate sensitive data in logs.
+ * These are redacted before writing to debug files.
+ */
+const SENSITIVE_PATTERNS = [
+  // API keys and tokens (common formats)
+  /(?:api[_-]?key|apikey|api[_-]?token|auth[_-]?token|access[_-]?token|bearer)\s*[:=]\s*["']?[\w\-./+=]{20,}["']?/gi,
+  // GitHub tokens
+  /gh[pousr]_[A-Za-z0-9_]{36,}/g,
+  // AWS credentials
+  /(?:AKIA|ABIA|ACCA|ASIA)[A-Z0-9]{16}/g,
+  /aws[_-]?(?:secret[_-]?)?(?:access[_-]?)?key\s*[:=]\s*["']?[A-Za-z0-9/+=]{40}["']?/gi,
+  // Generic secrets with common naming
+  /(?:password|passwd|secret|private[_-]?key|client[_-]?secret)\s*[:=]\s*["']?[^\s"']{8,}["']?/gi,
+  // Base64-encoded secrets (heuristic: long base64 following secret keywords)
+  /(?:secret|token|key|password)\s*[:=]\s*["']?[A-Za-z0-9+/]{50,}={0,2}["']?/gi,
+  // npm tokens
+  /npm_[A-Za-z0-9]{36}/g,
+] as const;
+
+/**
+ * Redacts sensitive patterns from a string.
+ * Replaces matched patterns with [REDACTED].
+ */
+const redactSecrets = (text: string): string => {
+  let result = text;
+  for (const pattern of SENSITIVE_PATTERNS) {
+    result = result.replace(pattern, "[REDACTED]");
+  }
+  return result;
+};
+
+/**
  * Per-run debug logger that writes to ~/.detent/debug/<run-id>.log
  */
 export class DebugLogger {
@@ -144,6 +176,7 @@ export class DebugLogger {
 
   /**
    * Logs raw act output (stdout/stderr).
+   * Sensitive data (API keys, tokens, passwords) is automatically redacted.
    */
   logActOutput(output: string): void {
     if (this.closed) {
@@ -151,8 +184,9 @@ export class DebugLogger {
     }
 
     try {
-      // Log act output without additional timestamp since act includes its own
-      appendFileSync(this.logPath, output);
+      // Redact sensitive data before logging
+      const sanitized = redactSecrets(output);
+      appendFileSync(this.logPath, sanitized);
     } catch {
       // Silently fail
     }

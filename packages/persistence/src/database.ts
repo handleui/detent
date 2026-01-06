@@ -2,7 +2,7 @@
  * Database connection management for Detent persistence
  * Uses better-sqlite3 for synchronous SQLite operations
  *
- * Database path: ~/.detent/repos/<repoId>.db
+ * Database path: <repo>/.detent/detent.db (per-repo)
  */
 
 import { createHash } from "node:crypto";
@@ -19,6 +19,7 @@ import { initSchema } from "./schema.js";
 const FILE_PERMISSIONS = 0o600; // Owner read/write only
 const DIR_PERMISSIONS = 0o700; // Owner read/write/execute only
 const GIT_SUFFIX_REGEX = /\.git$/;
+const WINDOWS_DRIVE_PATTERN = /^[A-Za-z]:\\/;
 
 // ============================================================================
 // Errors
@@ -35,16 +36,53 @@ export class ErrHealLockHeld extends Error {
 // Directory and Path Management
 // ============================================================================
 
+const DETENT_DIR_NAME = ".detent";
+const DATABASE_FILE = "detent.db";
+
 /**
- * Get the detent directory path: ~/.detent
- * Supports DETENT_HOME environment variable override
+ * Validates an override path from environment variable.
+ * Returns null if path is invalid (contains traversal sequences or is not absolute).
  */
-export const getDetentDir = (): string => {
+const validateOverridePath = (path: string): string | null => {
+  // Reject paths with traversal sequences
+  if (path.includes("..")) {
+    return null;
+  }
+
+  // Reject non-absolute paths
+  if (!(path.startsWith("/") || WINDOWS_DRIVE_PATTERN.test(path))) {
+    return null;
+  }
+
+  return path;
+};
+
+/**
+ * Get the global detent directory path: ~/.detent
+ * Used only for shared resources (act binary, spend tracking)
+ */
+export const getGlobalDetentDir = (): string => {
   const override = process.env.DETENT_HOME;
   if (override) {
-    return override;
+    const validated = validateOverridePath(override);
+    if (validated) {
+      return validated;
+    }
+    // Invalid override path - fall back to default
   }
-  return join(homedir(), ".detent");
+  return join(homedir(), DETENT_DIR_NAME);
+};
+
+/**
+ * @deprecated Use getGlobalDetentDir() instead
+ */
+export const getDetentDir = getGlobalDetentDir;
+
+/**
+ * Get the per-repo detent directory path: <repo>/.detent
+ */
+export const getRepoDetentDir = (repoRoot: string): string => {
+  return join(repoRoot, DETENT_DIR_NAME);
 };
 
 /**
@@ -60,6 +98,8 @@ const createDirIfNotExists = (path: string): void => {
  * Compute a stable identifier for a repository.
  * Priority: 1) git remote URL, 2) first commit SHA, 3) repo path
  * Returns a 20-character hex string suitable for directory names.
+ *
+ * @deprecated No longer used for database paths (now per-repo), but kept for spend tracking
  */
 export const computeRepoId = async (repoRoot: string): Promise<string> => {
   const absPath = resolve(repoRoot);
@@ -137,12 +177,10 @@ const getFirstCommitSha = async (repoRoot: string): Promise<string | null> => {
 
 /**
  * Get the database path for a given repo
- * Uses consolidated directory: ~/.detent/repos/<repoId>.db
+ * Now uses per-repo path: <repo>/.detent/detent.db
  */
-export const getDatabasePath = async (repoRoot: string): Promise<string> => {
-  const detentDir = getDetentDir();
-  const repoId = await computeRepoId(repoRoot);
-  return join(detentDir, "repos", `${repoId}.db`);
+export const getDatabasePath = (repoRoot: string): string => {
+  return join(getRepoDetentDir(repoRoot), DATABASE_FILE);
 };
 
 // ============================================================================
@@ -170,14 +208,12 @@ const secureDbFiles = (dbPath: string): void => {
 /**
  * Create and configure a database connection
  */
-export const createDatabase = async (
-  repoRoot: string
-): Promise<Database.Database> => {
-  const dbPath = await getDatabasePath(repoRoot);
+export const createDatabase = (repoRoot: string): Database.Database => {
+  const dbPath = getDatabasePath(repoRoot);
 
-  // Create repos directory
-  const reposDir = dirname(dbPath);
-  createDirIfNotExists(reposDir);
+  // Create .detent directory
+  const detentDir = dirname(dbPath);
+  createDirIfNotExists(detentDir);
 
   // Open database connection
   const db = new Database(dbPath);
@@ -226,18 +262,16 @@ export const closeDatabase = (db: Database.Database): void => {
 /**
  * Check if a database file exists for a repo
  */
-export const databaseExists = async (repoRoot: string): Promise<boolean> => {
-  const dbPath = await getDatabasePath(repoRoot);
+export const databaseExists = (repoRoot: string): boolean => {
+  const dbPath = getDatabasePath(repoRoot);
   return existsSync(dbPath);
 };
 
 /**
  * Get database file size in bytes
  */
-export const getDatabaseSize = async (
-  repoRoot: string
-): Promise<number | null> => {
-  const dbPath = await getDatabasePath(repoRoot);
+export const getDatabaseSize = (repoRoot: string): number | null => {
+  const dbPath = getDatabasePath(repoRoot);
   if (!existsSync(dbPath)) {
     return null;
   }

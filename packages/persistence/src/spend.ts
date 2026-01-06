@@ -17,6 +17,7 @@ import Database from "better-sqlite3";
 
 const SPEND_DB_FILE = "spend.db";
 const DETENT_DIR_NAME = ".detent";
+const WINDOWS_DRIVE_PATTERN = /^[A-Za-z]:\\/;
 
 // ============================================================================
 // Singleton Pattern
@@ -25,12 +26,34 @@ const DETENT_DIR_NAME = ".detent";
 let globalSpendDb: Database.Database | null = null;
 
 /**
+ * Validates an override path from environment variable.
+ * Returns null if path is invalid (contains traversal sequences or is not absolute).
+ */
+const validateOverridePath = (path: string): string | null => {
+  // Reject paths with traversal sequences
+  if (path.includes("..")) {
+    return null;
+  }
+
+  // Reject non-absolute paths
+  if (!(path.startsWith("/") || WINDOWS_DRIVE_PATTERN.test(path))) {
+    return null;
+  }
+
+  return path;
+};
+
+/**
  * Gets the detent directory path (~/.detent)
  */
 export const getDetentDir = (): string => {
   const override = process.env.DETENT_HOME;
   if (override) {
-    return override;
+    const validated = validateOverridePath(override);
+    if (validated) {
+      return validated;
+    }
+    // Invalid override path - fall back to default
   }
   return join(homedir(), DETENT_DIR_NAME);
 };

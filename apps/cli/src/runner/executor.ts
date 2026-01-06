@@ -12,6 +12,12 @@ import type { ExecuteResult, PrepareResult } from "./types.js";
 const MAX_BUFFER_SIZE = 1024 * 1024;
 
 /**
+ * Maximum total output size to retain (50MB per stream).
+ * Older chunks are discarded to prevent memory exhaustion.
+ */
+const MAX_OUTPUT_SIZE = 50 * 1024 * 1024;
+
+/**
  * Exit code returned when execution is aborted.
  */
 const ABORT_EXIT_CODE = 130;
@@ -23,6 +29,36 @@ interface StdoutProcessingState {
   buffer: string;
   parser: ActOutputParser;
 }
+
+/**
+ * State for tracking accumulated output chunks with size limit
+ */
+interface OutputAccumulator {
+  chunks: Buffer[];
+  totalSize: number;
+}
+
+/**
+ * Adds a chunk to the accumulator, discarding oldest chunks if size limit exceeded
+ */
+const addChunkToAccumulator = (
+  accumulator: OutputAccumulator,
+  chunk: Buffer
+): void => {
+  accumulator.chunks.push(chunk);
+  accumulator.totalSize += chunk.length;
+
+  // Discard oldest chunks if we exceed the limit
+  while (
+    accumulator.totalSize > MAX_OUTPUT_SIZE &&
+    accumulator.chunks.length > 1
+  ) {
+    const removed = accumulator.chunks.shift();
+    if (removed) {
+      accumulator.totalSize -= removed.length;
+    }
+  }
+};
 
 /**
  * Truncates buffer if it exceeds max size, keeping content after last newline
@@ -271,15 +307,24 @@ export class ActExecutor {
         stdio: ["ignore", "pipe", "pipe"],
         // Create new process group so we can kill all children (including Docker)
         detached: process.platform !== "win32",
+        env: {
+          ...process.env,
+          // Disable git hooks - they serve no purpose in worktree execution
+          // and fail because worktree isn't a real git repository
+          LEFTHOOK: "0",
+          HUSKY: "0",
+          PRE_COMMIT_ALLOW_NO_CONFIG: "1",
+        },
       });
 
       this.currentChild = child;
 
-      const stdoutChunks: Buffer[] = [];
-      const stderrChunks: Buffer[] = [];
+      // Use accumulators with size limits to prevent memory exhaustion
+      const stdoutAccum: OutputAccumulator = { chunks: [], totalSize: 0 };
+      const stderrAccum: OutputAccumulator = { chunks: [], totalSize: 0 };
 
       child.stdout.on("data", (chunk: Buffer) => {
-        stdoutChunks.push(chunk);
+        addChunkToAccumulator(stdoutAccum, chunk);
         const text = chunk.toString("utf-8");
 
         this.debugLogger?.logActOutput(text);
@@ -299,7 +344,7 @@ export class ActExecutor {
       });
 
       child.stderr.on("data", (chunk: Buffer) => {
-        stderrChunks.push(chunk);
+        addChunkToAccumulator(stderrAccum, chunk);
         const text = chunk.toString("utf-8");
 
         // Write to debug log
@@ -326,8 +371,8 @@ export class ActExecutor {
         const duration = Date.now() - startTime;
         const exitCode = this.aborted ? ABORT_EXIT_CODE : (code ?? 1);
 
-        const stdout = Buffer.concat(stdoutChunks).toString("utf-8");
-        const stderr = Buffer.concat(stderrChunks).toString("utf-8");
+        const stdout = Buffer.concat(stdoutAccum.chunks).toString("utf-8");
+        const stderr = Buffer.concat(stderrAccum.chunks).toString("utf-8");
 
         resolve({
           exitCode,
@@ -353,8 +398,8 @@ export class ActExecutor {
 
         resolve({
           exitCode: 1,
-          stdout: Buffer.concat(stdoutChunks).toString("utf-8"),
-          stderr: `Process error: ${error.message}\n${Buffer.concat(stderrChunks).toString("utf-8")}`,
+          stdout: Buffer.concat(stdoutAccum.chunks).toString("utf-8"),
+          stderr: `Process error: ${error.message}\n${Buffer.concat(stderrAccum.chunks).toString("utf-8")}`,
           duration,
         });
       });

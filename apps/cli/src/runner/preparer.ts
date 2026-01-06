@@ -533,41 +533,6 @@ export class WorkflowPreparer {
   }
 
   /**
-   * Builds combined manifest and encodes as base64.
-   */
-  private buildManifestBase64(
-    parsedWorkflows: readonly ParsedWorkflow[],
-    buildCombinedManifest: (
-      infos: readonly {
-        name: string;
-        content: string;
-        jobs: Record<string, unknown>;
-      }[]
-    ) => unknown,
-    findFirstNoDepJob: (jobs: Record<string, unknown>) => string | null
-  ): string {
-    const workflowInfos = parsedWorkflows.map((pw) => ({
-      name: pw.name,
-      content: pw.injectedContent,
-      jobs: pw.jobs,
-    }));
-
-    const combinedManifest = buildCombinedManifest(workflowInfos);
-    const manifestJson = JSON.stringify(combinedManifest);
-
-    const manifestLocations = parsedWorkflows.map((pw) => ({
-      name: pw.name,
-      jobId: findFirstNoDepJob(pw.jobs),
-    }));
-
-    this.debugLogger?.log(
-      `[Inject] Manifest locations (per-workflow): ${manifestLocations.map((loc) => `${loc.name}:${loc.jobId ?? "none"}`).join(", ")}`
-    );
-
-    return Buffer.from(manifestJson).toString("base64");
-  }
-
-  /**
    * Writes injected workflows to the worktree.
    */
   private async writeInjectedWorkflows(

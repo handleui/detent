@@ -32,13 +32,13 @@ const ShimmerText = ({ text, isLoading }: ShimmerTextProps): JSX.Element => {
 interface JobLineProps {
   readonly job: TrackedJob;
   readonly currentStepName: string;
-  readonly allJobs: readonly TrackedJob[];
+  readonly jobsById: ReadonlyMap<string, TrackedJob>;
 }
 
 const JobLine = ({
   job,
   currentStepName,
-  allJobs,
+  jobsById,
 }: JobLineProps): JSX.Element => {
   const icon = getJobIcon(job.status, job.isReusable);
   const iconColor = getJobIconColor(job.status, job.isReusable);
@@ -69,17 +69,17 @@ const JobLine = ({
 
   // For pending jobs with dependencies: show nested under deps
   if (job.status === "pending" && hasDeps) {
-    // Find which dependencies are blocking (not yet successful)
+    // Find which dependencies are blocking (not yet successful) - O(1) lookups via Map
     const blockingDeps =
       job.needs?.filter((depId) => {
-        const depJob = allJobs.find((j) => j.id === depId);
+        const depJob = jobsById.get(depId);
         return depJob && depJob.status !== "success";
       }) ?? [];
 
-    // Get display names for blocking deps
+    // Get display names for blocking deps - O(1) lookups via Map
     const blockingNames = blockingDeps
       .map((depId) => {
-        const depJob = allJobs.find((j) => j.id === depId);
+        const depJob = jobsById.get(depId);
         return depJob?.name ?? depId;
       })
       .slice(0, 2); // Limit to 2 for brevity
@@ -442,26 +442,40 @@ const renderWaitingView = (elapsed: number): JSX.Element => (
 );
 
 /**
+ * Creates a Map for O(1) job lookups by ID
+ */
+const createJobsMap = (
+  jobs: readonly TrackedJob[]
+): ReadonlyMap<string, TrackedJob> => new Map(jobs.map((j) => [j.id, j]));
+
+/**
  * Renders the running state with job list
  */
 const renderRunningView = (
   jobs: readonly TrackedJob[],
   currentStepName: string,
   elapsed: number
-): JSX.Element => (
-  <Box flexDirection="column">
-    <Box>
-      <Text color={colors.muted}>$ act · {formatDuration(elapsed)}</Text>
+): JSX.Element => {
+  const jobsById = createJobsMap(jobs);
+  return (
+    <Box flexDirection="column">
+      <Box>
+        <Text color={colors.muted}>$ act · {formatDuration(elapsed)}</Text>
+      </Box>
+      <Box flexDirection="column" marginTop={1}>
+        {jobs.map((job) => (
+          <Box key={job.id} marginLeft={2}>
+            <JobLine
+              currentStepName={currentStepName}
+              job={job}
+              jobsById={jobsById}
+            />
+          </Box>
+        ))}
+      </Box>
     </Box>
-    <Box flexDirection="column" marginTop={1}>
-      {jobs.map((job) => (
-        <Box key={job.id} marginLeft={2}>
-          <JobLine allJobs={jobs} currentStepName={currentStepName} job={job} />
-        </Box>
-      ))}
-    </Box>
-  </Box>
-);
+  );
+};
 
 /**
  * Renders the completion view with final job statuses
@@ -482,6 +496,7 @@ const renderCompletionView = (
     (job) => job.status === "skipped_security"
   );
   const structuredErrors = doneInfo?.errors ?? [];
+  const totalIssues = structuredErrors.length;
 
   return (
     <Box flexDirection="column">
@@ -524,6 +539,14 @@ const renderCompletionView = (
             return (
               <Text bold color={colors.error}>
                 ✗ Check failed: {formatErrorForTUI(errorMessage)}
+              </Text>
+            );
+          }
+          if (totalIssues > 0) {
+            const issueText = totalIssues === 1 ? "issue" : "issues";
+            return (
+              <Text bold color={colors.brand}>
+                ✓ Found {totalIssues} {issueText} in {durationStr}
               </Text>
             );
           }
@@ -737,6 +760,61 @@ interface FileErrorGroup {
 }
 
 /**
+ * Category display order matching Go CLI format
+ */
+const CATEGORY_ORDER = [
+  "Lint Issues",
+  "Type Errors",
+  "Test Failures",
+  "Build Errors",
+  "Runtime Errors",
+  "Other",
+] as const;
+
+/**
+ * Gets the sort index for a category
+ */
+const getCategoryOrder = (category: string): number => {
+  const index = CATEGORY_ORDER.indexOf(
+    category as (typeof CATEGORY_ORDER)[number]
+  );
+  return index === -1 ? CATEGORY_ORDER.length : index;
+};
+
+/**
+ * Sorts errors by line and column for consistent display
+ */
+const sortErrorsByLocation = (errors: DisplayError[]): DisplayError[] =>
+  [...errors].sort((a, b) => {
+    const lineA = a.line ?? 0;
+    const lineB = b.line ?? 0;
+    if (lineA !== lineB) {
+      return lineA - lineB;
+    }
+    return (a.column ?? 0) - (b.column ?? 0);
+  });
+
+/**
+ * Builds a FileErrorGroup from file errors
+ */
+const buildFileGroup = (
+  file: string,
+  errors: DisplayError[]
+): FileErrorGroup => {
+  const sortedErrors = sortErrorsByLocation(errors);
+  let errorCount = 0;
+  let warningCount = 0;
+  for (const e of sortedErrors) {
+    if (e.severity === "error") {
+      errorCount++;
+    } else if (e.severity === "warning") {
+      warningCount++;
+    }
+  }
+  return { file, errors: sortedErrors, errorCount, warningCount };
+};
+
+/**
  * Groups errors by category and file for structured display
  */
 const groupErrors = (
@@ -745,7 +823,7 @@ const groupErrors = (
   const categoryMap = new Map<string, Map<string, DisplayError[]>>();
 
   for (const error of errors) {
-    const category = error.category ?? "Issues";
+    const category = error.category ?? "Other";
     const file = error.file ?? "unknown";
 
     if (!categoryMap.has(category)) {
@@ -762,23 +840,168 @@ const groupErrors = (
   for (const [category, fileMap] of categoryMap) {
     const fileGroups: FileErrorGroup[] = [];
     for (const [file, fileErrors] of fileMap) {
-      const errorCount = fileErrors.filter(
-        (e) => e.severity === "error"
-      ).length;
-      const warningCount = fileErrors.filter(
-        (e) => e.severity === "warning"
-      ).length;
-      fileGroups.push({
-        file,
-        errors: fileErrors,
-        errorCount,
-        warningCount,
-      });
+      fileGroups.push(buildFileGroup(file, fileErrors));
     }
     result.push({ category, fileGroups });
   }
 
+  result.sort(
+    (a, b) => getCategoryOrder(a.category) - getCategoryOrder(b.category)
+  );
+
   return result;
+};
+
+/**
+ * Separator line matching Go CLI format (56 box-drawing characters)
+ */
+const SEPARATOR_LINE = "─".repeat(56);
+
+/**
+ * Renders the summary header with problem counts
+ */
+const ErrorSummary = ({
+  totalErrors,
+  totalWarnings,
+  uniqueFiles,
+}: {
+  readonly totalErrors: number;
+  readonly totalWarnings: number;
+  readonly uniqueFiles: number;
+}): JSX.Element => {
+  const totalProblems = totalErrors + totalWarnings;
+  const problemText = totalProblems === 1 ? "problem" : "problems";
+  const fileText = uniqueFiles === 1 ? "file" : "files";
+  const errorText = totalErrors === 1 ? "error" : "errors";
+  const warningText = totalWarnings === 1 ? "warning" : "warnings";
+
+  return (
+    <Box flexDirection="column">
+      <Box>
+        <Text color={colors.error}>{">"} ✖ </Text>
+        <Text>
+          Found {totalProblems} {problemText} ({totalErrors} {errorText},{" "}
+          {totalWarnings} {warningText}) across {uniqueFiles} {fileText}
+        </Text>
+      </Box>
+      <Box marginLeft={2}>
+        <Text color={colors.muted}>
+          Run 'detent heal' to auto-fix or fix manually and re-run
+        </Text>
+      </Box>
+    </Box>
+  );
+};
+
+/**
+ * Renders a single error line in format: line:col: symbol message [rule-id]
+ */
+const ErrorLine = ({
+  error,
+}: {
+  readonly error: DisplayError;
+}): JSX.Element => {
+  const location = `${error.line ?? 0}:${error.column ?? 0}:`;
+  const isError = error.severity === "error";
+
+  return (
+    <Box marginLeft={4}>
+      <Text color={colors.muted}>{location} </Text>
+      <Text color={isError ? colors.error : colors.warn}>
+        {isError ? "✖" : "⚠"}{" "}
+      </Text>
+      <Text>{error.message}</Text>
+      {error.ruleId && <Text color={colors.muted}> [{error.ruleId}]</Text>}
+    </Box>
+  );
+};
+
+/**
+ * Renders a file group header with error/warning counts
+ */
+const FileHeader = ({
+  file,
+  errorCount,
+  warningCount,
+}: {
+  readonly file: string;
+  readonly errorCount: number;
+  readonly warningCount: number;
+}): JSX.Element => {
+  const errorText = errorCount === 1 ? "error" : "errors";
+  const warningText = warningCount === 1 ? "warning" : "warnings";
+
+  return (
+    <Box marginLeft={2} marginTop={1}>
+      <Text>{file} </Text>
+      <Text color={colors.muted}>
+        ({errorCount} {errorText}, {warningCount} {warningText})
+      </Text>
+    </Box>
+  );
+};
+
+/**
+ * Renders a file group with its header and error lines
+ */
+const FileGroup = ({
+  fileGroup,
+}: {
+  readonly fileGroup: FileErrorGroup;
+}): JSX.Element => (
+  <Box flexDirection="column" key={fileGroup.file}>
+    <FileHeader
+      errorCount={fileGroup.errorCount}
+      file={fileGroup.file}
+      warningCount={fileGroup.warningCount}
+    />
+    {fileGroup.errors.map((error) => (
+      <ErrorLine
+        error={error}
+        key={`${error.line ?? 0}:${error.column ?? 0}:${error.message.slice(0, 50)}`}
+      />
+    ))}
+  </Box>
+);
+
+/**
+ * Renders a category section with its file groups
+ */
+const CategorySection = ({
+  categoryGroup,
+}: {
+  readonly categoryGroup: ErrorsByCategory;
+}): JSX.Element => (
+  <Box flexDirection="column" key={categoryGroup.category} marginTop={1}>
+    <Text bold>{categoryGroup.category}:</Text>
+    {categoryGroup.fileGroups.map((fileGroup) => (
+      <FileGroup fileGroup={fileGroup} key={fileGroup.file} />
+    ))}
+  </Box>
+);
+
+/**
+ * Computes error statistics in a single pass
+ */
+const computeErrorStats = (
+  errors: readonly DisplayError[]
+): { totalErrors: number; totalWarnings: number; uniqueFiles: number } => {
+  let totalErrors = 0;
+  let totalWarnings = 0;
+  const uniqueFilesSet = new Set<string>();
+
+  for (const e of errors) {
+    if (e.severity === "error") {
+      totalErrors++;
+    } else if (e.severity === "warning") {
+      totalWarnings++;
+    }
+    if (e.file) {
+      uniqueFilesSet.add(e.file);
+    }
+  }
+
+  return { totalErrors, totalWarnings, uniqueFiles: uniqueFilesSet.size };
 };
 
 /**
@@ -791,71 +1014,25 @@ const renderErrorsView = (
     return null;
   }
 
-  const totalErrors = errors.filter((e) => e.severity === "error").length;
-  const totalWarnings = errors.filter((e) => e.severity === "warning").length;
-  const uniqueFiles = new Set(errors.map((e) => e.file).filter(Boolean)).size;
+  const { totalErrors, totalWarnings, uniqueFiles } = computeErrorStats(errors);
 
   const grouped = groupErrors(errors);
 
-  const problemText =
-    totalErrors + totalWarnings === 1 ? "problem" : "problems";
-  const fileText = uniqueFiles === 1 ? "file" : "files";
-  const errorText = totalErrors === 1 ? "error" : "errors";
-  const warningText = totalWarnings === 1 ? "warning" : "warnings";
-
   return (
     <Box flexDirection="column" marginTop={1}>
-      <Box>
-        <Text color={colors.error}>{">"} </Text>
-        <Text color={colors.error}>✖ </Text>
-        <Text>
-          Found {totalErrors + totalWarnings} {problemText} ({totalErrors}{" "}
-          {errorText}, {totalWarnings} {warningText}) across {uniqueFiles}{" "}
-          {fileText}
-        </Text>
+      <ErrorSummary
+        totalErrors={totalErrors}
+        totalWarnings={totalWarnings}
+        uniqueFiles={uniqueFiles}
+      />
+      <Box marginTop={1}>
+        <Text color={colors.muted}>{SEPARATOR_LINE}</Text>
       </Box>
-
       {grouped.map((categoryGroup) => (
-        <Box flexDirection="column" key={categoryGroup.category} marginTop={1}>
-          <Box>
-            <Text bold>{categoryGroup.category}:</Text>
-          </Box>
-
-          {categoryGroup.fileGroups.map((fileGroup) => (
-            <Box flexDirection="column" key={fileGroup.file} marginLeft={2}>
-              <Box marginTop={1}>
-                <Text color={colors.info}>{fileGroup.file}</Text>
-                <Text color={colors.muted}>
-                  {" "}
-                  ({fileGroup.errorCount}{" "}
-                  {fileGroup.errorCount === 1 ? "error" : "errors"},{" "}
-                  {fileGroup.warningCount}{" "}
-                  {fileGroup.warningCount === 1 ? "warning" : "warnings"})
-                </Text>
-              </Box>
-
-              {fileGroup.errors.map((error) => (
-                <Box
-                  key={`${error.file ?? ""}:${error.line ?? 0}:${error.column ?? 0}:${error.ruleId ?? error.message}`}
-                  marginLeft={2}
-                >
-                  <Text color={colors.muted}>
-                    {error.line ?? 0}:{error.column ?? 0}{" "}
-                  </Text>
-                  {error.severity === "error" ? (
-                    <Text color={colors.error}>✖ </Text>
-                  ) : (
-                    <Text color={colors.warn}>⚠ </Text>
-                  )}
-                  <Text>{error.message}</Text>
-                  {error.ruleId && (
-                    <Text color={colors.muted}> [{error.ruleId}]</Text>
-                  )}
-                </Box>
-              ))}
-            </Box>
-          ))}
-        </Box>
+        <CategorySection
+          categoryGroup={categoryGroup}
+          key={categoryGroup.category}
+        />
       ))}
     </Box>
   );

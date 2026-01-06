@@ -83,6 +83,27 @@ export const getDirtyFilesList = async (
   return result.stdout.split("\n");
 };
 
+/**
+ * Finds the git repository root from a starting path.
+ * Traverses upward to find the .git directory.
+ *
+ * @param startPath - Directory to start searching from
+ * @returns Absolute path to git root, or null if not in a git repo
+ */
+export const findGitRoot = async (
+  startPath: string
+): Promise<string | null> => {
+  try {
+    const result = await execGit(["rev-parse", "--show-toplevel"], {
+      cwd: startPath,
+    });
+    const root = result.stdout;
+    return root || null;
+  } catch {
+    return null;
+  }
+};
+
 export const commitAllChanges = async (
   repoRoot: string,
   message: string

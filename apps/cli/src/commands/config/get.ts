@@ -1,3 +1,4 @@
+import { findGitRoot } from "@detent/git";
 import { loadConfig } from "@detent/persistence";
 import { defineCommand } from "citty";
 import { CONFIG_KEYS, isConfigKey } from "./constants.js";
@@ -14,7 +15,7 @@ export const configGetCommand = defineCommand({
       required: true,
     },
   },
-  run: ({ args }) => {
+  run: async ({ args }) => {
     const key = args.key;
 
     if (!isConfigKey(key)) {
@@ -23,8 +24,18 @@ export const configGetCommand = defineCommand({
       process.exit(1);
     }
 
+    // Prevent exposing API key via CLI - use maskApiKey for safe display
+    if (key === "apiKey") {
+      console.error(
+        "Error: API key cannot be retrieved via CLI for security reasons."
+      );
+      console.error("Use 'detent config list' to see a masked version.");
+      process.exit(1);
+    }
+
     try {
-      const config = loadConfig();
+      const repoRoot = await findGitRoot(process.cwd());
+      const config = loadConfig(repoRoot ?? undefined);
       const value = config[key];
 
       if (value === undefined || value === null) {

@@ -14,8 +14,18 @@ export const useShimmer = ({
 }: UseShimmerProps): string => {
   const [output, setOutput] = useState(text);
   const modelRef = useRef<Model | null>(null);
+  // Track baseColor to detect changes
+  const baseColorRef = useRef(baseColor);
 
   useEffect(() => {
+    // Recreate model if baseColor changed (can't update color on existing model)
+    const colorChanged = baseColorRef.current !== baseColor;
+    if (colorChanged && modelRef.current) {
+      modelRef.current.stop();
+      modelRef.current = null;
+    }
+    baseColorRef.current = baseColor;
+
     if (!modelRef.current) {
       modelRef.current = create(text, baseColor, {
         interval: 40,
