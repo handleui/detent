@@ -19,7 +19,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { getDetentDir } from "@detent/persistence";
+import { getDetentDir } from "../../lib/config.js";
 
 const DEBUG_DIR_NAME = "debug";
 const MAX_LOG_FILES = 10;

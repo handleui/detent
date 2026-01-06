@@ -1,11 +1,11 @@
 import { findGitRoot } from "@detent/git";
+import { defineCommand } from "citty";
 import {
   formatBudget,
   getRepoConfigPath,
   loadConfig,
   maskApiKey,
-} from "@detent/persistence";
-import { defineCommand } from "citty";
+} from "../../lib/config.js";
 import { printHeader } from "../../tui/components/index.js";
 
 export const configListCommand = defineCommand({

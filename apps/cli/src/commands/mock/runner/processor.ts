@@ -101,8 +101,8 @@ export class ErrorProcessor {
   /**
    * Persists parsed errors to storage.
    *
-   * TODO: Future integration with @detent/persistence
-   * This will be implemented when the persistence layer is ready.
+   * TODO: Future integration with API for remote persistence
+   * This will be implemented when the API layer is ready.
    * For now, this is a no-op to maintain the interface contract.
    *
    * @param _errors - Parsed errors to persist (unused)
@@ -113,7 +113,7 @@ export class ErrorProcessor {
     _runID: string
   ): Promise<void> {
     // No-op: Persistence will be implemented in a future phase
-    // when @detent/persistence is ready to handle error storage
+    // when the API is ready to handle error storage
   }
 
   /**

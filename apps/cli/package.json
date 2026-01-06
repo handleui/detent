@@ -18,7 +18,6 @@
   },
   "dependencies": {
     "@detent/git": "*",
-    "@detent/persistence": "*",
     "@detent/healing": "*",
     "@detent/parser": "*",
     "citty": "^0.1.6",

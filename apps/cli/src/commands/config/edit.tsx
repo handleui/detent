@@ -8,7 +8,7 @@ import {
   maskApiKey,
   saveRepoConfig,
   validateApiKey,
-} from "@detent/persistence";
+} from "../../lib/config.js";
 
 const MODELS = getAllowedModels();
 

@@ -1,4 +1,5 @@
 import { findGitRoot } from "@detent/git";
+import { defineCommand } from "citty";
 import {
   ensureRepoDetentDir,
   type GlobalConfig,
@@ -10,8 +11,7 @@ import {
   validateBudgetPerRun,
   validateModel,
   validateTimeout,
-} from "@detent/persistence";
-import { defineCommand } from "citty";
+} from "../../lib/config.js";
 import { CONFIG_KEYS, type ConfigKey, isConfigKey } from "./constants.js";
 
 // Helper to parse and validate string values (apiKey, model)

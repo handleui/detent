@@ -8,6 +8,9 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { findGitRoot, validateGitRepository } from "@detent/git";
+import { defineCommand } from "citty";
+import { Box, render, Text, useApp, useInput } from "ink";
+import { useState } from "react";
 import {
   ensureRepoDetentDir,
   getRepoConfigPath,
@@ -16,10 +19,7 @@ import {
   loadRepoConfig,
   saveRepoConfig,
   validateApiKey,
-} from "@detent/persistence";
-import { defineCommand } from "citty";
-import { Box, render, Text, useApp, useInput } from "ink";
-import { useState } from "react";
+} from "../lib/config.js";
 import { Header } from "../tui/components/index.js";
 import { shouldUseTUI } from "../tui/render.js";
 import { colors } from "../tui/styles.js";

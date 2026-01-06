@@ -1,5 +1,5 @@
 /**
- * Config management for Detent
+ * Config management for Detent CLI
  *
  * Two modes:
  * - Per-repo: .detent/config.json in repository root (preferred)
@@ -9,7 +9,44 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { Config, GlobalConfig } from "./types.js";
+
+// ============================================================================
+// Types
+// ============================================================================
+
+/**
+ * GlobalConfig is the raw structure that gets persisted to disk
+ * Used for both per-repo .detent/config.json and legacy ~/.detent/detent.json
+ */
+export interface GlobalConfig {
+  $schema?: string;
+  apiKey?: string;
+  model?: string;
+  budgetPerRunUsd?: number;
+  budgetMonthlyUsd?: number;
+  timeoutMins?: number;
+}
+
+/**
+ * Config is the merged, resolved config used by the application
+ */
+export interface Config {
+  apiKey: string;
+  model: string;
+  budgetPerRunUsd: number;
+  budgetMonthlyUsd: number;
+  timeoutMins: number;
+}
+
+export interface ValidationResult {
+  valid: boolean;
+  error?: string;
+}
+
+export interface ConfigLoadResult {
+  config: GlobalConfig;
+  error?: string;
+}
 
 // ============================================================================
 // Constants
@@ -17,15 +54,13 @@ import type { Config, GlobalConfig } from "./types.js";
 
 const DETENT_DIR_NAME = ".detent";
 const REPO_CONFIG_FILE = "config.json";
-const GLOBAL_CONFIG_FILE = "detent.json"; // Legacy
+const GLOBAL_CONFIG_FILE = "detent.json";
 const SCHEMA_URL = "./schema.json";
 
-// Defaults
 const DEFAULT_MODEL = "claude-sonnet-4-5";
 const DEFAULT_BUDGET_PER_RUN_USD = 1.0;
 const DEFAULT_TIMEOUT_MINS = 10;
 
-// Constraints
 const MIN_TIMEOUT_MINS = 1;
 const MAX_TIMEOUT_MINS = 60;
 const MIN_BUDGET_USD = 0.0;
@@ -33,46 +68,35 @@ const MAX_BUDGET_USD = 100.0;
 const MAX_BUDGET_MONTHLY_USD = 1000.0;
 const MODEL_PREFIX = "claude-";
 
-// API Key validation patterns
 const API_KEY_PREFIXES = ["sk-ant-"] as const;
 const API_KEY_MIN_LENGTH = 20;
 const API_KEY_MAX_LENGTH = 200;
 
-// Allowed models (canonical list - only 4.5 generation)
 const ALLOWED_MODELS = [
   "claude-opus-4-5",
   "claude-sonnet-4-5",
   "claude-haiku-4-5",
 ] as const;
 
-// Windows drive letter pattern for absolute path validation
 const WINDOWS_DRIVE_PATTERN = /^[A-Za-z]:\\/;
 
 // ============================================================================
 // Path Helpers
 // ============================================================================
 
-/**
- * Validates an override path from environment variable.
- * Returns null if path is invalid (contains traversal sequences or is not absolute).
- */
 const validateOverridePath = (path: string): string | null => {
-  // Reject paths with traversal sequences
   if (path.includes("..")) {
     return null;
   }
-
-  // Reject non-absolute paths
   if (!(path.startsWith("/") || WINDOWS_DRIVE_PATTERN.test(path))) {
     return null;
   }
-
   return path;
 };
 
 /**
  * Gets the global detent directory path (~/.detent)
- * Used only for shared resources like act binary
+ * Used for shared resources like act binary and debug logs
  */
 export const getGlobalDetentDir = (): string => {
   const override = process.env.DETENT_HOME;
@@ -81,7 +105,6 @@ export const getGlobalDetentDir = (): string => {
     if (validated) {
       return validated;
     }
-    // Invalid override path - fall back to default
   }
   return join(homedir(), DETENT_DIR_NAME);
 };
@@ -135,14 +158,6 @@ export const isRepoInitialized = (repoRoot: string): boolean => {
 // ============================================================================
 
 /**
- * Config load result - distinguishes between "not found" and "error"
- */
-export interface ConfigLoadResult {
-  config: GlobalConfig;
-  error?: string;
-}
-
-/**
  * Loads the per-repo config from .detent/config.json
  * Returns empty config for missing files, warns for corrupted/inaccessible files.
  */
@@ -188,7 +203,6 @@ export const loadRepoConfigSafe = (repoRoot: string): ConfigLoadResult => {
       };
     }
 
-    // JSON parse error or other
     if (error instanceof SyntaxError) {
       return {
         config: {},
@@ -212,118 +226,8 @@ export const loadConfig = (repoRoot: string): Config => {
   return mergeConfig(raw);
 };
 
-/**
- * Loads the raw global config from disk (legacy)
- * @deprecated Use loadRepoConfig() for per-repo config
- */
-export const loadGlobalConfig = (): GlobalConfig => {
-  const configPath = getConfigPath();
-
-  if (!existsSync(configPath)) {
-    return {};
-  }
-
-  try {
-    const data = readFileSync(configPath, "utf-8");
-    if (!data.trim()) {
-      return {};
-    }
-    return JSON.parse(data) as GlobalConfig;
-  } catch {
-    return {};
-  }
-};
-
-/**
- * Merges global config with defaults
- */
-const mergeConfig = (global: GlobalConfig): Config => {
-  const config: Config = {
-    apiKey: "",
-    model: DEFAULT_MODEL,
-    budgetPerRunUsd: DEFAULT_BUDGET_PER_RUN_USD,
-    budgetMonthlyUsd: 0, // 0 means unlimited
-    timeoutMins: DEFAULT_TIMEOUT_MINS,
-  };
-
-  // Apply global config
-  if (global.apiKey) {
-    config.apiKey = global.apiKey;
-  }
-
-  if (global.model) {
-    if (global.model.startsWith(MODEL_PREFIX)) {
-      config.model = global.model;
-    } else {
-      console.error(
-        `warning: ignoring invalid model "${global.model}" (must start with "${MODEL_PREFIX}")`
-      );
-    }
-  }
-
-  if (global.budgetPerRunUsd !== undefined) {
-    config.budgetPerRunUsd = clampBudget(global.budgetPerRunUsd);
-  }
-
-  if (global.budgetMonthlyUsd !== undefined) {
-    config.budgetMonthlyUsd = clampMonthlyBudget(global.budgetMonthlyUsd);
-  }
-
-  if (global.timeoutMins !== undefined) {
-    config.timeoutMins = clampTimeout(global.timeoutMins);
-  }
-
-  // Environment variable overrides everything for API key
-  const envKey = process.env.ANTHROPIC_API_KEY;
-  if (envKey) {
-    config.apiKey = envKey;
-  }
-
-  return config;
-};
-
 // ============================================================================
-// Config Saving
-// ============================================================================
-
-/**
- * Saves config to disk
- * @param config - Config object to save
- * @param repoRoot - If provided, saves to per-repo .detent/config.json
- */
-export const saveConfig = (config: GlobalConfig, repoRoot?: string): void => {
-  const dir = repoRoot ? getRepoDetentDir(repoRoot) : getGlobalDetentDir();
-  const filename = repoRoot ? REPO_CONFIG_FILE : GLOBAL_CONFIG_FILE;
-
-  // Ensure directory exists
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { mode: 0o700, recursive: true });
-  }
-
-  // Add schema reference
-  const configWithSchema = {
-    $schema: SCHEMA_URL,
-    ...config,
-  };
-
-  const data = `${JSON.stringify(configWithSchema, null, 2)}\n`;
-  const configPath = join(dir, filename);
-
-  writeFileSync(configPath, data, { mode: 0o600 });
-};
-
-/**
- * Saves config to per-repo .detent/config.json
- */
-export const saveRepoConfig = (
-  config: GlobalConfig,
-  repoRoot: string
-): void => {
-  saveConfig(config, repoRoot);
-};
-
-// ============================================================================
-// Clamping Helpers
+// Config Merging
 // ============================================================================
 
 const clampBudget = (value: number): number => {
@@ -356,6 +260,87 @@ const clampTimeout = (value: number): number => {
   return value;
 };
 
+const mergeConfig = (global: GlobalConfig): Config => {
+  const config: Config = {
+    apiKey: "",
+    model: DEFAULT_MODEL,
+    budgetPerRunUsd: DEFAULT_BUDGET_PER_RUN_USD,
+    budgetMonthlyUsd: 0,
+    timeoutMins: DEFAULT_TIMEOUT_MINS,
+  };
+
+  if (global.apiKey) {
+    config.apiKey = global.apiKey;
+  }
+
+  if (global.model) {
+    if (global.model.startsWith(MODEL_PREFIX)) {
+      config.model = global.model;
+    } else {
+      console.error(
+        `warning: ignoring invalid model "${global.model}" (must start with "${MODEL_PREFIX}")`
+      );
+    }
+  }
+
+  if (global.budgetPerRunUsd !== undefined) {
+    config.budgetPerRunUsd = clampBudget(global.budgetPerRunUsd);
+  }
+
+  if (global.budgetMonthlyUsd !== undefined) {
+    config.budgetMonthlyUsd = clampMonthlyBudget(global.budgetMonthlyUsd);
+  }
+
+  if (global.timeoutMins !== undefined) {
+    config.timeoutMins = clampTimeout(global.timeoutMins);
+  }
+
+  const envKey = process.env.ANTHROPIC_API_KEY;
+  if (envKey) {
+    config.apiKey = envKey;
+  }
+
+  return config;
+};
+
+// ============================================================================
+// Config Saving
+// ============================================================================
+
+/**
+ * Saves config to disk
+ * @param config - Config object to save
+ * @param repoRoot - If provided, saves to per-repo .detent/config.json
+ */
+export const saveConfig = (config: GlobalConfig, repoRoot?: string): void => {
+  const dir = repoRoot ? getRepoDetentDir(repoRoot) : getGlobalDetentDir();
+  const filename = repoRoot ? REPO_CONFIG_FILE : GLOBAL_CONFIG_FILE;
+
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { mode: 0o700, recursive: true });
+  }
+
+  const configWithSchema = {
+    $schema: SCHEMA_URL,
+    ...config,
+  };
+
+  const data = `${JSON.stringify(configWithSchema, null, 2)}\n`;
+  const configPath = join(dir, filename);
+
+  writeFileSync(configPath, data, { mode: 0o600 });
+};
+
+/**
+ * Saves config to per-repo .detent/config.json
+ */
+export const saveRepoConfig = (
+  config: GlobalConfig,
+  repoRoot: string
+): void => {
+  saveConfig(config, repoRoot);
+};
+
 // ============================================================================
 // Display Helpers
 // ============================================================================
@@ -386,11 +371,6 @@ export const formatBudget = (usd: number): string => {
 // ============================================================================
 // Validation Helpers
 // ============================================================================
-
-export interface ValidationResult {
-  valid: boolean;
-  error?: string;
-}
 
 /**
  * Validates an API key format.

@@ -1,8 +1,8 @@
 import { join } from "node:path";
-import type { GlobalConfig } from "@detent/persistence";
 import { render } from "ink-testing-library";
 import { fs, vol } from "memfs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { GlobalConfig } from "../../lib/config.js";
 
 vi.mock("node:fs", () => fs);
 vi.mock("node:fs/promises", () => fs.promises);
@@ -11,25 +11,24 @@ vi.mock("../../utils/version.js", () => ({
   getVersion: () => "0.0.1",
 }));
 
-const setupMockFS = (config: GlobalConfig = {}) => {
-  const detentDir = "/test-detent";
-  const configPath = join(detentDir, "detent.json");
+const MOCK_REPO_ROOT = "/mock-repo";
+const MOCK_DETENT_DIR = join(MOCK_REPO_ROOT, ".detent");
+const MOCK_CONFIG_PATH = join(MOCK_DETENT_DIR, "config.json");
 
+const setupMockFS = (config: GlobalConfig = {}) => {
   vol.fromJSON({
-    [configPath]: JSON.stringify(config, null, 2),
+    [MOCK_CONFIG_PATH]: JSON.stringify(config, null, 2),
   });
 
-  process.env.DETENT_HOME = detentDir;
   process.env.ANTHROPIC_API_KEY = undefined;
 };
 
 const cleanupMockFS = () => {
   vol.reset();
-  process.env.DETENT_HOME = undefined;
 };
 
 describe("ConfigEditor", () => {
-  let ConfigEditor: () => JSX.Element;
+  let ConfigEditor: (props: { repoRoot: string }) => JSX.Element;
 
   beforeEach(async () => {
     const module = await import("./edit.js");
@@ -50,7 +49,7 @@ describe("ConfigEditor", () => {
         timeoutMins: 15,
       });
 
-      const { lastFrame } = render(<ConfigEditor />);
+      const { lastFrame } = render(<ConfigEditor repoRoot={MOCK_REPO_ROOT} />);
       const output = lastFrame() ?? "";
 
       expect(output).toContain("API Key");
@@ -67,7 +66,7 @@ describe("ConfigEditor", () => {
         model: "claude-opus-4-5",
       });
 
-      const { lastFrame } = render(<ConfigEditor />);
+      const { lastFrame } = render(<ConfigEditor repoRoot={MOCK_REPO_ROOT} />);
       const output = lastFrame() ?? "";
 
       expect(output).toContain("****-key");
@@ -79,7 +78,7 @@ describe("ConfigEditor", () => {
     it("should handle empty config file", () => {
       setupMockFS({});
 
-      const { lastFrame } = render(<ConfigEditor />);
+      const { lastFrame } = render(<ConfigEditor repoRoot={MOCK_REPO_ROOT} />);
       const output = lastFrame() ?? "";
 
       expect(output).toContain("not set");
@@ -90,9 +89,8 @@ describe("ConfigEditor", () => {
 
     it("should handle non-existent config file", () => {
       vol.fromJSON({});
-      process.env.DETENT_HOME = "/test-detent";
 
-      const { lastFrame } = render(<ConfigEditor />);
+      const { lastFrame } = render(<ConfigEditor repoRoot={MOCK_REPO_ROOT} />);
       const output = lastFrame() ?? "";
 
       expect(output).toContain("not set");
@@ -104,7 +102,7 @@ describe("ConfigEditor", () => {
     it("should render header with version and command name", () => {
       setupMockFS({});
 
-      const { lastFrame } = render(<ConfigEditor />);
+      const { lastFrame } = render(<ConfigEditor repoRoot={MOCK_REPO_ROOT} />);
       const output = lastFrame() ?? "";
 
       expect(output).toContain("Detent v0.0.1");
@@ -114,7 +112,7 @@ describe("ConfigEditor", () => {
     it("should render all config field labels", () => {
       setupMockFS({});
 
-      const { lastFrame } = render(<ConfigEditor />);
+      const { lastFrame } = render(<ConfigEditor repoRoot={MOCK_REPO_ROOT} />);
       const output = lastFrame() ?? "";
 
       expect(output).toContain("API Key");
@@ -127,7 +125,7 @@ describe("ConfigEditor", () => {
     it("should show focus indicator on first field", () => {
       setupMockFS({});
 
-      const { lastFrame } = render(<ConfigEditor />);
+      const { lastFrame } = render(<ConfigEditor repoRoot={MOCK_REPO_ROOT} />);
       const output = lastFrame() ?? "";
 
       expect(output).toContain("›");
@@ -136,7 +134,7 @@ describe("ConfigEditor", () => {
     it("should show context-appropriate help text", () => {
       setupMockFS({});
 
-      const { lastFrame } = render(<ConfigEditor />);
+      const { lastFrame } = render(<ConfigEditor repoRoot={MOCK_REPO_ROOT} />);
       const output = lastFrame() ?? "";
 
       expect(output).toContain("type or paste");
@@ -145,7 +143,7 @@ describe("ConfigEditor", () => {
     it("should show keyboard shortcuts in footer", () => {
       setupMockFS({});
 
-      const { lastFrame } = render(<ConfigEditor />);
+      const { lastFrame } = render(<ConfigEditor repoRoot={MOCK_REPO_ROOT} />);
       const output = lastFrame() ?? "";
 
       expect(output).toContain("↑↓ navigate");
@@ -160,7 +158,7 @@ describe("ConfigEditor", () => {
         apiKey: "sk-ant-api03-secret-key-abcdef1234",
       });
 
-      const { lastFrame } = render(<ConfigEditor />);
+      const { lastFrame } = render(<ConfigEditor repoRoot={MOCK_REPO_ROOT} />);
       const output = lastFrame() ?? "";
 
       expect(output).toContain("****1234");
@@ -171,7 +169,7 @@ describe("ConfigEditor", () => {
     it("should show 'not set' for missing API key", () => {
       setupMockFS({});
 
-      const { lastFrame } = render(<ConfigEditor />);
+      const { lastFrame } = render(<ConfigEditor repoRoot={MOCK_REPO_ROOT} />);
       const output = lastFrame() ?? "";
 
       const lines = output.split("\n");
@@ -188,7 +186,7 @@ describe("ConfigEditor", () => {
         budgetMonthlyUsd: 250,
       });
 
-      const { lastFrame } = render(<ConfigEditor />);
+      const { lastFrame } = render(<ConfigEditor repoRoot={MOCK_REPO_ROOT} />);
       const output = lastFrame() ?? "";
 
       expect(output).toContain("$12.50");
@@ -201,7 +199,7 @@ describe("ConfigEditor", () => {
         budgetMonthlyUsd: 0,
       });
 
-      const { lastFrame } = render(<ConfigEditor />);
+      const { lastFrame } = render(<ConfigEditor repoRoot={MOCK_REPO_ROOT} />);
       const output = lastFrame() ?? "";
 
       const lines = output.split("\n");
@@ -219,7 +217,7 @@ describe("ConfigEditor", () => {
         timeoutMins: 30,
       });
 
-      const { lastFrame } = render(<ConfigEditor />);
+      const { lastFrame } = render(<ConfigEditor repoRoot={MOCK_REPO_ROOT} />);
       const output = lastFrame() ?? "";
 
       expect(output).toContain("30 min");
@@ -230,7 +228,7 @@ describe("ConfigEditor", () => {
         timeoutMins: 0,
       });
 
-      const { lastFrame } = render(<ConfigEditor />);
+      const { lastFrame } = render(<ConfigEditor repoRoot={MOCK_REPO_ROOT} />);
       const output = lastFrame() ?? "";
 
       const lines = output.split("\n");
@@ -242,7 +240,7 @@ describe("ConfigEditor", () => {
     it("should show 'default' for empty model", () => {
       setupMockFS({});
 
-      const { lastFrame } = render(<ConfigEditor />);
+      const { lastFrame } = render(<ConfigEditor repoRoot={MOCK_REPO_ROOT} />);
       const output = lastFrame() ?? "";
 
       const lines = output.split("\n");
@@ -262,7 +260,7 @@ describe("ConfigEditor", () => {
         timeoutMins: 60,
       });
 
-      const { lastFrame } = render(<ConfigEditor />);
+      const { lastFrame } = render(<ConfigEditor repoRoot={MOCK_REPO_ROOT} />);
       const output = lastFrame() ?? "";
 
       expect(output).toContain("****test");
@@ -282,7 +280,9 @@ describe("ConfigEditor", () => {
       for (const model of models) {
         setupMockFS({ model });
 
-        const { lastFrame } = render(<ConfigEditor />);
+        const { lastFrame } = render(
+          <ConfigEditor repoRoot={MOCK_REPO_ROOT} />
+        );
         const output = lastFrame() ?? "";
 
         expect(output).toContain(model);

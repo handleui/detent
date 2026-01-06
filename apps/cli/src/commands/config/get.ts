@@ -1,6 +1,6 @@
 import { findGitRoot } from "@detent/git";
-import { loadConfig } from "@detent/persistence";
 import { defineCommand } from "citty";
+import { loadConfig } from "../../lib/config.js";
 import { CONFIG_KEYS, isConfigKey } from "./constants.js";
 
 export const configGetCommand = defineCommand({

@@ -8,11 +8,7 @@
       "outputs": [".next/**", "!.next/cache/**", "dist/**"]
     },
     "@detent/cli#build": {
-      "dependsOn": [
-        "@detent/persistence#build",
-        "@detent/healing#build",
-        "@detent/git#build"
-      ],
+      "dependsOn": ["@detent/healing#build", "@detent/git#build"],
       "inputs": [
         "src/**/*.ts",
         "src/**/*.tsx",
