@@ -92,7 +92,6 @@ const compileBinary = async (
       "bun",
       "build",
       "--compile",
-      "--bytecode",
       `--target=${target.bun}`,
       `--define=DETENT_VERSION=${JSON.stringify(version)}`,
       `--define=process.env.NODE_ENV="production"`,
