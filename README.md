@@ -1,6 +1,6 @@
 # Detent
 
-Run your CI/CD locally, catch-all and get a green check in one go
+Self-healing CI/CD that runs on PR's, it is very much NOT ready, please, avoid installing while I fix my mess
 
 ## Install
 
@@ -11,33 +11,17 @@ curl -fsSL https://detent.sh/install.sh | bash
 Installs `dt` to `~/.local/bin`. Update with `dt update`.
 
 ## Requirements
+BYOK for convenience, more providers on the way
 
-- Docker
 - Anthropic API key (for `heal` command)
 
 ## Usage
 
 ```bash
-dt check       # run workflows locally, extract errors
-dt heal        # auto-fix errors with Claude
-dt workflows   # enable/disable jobs
+dt mock        # run workflows locally with act, it's a BETA, act is very choppy and needs a lot more attention
 dt config      # manage settings
+dt init        # gets your api key for AI healing, probably about to be deprecated since we're moving to the cloud
 ```
-
-## Setup
-
-```bash
-export ANTHROPIC_API_KEY=sk-...
-# or
-dt config set api-key sk-...
-```
-
-## Workflow
-
-1. `dt check` — see CI errors locally
-2. `dt heal` — let Claude fix them
-3. `dt check` — verify fixes
-4. Push
 
 ## Platforms
 
