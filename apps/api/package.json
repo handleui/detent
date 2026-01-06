@@ -1,0 +1,27 @@
+{
+  "name": "@detent/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "build": "wrangler deploy --dry-run --outdir=dist",
+    "deploy": "wrangler deploy --minify",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "cf-typegen": "wrangler types --env-interface CloudflareBindings"
+  },
+  "dependencies": {
+    "@detent/parser": "*",
+    "@detent/healing": "*",
+    "hono": "^4.11.3"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250106.0",
+    "@types/node": "^25.0.3",
+    "typescript": "5.9.2",
+    "vitest": "^4.0.16",
+    "wrangler": "^4.4.0"
+  }
+}
