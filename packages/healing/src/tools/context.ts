@@ -7,6 +7,14 @@ import { errorResult, type ToolResult } from "./types.js";
 export type CommandApprovalDecision = "allow" | "deny" | "always" | "never";
 
 /**
+ * Identifies a failing workflow step.
+ */
+export interface FailingStep {
+  jobId: string;
+  stepIndex: number;
+}
+
+/**
  * Execution context for tools.
  */
 export interface ToolContext {
@@ -29,6 +37,12 @@ export interface ToolContext {
 
   /** Saves approved command to config */
   commandPersister?: (cmd: string) => Promise<void>;
+
+  /** Step commands by job ID (for run_check verification) */
+  stepCommands?: Map<string, (string | null)[]>;
+
+  /** Which step failed (for run_check verification) */
+  failingStep?: FailingStep;
 }
 
 /**

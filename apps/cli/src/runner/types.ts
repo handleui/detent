@@ -34,6 +34,7 @@ export interface ManifestJob {
   readonly uses?: string;
   readonly sensitive: boolean;
   readonly steps: readonly string[];
+  readonly commands?: readonly (string | null)[];
   readonly needs?: readonly string[];
 }
 
@@ -176,6 +177,16 @@ export interface ParsedError {
   readonly filePath?: string;
 
   /**
+   * Line number in the file (1-indexed).
+   */
+  readonly line?: number;
+
+  /**
+   * Column number in the file (1-indexed).
+   */
+  readonly column?: number;
+
+  /**
    * Human-readable error message.
    */
   readonly message: string;
@@ -184,6 +195,21 @@ export interface ParsedError {
    * Error severity level (e.g., "error", "warning").
    */
   readonly severity: string;
+
+  /**
+   * Rule ID from linter/compiler (e.g., "TS2322", "no-var").
+   */
+  readonly ruleId?: string;
+
+  /**
+   * Error category (lint, type-check, test, compile, etc.).
+   */
+  readonly category?: string;
+
+  /**
+   * Source tool that generated the error (eslint, typescript, go, etc.).
+   */
+  readonly source?: string;
 }
 
 /**

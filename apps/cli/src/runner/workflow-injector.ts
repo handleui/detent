@@ -20,6 +20,7 @@ export interface ManifestJob {
   readonly uses?: string;
   readonly sensitive: boolean;
   readonly steps: readonly string[];
+  readonly commands?: readonly (string | null)[];
   readonly needs?: readonly string[];
 }
 
@@ -312,6 +313,22 @@ const sanitizeForShellEcho = (s: string): string => {
 };
 
 /**
+ * Extracts step display names and run commands from a job.
+ */
+const extractStepsAndCommands = (
+  jobObj: Record<string, unknown>
+): { steps: readonly string[]; commands: readonly (string | null)[] } => {
+  if (typeof jobObj.uses === "string" || !Array.isArray(jobObj.steps)) {
+    return { steps: [], commands: [] };
+  }
+  const steps = jobObj.steps as readonly Record<string, unknown>[];
+  return {
+    steps: steps.map(getStepDisplayName),
+    commands: steps.map((s) => (typeof s.run === "string" ? s.run : null)),
+  };
+};
+
+/**
  * Builds a manifest from workflow jobs.
  */
 export const buildManifest = (
@@ -343,14 +360,8 @@ export const buildManifest = (
     };
 
     const sensitive = skipSensitive && isSensitiveJob(jobId, jobForCheck);
-
-    // Determine steps for manifest (reusable workflows have no steps)
-    let manifestSteps: readonly string[] = [];
-    if (typeof jobObj.uses !== "string" && Array.isArray(jobObj.steps)) {
-      manifestSteps = (jobObj.steps as readonly Record<string, unknown>[]).map(
-        getStepDisplayName
-      );
-    }
+    const { steps: manifestSteps, commands: manifestCommands } =
+      extractStepsAndCommands(jobObj);
 
     const manifestJob: ManifestJob = {
       id: jobId,
@@ -359,6 +370,7 @@ export const buildManifest = (
       uses: typeof jobObj.uses === "string" ? jobObj.uses : undefined,
       sensitive,
       steps: manifestSteps,
+      commands: manifestCommands.length > 0 ? manifestCommands : undefined,
       needs: parseNeeds(jobObj.needs),
     };
 

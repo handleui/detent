@@ -2,6 +2,7 @@
 
 export type {
   CommandApprovalDecision,
+  FailingStep,
   PathValidationResult,
   ToolContext,
 } from "./context.js";
@@ -18,6 +19,7 @@ export { globTool } from "./glob.js";
 export { grepTool } from "./grep.js";
 export { readFileTool } from "./read-file.js";
 export { createToolRegistry, ToolRegistry } from "./registry.js";
+export { runCheckTool } from "./run-check.js";
 export { runCommandTool } from "./run-command.js";
 export type { Tool, ToolResult } from "./types.js";
 export { errorResult, SchemaBuilder, successResult } from "./types.js";
@@ -26,6 +28,7 @@ import { editFileTool } from "./edit-file.js";
 import { globTool } from "./glob.js";
 import { grepTool } from "./grep.js";
 import { readFileTool } from "./read-file.js";
+import { runCheckTool } from "./run-check.js";
 import { runCommandTool } from "./run-command.js";
 import type { Tool } from "./types.js";
 
@@ -37,5 +40,6 @@ export const getAllTools = (): Tool[] => [
   editFileTool,
   globTool,
   grepTool,
+  runCheckTool,
   runCommandTool,
 ];
