@@ -10,7 +10,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { compare, valid } from "semver";
 
-const MANIFEST_URL = "https://detent.sh/api/binaries/releases/manifest.json";
+const MANIFEST_URL = "https://detent.sh/api/cli/manifest.json";
 const INSTALL_SCRIPT_URL = "https://detent.sh/install.sh";
 const CACHE_FILE = "update-cache.json";
 const CACHE_DURATION_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -283,13 +283,15 @@ export const checkForUpdateCached = (
  * The subprocess runs independently and won't block process exit.
  */
 const spawnBackgroundRefresh = (): void => {
+  const manifestUrl = MANIFEST_URL;
+  const cachePath = getCachePath();
   const script = `
     const https = require('https');
     const fs = require('fs');
     const path = require('path');
 
-    const MANIFEST_URL = '${MANIFEST_URL}';
-    const CACHE_PATH = '${getCachePath()}';
+    const MANIFEST_URL = '${manifestUrl}';
+    const CACHE_PATH = '${cachePath}';
 
     https.get(MANIFEST_URL, { timeout: 5000 }, (res) => {
       if (res.statusCode !== 200) return;

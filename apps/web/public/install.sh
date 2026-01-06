@@ -9,8 +9,8 @@
 set -eu
 
 # Configuration
-BASE_URL="${DETENT_BASE_URL:-https://detent.sh/api/binaries}"
-MANIFEST_URL="${BASE_URL}/releases/manifest.json"
+BASE_URL="${DETENT_BASE_URL:-https://detent.sh/api/cli}"
+MANIFEST_URL="${BASE_URL}/manifest.json"
 BINARY_NAME="dt"
 
 # Colors (if terminal supports them)
@@ -185,8 +185,8 @@ main() {
     fi
 
     archive_name="${BINARY_NAME}-${os}-${arch}.${archive_ext}"
-    download_url="${BASE_URL}/releases/${version}/${archive_name}"
-    checksums_url="${BASE_URL}/releases/${version}/checksums.txt"
+    download_url="${BASE_URL}/${version}/${archive_name}"
+    checksums_url="${BASE_URL}/${version}/checksums.txt"
 
     # Create temp directory
     tmp_dir=$(mktemp -d)

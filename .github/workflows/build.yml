@@ -18,7 +18,6 @@ on:
         type: string
 
 permissions:
-  contents: write
   id-token: write
 
 jobs:
@@ -77,27 +76,6 @@ jobs:
             --output-signature=apps/cli/dist/checksums.txt.sig \
             --yes \
             apps/cli/dist/checksums.txt
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ inputs.tag || github.ref_name }}
-          name: ${{ inputs.tag || github.ref_name }}
-          draft: false
-          prerelease: ${{ contains(inputs.tag || github.ref_name, '-') }}
-          files: |
-            apps/cli/dist/*.tar.gz
-            apps/cli/dist/*.zip
-            apps/cli/dist/checksums.txt
-            apps/cli/dist/checksums.txt.sig
-            apps/cli/dist/checksums.txt.pem
-          body: |
-            ## Install
-            ```bash
-            curl -fsSL https://detent.sh/install.sh | bash
-            ```
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload to Blob
         run: bun run upload:binaries

@@ -19,7 +19,7 @@ const CLI_ROOT = join(__dirname, "..");
 const DIST_DIR = join(CLI_ROOT, "dist");
 const PACKAGE_JSON_PATH = join(CLI_ROOT, "package.json");
 
-const MANIFEST_PATH = "releases/manifest.json";
+const MANIFEST_PATH = "cli/manifest.json";
 const MAX_VERSIONS_TO_KEEP = 20;
 
 const log = (msg: string) => console.log(`[upload] ${msg}`);
@@ -78,7 +78,7 @@ const uploadChecksums = async (version: string): Promise<void> => {
   const checksumsPath = join(DIST_DIR, "checksums.txt");
   try {
     const content = await readFile(checksumsPath);
-    const blobPath = `releases/v${version}/checksums.txt`;
+    const blobPath = `cli/v${version}/checksums.txt`;
     await withRetry(
       () =>
         put(blobPath, content, {
@@ -99,7 +99,7 @@ const uploadChecksums = async (version: string): Promise<void> => {
     const filePath = join(DIST_DIR, filename);
     try {
       const content = await readFile(filePath);
-      const blobPath = `releases/v${version}/${filename}`;
+      const blobPath = `cli/v${version}/${filename}`;
       await withRetry(
         () =>
           put(blobPath, content, {
@@ -170,7 +170,7 @@ const uploadBinary = async (
   version: string
 ): Promise<void> => {
   const { filename, path } = archive;
-  const blobPath = `releases/v${version}/${filename}`;
+  const blobPath = `cli/v${version}/${filename}`;
 
   log(`Uploading ${filename}...`);
   const content = await readFile(path);
@@ -199,7 +199,7 @@ const cleanupOldVersions = async (manifest: Manifest): Promise<void> => {
 
   for (const version of toDelete) {
     try {
-      const { blobs } = await list({ prefix: `releases/${version}/` });
+      const { blobs } = await list({ prefix: `cli/${version}/` });
       if (blobs.length > 0) {
         await del(blobs.map((b) => b.url));
         log(`  Deleted ${version} (${blobs.length} files)`);

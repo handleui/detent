@@ -12,11 +12,55 @@ import { createReadStream } from "node:fs";
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  formatChecksumLine,
-  TARGETS,
-  type Target,
-} from "../src/build/targets.ts";
+
+interface Target {
+  bun: string;
+  os: string;
+  arch: string;
+  ext: string;
+  archive: "tar.gz" | "zip";
+}
+
+const TARGETS: Target[] = [
+  {
+    bun: "bun-linux-x64",
+    os: "linux",
+    arch: "amd64",
+    ext: "",
+    archive: "tar.gz",
+  },
+  {
+    bun: "bun-linux-arm64",
+    os: "linux",
+    arch: "arm64",
+    ext: "",
+    archive: "tar.gz",
+  },
+  {
+    bun: "bun-darwin-x64",
+    os: "darwin",
+    arch: "amd64",
+    ext: "",
+    archive: "tar.gz",
+  },
+  {
+    bun: "bun-darwin-arm64",
+    os: "darwin",
+    arch: "arm64",
+    ext: "",
+    archive: "tar.gz",
+  },
+  {
+    bun: "bun-windows-x64",
+    os: "windows",
+    arch: "amd64",
+    ext: ".exe",
+    archive: "zip",
+  },
+];
+
+const formatChecksumLine = (checksum: string, filename: string): string =>
+  `${checksum}  ${filename}`;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CLI_ROOT = join(__dirname, "..");
