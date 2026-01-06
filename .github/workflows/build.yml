@@ -4,20 +4,15 @@ on:
   push:
     tags:
       - "v*"
-  workflow_call:
-    inputs:
-      tag:
-        description: "Tag to build"
-        required: true
-        type: string
   workflow_dispatch:
     inputs:
-      tag:
-        description: "Tag to build (e.g., v0.9.0)"
-        required: true
+      ref:
+        description: "Tag or ref to build (e.g., v0.10.0). Defaults to latest tag."
+        required: false
         type: string
 
 permissions:
+  contents: write
   id-token: write
 
 jobs:
@@ -26,11 +21,29 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
+      - name: Determine ref to build
+        id: ref
+        run: |
+          if [ -n "${{ inputs.ref }}" ]; then
+            echo "ref=${{ inputs.ref }}" >> $GITHUB_OUTPUT
+          else
+            echo "ref=${{ github.ref }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ steps.ref.outputs.ref }}
+
+      - name: Extract version from ref
+        id: version
+        run: |
+          REF="${{ steps.ref.outputs.ref }}"
+          # Extract version from tag (e.g., refs/tags/v0.10.0 -> 0.10.0, or v0.10.0 -> 0.10.0)
+          VERSION=$(echo "$REF" | sed 's|refs/tags/||' | sed 's|^v||')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "tag=v$VERSION" >> $GITHUB_OUTPUT
+          echo "Building version: $VERSION"
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -40,26 +53,33 @@ jobs:
       - name: Install dependencies
         run: bun install
 
-      - name: Build workspace packages
+      - name: Build workspace
         run: bun run build
 
       - name: Build binaries
         run: bun run build:binaries
         working-directory: apps/cli
 
-      - name: Verify Linux binary version
+      - name: Verify binary version
         run: |
           cd apps/cli/dist
           tar -xzf dt-linux-amd64.tar.gz
 
-          # Get version from binary
-          BINARY_VERSION=$(./dt-linux-amd64 version | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+          # Get version from binary (handles prerelease versions like 0.10.0-beta.1)
+          BINARY_VERSION=$(./dt-linux-amd64 version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?' || echo "")
 
           # Get version from package.json
           PKG_VERSION=$(jq -r .version ../package.json)
 
           echo "Binary version: $BINARY_VERSION"
           echo "Package version: $PKG_VERSION"
+
+          if [ -z "$BINARY_VERSION" ]; then
+            echo "ERROR: Could not extract version from binary output"
+            echo "Binary output:"
+            ./dt-linux-amd64 version || true
+            exit 1
+          fi
 
           if [ "$BINARY_VERSION" != "$PKG_VERSION" ]; then
             echo "ERROR: Version mismatch!"
@@ -85,3 +105,16 @@ jobs:
         working-directory: apps/cli
         env:
           BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }}
+          generate_release_notes: true
+          files: |
+            apps/cli/dist/*.tar.gz
+            apps/cli/dist/*.zip
+            apps/cli/dist/checksums.txt
+            apps/cli/dist/checksums.txt.sig
+            apps/cli/dist/checksums.txt.pem
