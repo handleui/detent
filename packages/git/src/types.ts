@@ -2,7 +2,7 @@ export type RunID = string & { readonly __brand: "RunID" };
 export type CommitSHA = string & { readonly __brand: "CommitSHA" };
 export type TreeHash = string & { readonly __brand: "TreeHash" };
 
-export interface WorktreeInfo {
+export interface CloneInfo {
   readonly path: string;
   readonly commitSHA: CommitSHA;
 }
@@ -23,13 +23,13 @@ export interface GitExecResult {
   readonly stderr: string;
 }
 
-export class ErrWorktreeNotInitialized extends Error {
+export class ErrCloneNotInitialized extends Error {
   constructor(
-    message = "worktree not initialized - Prepare() must be called before Run()"
+    message = "clone not initialized - Prepare() must be called before Run()"
   ) {
     super(message);
-    this.name = "ErrWorktreeNotInitialized";
-    Object.setPrototypeOf(this, ErrWorktreeNotInitialized.prototype);
+    this.name = "ErrCloneNotInitialized";
+    Object.setPrototypeOf(this, ErrCloneNotInitialized.prototype);
   }
 }
 

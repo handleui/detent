@@ -52,9 +52,9 @@ export interface Manifest {
  */
 export interface PrepareResult {
   /**
-   * Absolute path to the created worktree for isolated execution.
+   * Absolute path to the created clone for isolated execution.
    */
-  readonly worktreePath: string;
+  readonly clonePath: string;
 
   /**
    * Unique identifier for this run (used for tracking and cleanup).
@@ -84,7 +84,7 @@ export interface PrepareResult {
   readonly skippedJobs?: readonly string[];
 
   /**
-   * Cleanup function to release worktree lock and remove the worktree.
+   * Cleanup function to release clone lock and remove the clone.
    * Has built-in timeout protection (30s).
    */
   readonly cleanup: () => Promise<void>;

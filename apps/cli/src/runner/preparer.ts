@@ -2,8 +2,8 @@ import { readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   computeCurrentRunID,
-  createEphemeralWorktreePath,
-  prepareWorktree,
+  createEphemeralClonePath,
+  prepareClone,
 } from "@detent/git";
 import { load } from "js-yaml";
 import {
@@ -21,7 +21,7 @@ import type { PrepareResult, RunConfig, WorkflowFile } from "./types.js";
  * Responsibilities:
  * 1. Run preflight checks (git, act, docker)
  * 2. Discover workflow files in .github/workflows
- * 3. Create ephemeral worktree for isolated execution
+ * 3. Create ephemeral clone for isolated execution
  * 4. Inject continue-on-error into workflow files
  */
 export class WorkflowPreparer {
@@ -36,7 +36,7 @@ export class WorkflowPreparer {
   /**
    * Prepares the execution environment.
    *
-   * @returns PrepareResult with worktree path, run ID, and workflows
+   * @returns PrepareResult with clone path, run ID, and workflows
    * @throws Error if preflight checks fail or workflows cannot be prepared
    */
   async prepare(): Promise<PrepareResult> {
@@ -76,15 +76,12 @@ export class WorkflowPreparer {
       console.log(
         `[Prepare] ✓ Found ${workflows.length} workflow(s): ${workflows.map((w) => w.name).join(", ")}\n`
       );
-      console.log("[Prepare] Creating worktree...");
+      console.log("[Prepare] Creating clone...");
     }
 
-    this.debugLogger?.logPhase("Prepare", "Creating worktree");
-    const { worktreePath, runID, cleanup } = await this.createWorktree();
-    this.debugLogger?.logPhase(
-      "Prepare",
-      `Worktree created at: ${worktreePath}`
-    );
+    this.debugLogger?.logPhase("Prepare", "Creating clone");
+    const { clonePath, runID, cleanup } = await this.createClone();
+    this.debugLogger?.logPhase("Prepare", `Clone created at: ${clonePath}`);
     this.debugLogger?.logPhase("Prepare", `Run ID: ${runID}`);
 
     this.debugLogger?.logPhase(
@@ -92,16 +89,16 @@ export class WorkflowPreparer {
       `Injecting continue-on-error into ${workflows.length} workflow(s)`
     );
     const { skippedWorkflows, skippedJobs, manifest } =
-      await this.injectWorkflows(worktreePath, workflows);
+      await this.injectWorkflows(clonePath, workflows);
 
     if (this.config.verbose) {
-      console.log("[Prepare] ✓ Worktree ready\n");
+      console.log("[Prepare] ✓ Clone ready\n");
     }
 
     this.debugLogger?.endPhase("Prepare");
 
     return {
-      worktreePath,
+      clonePath,
       runID,
       workflows,
       manifest,
@@ -294,26 +291,26 @@ export class WorkflowPreparer {
   }
 
   /**
-   * Creates an ephemeral git worktree for isolated execution.
+   * Creates an ephemeral git clone for isolated execution.
    *
-   * @returns Object containing worktree path, run ID, and cleanup function
-   * @throws Error if worktree creation fails
+   * @returns Object containing clone path, run ID, and cleanup function
+   * @throws Error if clone creation fails
    */
-  private async createWorktree(): Promise<{
-    worktreePath: string;
+  private async createClone(): Promise<{
+    clonePath: string;
     runID: string;
     cleanup: () => Promise<void>;
   }> {
     const runIDInfo = await computeCurrentRunID(this.config.repoRoot);
-    const worktreePath = createEphemeralWorktreePath(runIDInfo.runID);
+    const clonePath = createEphemeralClonePath(runIDInfo.runID);
 
-    const { cleanup } = await prepareWorktree({
+    const { cleanup } = await prepareClone({
       repoRoot: this.config.repoRoot,
-      worktreePath,
+      clonePath,
     });
 
     return {
-      worktreePath,
+      clonePath,
       runID: runIDInfo.runID,
       cleanup,
     };
@@ -330,13 +327,13 @@ export class WorkflowPreparer {
    * its first job will emit the complete manifest. The parser handles duplicate
    * manifests by using the first one received.
    *
-   * @param worktreePath - Path to the worktree
+   * @param clonePath - Path to the clone
    * @param workflows - Array of workflow files to inject
    * @returns Object containing lists of skipped workflows and jobs
    * @throws Error if injection or writing fails
    */
   private async injectWorkflows(
-    worktreePath: string,
+    clonePath: string,
     workflows: readonly WorkflowFile[]
   ): Promise<{
     skippedWorkflows: readonly string[];
@@ -371,7 +368,7 @@ export class WorkflowPreparer {
     );
 
     await this.writeInjectedWorkflows(
-      worktreePath,
+      clonePath,
       parsedWorkflows,
       manifestB64,
       injectMarkersWithManifest,
@@ -533,10 +530,10 @@ export class WorkflowPreparer {
   }
 
   /**
-   * Writes injected workflows to the worktree.
+   * Writes injected workflows to the clone.
    */
   private async writeInjectedWorkflows(
-    worktreePath: string,
+    clonePath: string,
     parsedWorkflows: readonly ParsedWorkflow[],
     manifestB64: string,
     injectMarkersWithManifest: (
@@ -555,7 +552,7 @@ export class WorkflowPreparer {
           manifestJobId
         );
 
-        const targetPath = join(worktreePath, ".github", "workflows", pw.name);
+        const targetPath = join(clonePath, ".github", "workflows", pw.name);
 
         try {
           await writeFile(targetPath, finalContent, "utf-8");

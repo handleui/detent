@@ -6,7 +6,7 @@ import type { CommitSHA, RunID, RunIDInfo, TreeHash } from "./types.js";
 import { isValidRunID } from "./utils.js";
 
 const RUNID_LENGTH = 16;
-const WORKTREE_PREFIX = "detent-" as const;
+const CLONE_PREFIX = "detent-" as const;
 
 export const computeRunID = (
   treeHash: TreeHash,
@@ -29,7 +29,7 @@ export const computeCurrentRunID = async (
   };
 };
 
-export const createEphemeralWorktreePath = (runID: RunID): string => {
+export const createEphemeralClonePath = (runID: RunID): string => {
   if (!isValidRunID(runID)) {
     throw new Error("invalid run ID: must be a hex string");
   }
@@ -38,10 +38,7 @@ export const createEphemeralWorktreePath = (runID: RunID): string => {
   const timestamp = Date.now().toString(36);
   const randomSuffix = Math.random().toString(36).substring(2, 6);
   const uniqueSuffix = `${timestamp}-${randomSuffix}`;
-  const proposedPath = join(
-    tempDir,
-    `${WORKTREE_PREFIX}${runID}-${uniqueSuffix}`
-  );
+  const proposedPath = join(tempDir, `${CLONE_PREFIX}${runID}-${uniqueSuffix}`);
 
   const normalizedTemp = normalize(resolve(tempDir));
   const normalizedProposed = normalize(resolve(proposedPath));

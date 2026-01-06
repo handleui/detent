@@ -133,7 +133,7 @@ describe("validateApiKey", () => {
   });
 
   test("rejects API key that's too long", () => {
-    const result = validateApiKey("sk-ant-" + "a".repeat(200));
+    const result = validateApiKey(`sk-ant-${"a".repeat(200)}`);
     expect(result.valid).toBe(false);
     expect(result.error).toContain("too long");
   });

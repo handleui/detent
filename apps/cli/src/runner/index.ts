@@ -14,10 +14,10 @@ import type {
 
 /**
  * Orchestrates the complete workflow execution lifecycle:
- * 1. Prepare: Set up worktree and discover workflows
+ * 1. Prepare: Set up clone and discover workflows
  * 2. Execute: Run workflows using act
  * 3. Process: Parse execution output for errors
- * 4. Cleanup: Remove worktree and temporary resources
+ * 4. Cleanup: Remove clone and temporary resources
  */
 export class CheckRunner {
   private readonly config: RunConfig;
@@ -58,7 +58,7 @@ export class CheckRunner {
     prepareResult: PrepareResult
   ): void => {
     this.debugLogger?.log(`Repository: ${this.config.repoRoot}`);
-    this.debugLogger?.log(`Worktree: ${prepareResult.worktreePath}`);
+    this.debugLogger?.log(`Clone: ${prepareResult.clonePath}`);
     this.debugLogger?.log(
       `Workflows: ${prepareResult.workflows.map((w) => w.name).join(", ")}`
     );
@@ -226,7 +226,7 @@ export class CheckRunner {
   };
 
   /**
-   * Performs cleanup of worktree resources.
+   * Performs cleanup of clone resources.
    */
   private readonly performCleanup = async (
     prepareResult: PrepareResult | undefined
@@ -237,9 +237,9 @@ export class CheckRunner {
 
     try {
       if (this.config.verbose) {
-        console.log("[Cleanup] Removing worktree...");
+        console.log("[Cleanup] Removing clone...");
       }
-      this.debugLogger?.logPhase("Cleanup", "Removing worktree");
+      this.debugLogger?.logPhase("Cleanup", "Removing clone");
       await this.cleanup(prepareResult);
       this.debugLogger?.logPhase("Cleanup", "Cleanup complete");
       if (this.config.verbose) {
@@ -305,7 +305,7 @@ export class CheckRunner {
   /**
    * Prepares the execution environment.
    *
-   * @returns Preparation result with worktree path, run ID, and workflows
+   * @returns Preparation result with clone path, run ID, and workflows
    */
   private async prepare(): Promise<PrepareResult> {
     const preparer = new WorkflowPreparer(this.config, this.debugLogger);
@@ -329,7 +329,7 @@ export class CheckRunner {
 
   /**
    * Cleans up resources created during execution.
-   * Uses the cleanup function from prepareWorktree which has:
+   * Uses the cleanup function from prepareClone which has:
    * - Built-in timeout protection (30s)
    * - Lock release before removal
    *
@@ -342,7 +342,7 @@ export class CheckRunner {
       const errorMessage =
         error instanceof Error ? error.message : String(error);
 
-      // Ignore errors about non-existent worktrees (already cleaned up)
+      // Ignore errors about non-existent clones (already cleaned up)
       if (
         errorMessage.includes("is not a working tree") ||
         errorMessage.includes("not found") ||
@@ -351,7 +351,7 @@ export class CheckRunner {
         return;
       }
 
-      throw new Error(`Failed to cleanup worktree: ${errorMessage}`);
+      throw new Error(`Failed to cleanup clone: ${errorMessage}`);
     }
   }
 

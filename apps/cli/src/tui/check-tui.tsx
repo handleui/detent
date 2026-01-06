@@ -29,6 +29,165 @@ const ShimmerText = ({ text, isLoading }: ShimmerTextProps): JSX.Element => {
   return <Text>{shimmerOutput}</Text>;
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Topological Sort & Depth Calculation
+// ─────────────────────────────────────────────────────────────────────────────
+
+type ManifestJob = ManifestEvent["jobs"][number];
+
+/**
+ * Calculates depth for each job based on dependency chain.
+ * Depth = max(depths of dependencies) + 1, or 0 if no dependencies.
+ */
+const calculateJobDepths = (
+  jobs: readonly { id: string; needs?: readonly string[] }[]
+): ReadonlyMap<string, number> => {
+  const depths = new Map<string, number>();
+  const jobById = new Map(jobs.map((j) => [j.id, j]));
+
+  const getDepth = (id: string, visited: Set<string>): number => {
+    if (depths.has(id)) {
+      return depths.get(id) ?? 0;
+    }
+
+    // Cycle detection - treat as root
+    if (visited.has(id)) {
+      return 0;
+    }
+
+    const job = jobById.get(id);
+    if (!job?.needs || job.needs.length === 0) {
+      depths.set(id, 0);
+      return 0;
+    }
+
+    visited.add(id);
+
+    let maxDepDepth = -1;
+    for (const depId of job.needs) {
+      const depDepth = getDepth(depId, visited);
+      if (depDepth > maxDepDepth) {
+        maxDepDepth = depDepth;
+      }
+    }
+
+    const depth = maxDepDepth + 1;
+    depths.set(id, depth);
+    return depth;
+  };
+
+  for (const job of jobs) {
+    getDepth(job.id, new Set());
+  }
+
+  return depths;
+};
+
+interface DependencyGraph {
+  readonly inDegree: Map<string, number>;
+  readonly dependents: Map<string, string[]>;
+  readonly jobById: Map<string, ManifestJob>;
+}
+
+/**
+ * Builds dependency graph structures for topological sort.
+ */
+const buildDependencyGraph = (
+  jobs: readonly ManifestJob[]
+): DependencyGraph => {
+  const jobById = new Map(jobs.map((j) => [j.id, j]));
+  const inDegree = new Map<string, number>();
+  const dependents = new Map<string, string[]>();
+
+  for (const job of jobs) {
+    inDegree.set(job.id, 0);
+  }
+
+  for (const job of jobs) {
+    for (const dep of job.needs ?? []) {
+      if (jobById.has(dep)) {
+        inDegree.set(job.id, (inDegree.get(job.id) ?? 0) + 1);
+        const existing = dependents.get(dep) ?? [];
+        existing.push(job.id);
+        dependents.set(dep, existing);
+      }
+    }
+  }
+
+  return { inDegree, dependents, jobById };
+};
+
+/**
+ * Sorts jobs topologically (dependencies first) with depth info.
+ * Uses Kahn's algorithm with alphabetical tiebreaking.
+ */
+const sortJobsTopologically = (
+  jobs: readonly ManifestJob[]
+): readonly { job: ManifestJob; depth: number }[] => {
+  const depths = calculateJobDepths(jobs);
+  const { inDegree, dependents, jobById } = buildDependencyGraph(jobs);
+
+  // Find root jobs (no dependencies)
+  const queue = [...inDegree.entries()]
+    .filter(([, degree]) => degree === 0)
+    .map(([id]) => id)
+    .sort();
+
+  const result: { job: ManifestJob; depth: number }[] = [];
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current) {
+      break;
+    }
+
+    const job = jobById.get(current);
+    if (job) {
+      result.push({ job, depth: depths.get(current) ?? 0 });
+    }
+
+    for (const depId of dependents.get(current) ?? []) {
+      const newDegree = (inDegree.get(depId) ?? 1) - 1;
+      inDegree.set(depId, newDegree);
+      if (newDegree === 0) {
+        queue.push(depId);
+        queue.sort();
+      }
+    }
+  }
+
+  // Handle cycles: add remaining jobs at end
+  const addedSet = new Set(result.map((r) => r.job.id));
+  for (const job of jobs) {
+    if (!addedSet.has(job.id)) {
+      result.push({ job, depth: depths.get(job.id) ?? 0 });
+    }
+  }
+
+  return result;
+};
+
+/**
+ * Builds the " ← dep1, dep2" suffix for dependency display.
+ */
+const buildDependencySuffix = (
+  job: TrackedJob,
+  jobsById: ReadonlyMap<string, TrackedJob>
+): string => {
+  if (!job.needs || job.needs.length === 0) {
+    return "";
+  }
+
+  const depNames = job.needs
+    .map((depId) => jobsById.get(depId)?.name ?? depId)
+    .slice(0, 3);
+
+  const ellipsis = job.needs.length > 3 ? "…" : "";
+  return ` ← ${depNames.join(", ")}${ellipsis}`;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 interface JobLineProps {
   readonly job: TrackedJob;
   readonly currentStepName: string;
@@ -44,8 +203,9 @@ const JobLine = ({
   const iconColor = getJobIconColor(job.status, job.isReusable);
   const textColor = getJobTextColor(job.status);
 
-  // Check if this job has dependencies
-  const hasDeps = job.needs && job.needs.length > 0;
+  // Indentation based on dependency depth (2 spaces per level)
+  const indent = "  ".repeat(job.depth);
+  const depsSuffix = buildDependencySuffix(job, jobsById);
 
   // For running jobs: show job name + current step
   if (job.status === "running") {
@@ -54,8 +214,10 @@ const JobLine = ({
     return (
       <Box flexDirection="column">
         <Box>
+          <Text>{indent}</Text>
           <Text color={iconColor}>{icon} </Text>
           <ShimmerText isLoading={true} text={job.name} />
+          {depsSuffix && <Text color={colors.muted}>{depsSuffix}</Text>}
           {hasStep && (
             <>
               <Text color={colors.muted}> › </Text>
@@ -67,42 +229,26 @@ const JobLine = ({
     );
   }
 
-  // For pending jobs with dependencies: show nested under deps
-  if (job.status === "pending" && hasDeps) {
-    // Find which dependencies are blocking (not yet successful) - O(1) lookups via Map
-    const blockingDeps =
-      job.needs?.filter((depId) => {
-        const depJob = jobsById.get(depId);
-        return depJob && depJob.status !== "success";
-      }) ?? [];
-
-    // Get display names for blocking deps - O(1) lookups via Map
-    const blockingNames = blockingDeps
-      .map((depId) => {
-        const depJob = jobsById.get(depId);
-        return depJob?.name ?? depId;
-      })
-      .slice(0, 2); // Limit to 2 for brevity
-
-    const waitingText =
-      blockingNames.length > 0
-        ? `waiting for ${blockingNames.join(", ")}${blockingDeps.length > 2 ? "…" : ""}`
-        : "";
-
+  // For skipped_security jobs: show with (skipped: unsafe) suffix
+  if (job.status === "skipped_security") {
     return (
       <Box>
+        <Text>{indent}</Text>
         <Text color={iconColor}>{icon} </Text>
         <Text color={textColor}>{job.name}</Text>
-        {waitingText && <Text color={colors.muted}> · {waitingText}</Text>}
+        {depsSuffix && <Text color={colors.muted}>{depsSuffix}</Text>}
+        <Text color={colors.muted}> (skipped: unsafe)</Text>
       </Box>
     );
   }
 
-  // Default: just show job name
+  // Default: show job name with dependencies
   return (
     <Box>
+      <Text>{indent}</Text>
       <Text color={iconColor}>{icon} </Text>
       <Text color={textColor}>{job.name}</Text>
+      {depsSuffix && <Text color={colors.muted}>{depsSuffix}</Text>}
     </Box>
   );
 };
@@ -276,7 +422,6 @@ export const CheckTUI = ({ onEvent, onCancel }: CheckTUIProps): JSX.Element => {
   const [done, setDone] = useState(false);
   const [doneInfo, setDoneInfo] = useState<DoneEvent | undefined>();
   const [errorMessage, setErrorMessage] = useState<string | undefined>();
-  const [warnings, setWarnings] = useState<string[]>([]);
 
   // Track if we're cancelling to prevent duplicate abort calls
   const [cancelling, setCancelling] = useState(false);
@@ -316,19 +461,24 @@ export const CheckTUI = ({ onEvent, onCancel }: CheckTUIProps): JSX.Element => {
         return;
       }
 
-      const trackedJobs: TrackedJob[] = event.jobs.map((job) => ({
+      // Sort jobs topologically with depth calculation
+      const sortedJobs = sortJobsTopologically(event.jobs);
+
+      const trackedJobs: TrackedJob[] = sortedJobs.map(({ job, depth }) => ({
         id: job.id,
         name: job.name,
-        status: "pending" as JobStatus,
+        // Immediately mark sensitive jobs as skipped
+        status: job.sensitive ? "skipped_security" : "pending",
         isReusable: Boolean(job.uses),
         isSensitive: job.sensitive,
         steps: job.steps.map((stepName, index) => ({
           index,
           name: stepName,
-          status: "pending" as const,
+          status: job.sensitive ? "skipped" : "pending",
         })),
         currentStep: -1,
         needs: job.needs,
+        depth,
       }));
 
       setJobs(trackedJobs);
@@ -394,9 +544,6 @@ export const CheckTUI = ({ onEvent, onCancel }: CheckTUIProps): JSX.Element => {
             exit();
           }, 100);
           break;
-        case "warning":
-          setWarnings((prev) => [...prev, event.message]);
-          break;
         default:
           break;
       }
@@ -406,13 +553,7 @@ export const CheckTUI = ({ onEvent, onCancel }: CheckTUIProps): JSX.Element => {
   }, [onEvent, exit, waiting]);
 
   if (done) {
-    return renderCompletionView(
-      jobs,
-      doneInfo,
-      elapsed,
-      errorMessage,
-      warnings
-    );
+    return renderCompletionView(jobs, doneInfo, elapsed, errorMessage);
   }
 
   if (waiting) {
@@ -484,19 +625,16 @@ const renderCompletionView = (
   jobs: readonly TrackedJob[],
   doneInfo: DoneEvent | undefined,
   elapsed: number,
-  errorMessage?: string,
-  warnings: readonly string[] = []
+  errorMessage?: string
 ): JSX.Element => {
   const durationStr = doneInfo
     ? formatDurationMs(doneInfo.duration)
     : formatDuration(elapsed);
   const hasErrors = doneInfo ? doneInfo.errorCount > 0 : false;
   const workflowFailed = doneInfo ? doneInfo.exitCode !== 0 : false;
-  const hasSecuritySkipped = jobs.some(
-    (job) => job.status === "skipped_security"
-  );
   const structuredErrors = doneInfo?.errors ?? [];
   const totalIssues = structuredErrors.length;
+  const jobsById = createJobsMap(jobs);
 
   return (
     <Box flexDirection="column">
@@ -504,33 +642,43 @@ const renderCompletionView = (
         <Text color={colors.muted}>$ act · {durationStr}</Text>
       </Box>
       <Box flexDirection="column" marginTop={1}>
-        {jobs.map((job) => (
-          <Box flexDirection="column" key={job.id}>
-            <Box marginLeft={2}>
-              <Text color={getJobIconColor(job.status, job.isReusable)}>
-                {getJobIcon(job.status, job.isReusable)}{" "}
-              </Text>
-              <Text color={getJobTextColor(job.status)}>{job.name}</Text>
+        {jobs.map((job) => {
+          const indent = "  ".repeat(job.depth);
+          const depsSuffix = buildDependencySuffix(job, jobsById);
+
+          return (
+            <Box flexDirection="column" key={job.id}>
+              <Box marginLeft={2}>
+                <Text>{indent}</Text>
+                <Text color={getJobIconColor(job.status, job.isReusable)}>
+                  {getJobIcon(job.status, job.isReusable)}{" "}
+                </Text>
+                <Text color={getJobTextColor(job.status)}>{job.name}</Text>
+                {depsSuffix && <Text color={colors.muted}>{depsSuffix}</Text>}
+                {job.status === "skipped_security" && (
+                  <Text color={colors.muted}> (skipped: unsafe)</Text>
+                )}
+              </Box>
+              {/* Expand steps only for failed jobs */}
+              {job.status === "failed" &&
+                job.steps.length > 0 &&
+                !job.isReusable && (
+                  <Box flexDirection="column" marginLeft={4 + job.depth * 2}>
+                    {job.steps.map((step) => (
+                      <Box key={step.index}>
+                        <Text color={getStepIconColor(step.status)}>
+                          {getStepIcon(step.status)}{" "}
+                        </Text>
+                        <Text color={getStepTextColor(step.status)}>
+                          {step.name}
+                        </Text>
+                      </Box>
+                    ))}
+                  </Box>
+                )}
             </Box>
-            {/* Expand steps only for failed jobs */}
-            {job.status === "failed" &&
-              job.steps.length > 0 &&
-              !job.isReusable && (
-                <Box flexDirection="column" marginLeft={4}>
-                  {job.steps.map((step) => (
-                    <Box key={step.index}>
-                      <Text color={getStepIconColor(step.status)}>
-                        {getStepIcon(step.status)}{" "}
-                      </Text>
-                      <Text color={getStepTextColor(step.status)}>
-                        {step.name}
-                      </Text>
-                    </Box>
-                  ))}
-                </Box>
-              )}
-          </Box>
-        ))}
+          );
+        })}
       </Box>
       {structuredErrors.length > 0 && renderErrorsView(structuredErrors)}
       <Box marginTop={1}>
@@ -564,22 +712,6 @@ const renderCompletionView = (
           );
         })()}
       </Box>
-      {hasSecuritySkipped && (
-        <Box marginTop={1}>
-          <Text color={colors.muted} italic>
-            Locked jobs skipped for safety. Manage with: dt workflows
-          </Text>
-        </Box>
-      )}
-      {warnings.length > 0 && (
-        <Box flexDirection="column" marginTop={1}>
-          {warnings.map((warning) => (
-            <Text color={colors.muted} key={warning}>
-              i {warning}
-            </Text>
-          ))}
-        </Box>
-      )}
     </Box>
   );
 };

@@ -35,7 +35,11 @@ export const configGetCommand = defineCommand({
 
     try {
       const repoRoot = await findGitRoot(process.cwd());
-      const config = loadConfig(repoRoot ?? undefined);
+      if (!repoRoot) {
+        console.error("Error: Not in a git repository.");
+        process.exit(1);
+      }
+      const config = loadConfig(repoRoot);
       const value = config[key];
 
       if (value === undefined || value === null) {

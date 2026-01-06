@@ -23,6 +23,41 @@ const MAX_OUTPUT_SIZE = 50 * 1024 * 1024;
 const ABORT_EXIT_CODE = 130;
 
 /**
+ * Safe environment variable prefixes to pass to act containers.
+ * Matches Go CLI filterEnvironment for security consistency.
+ * Prevents secret leakage to containers.
+ */
+const SAFE_ENV_PREFIXES = [
+  "PATH=",
+  "HOME=",
+  "USER=",
+  "SHELL=",
+  "LANG=",
+  "LC_",
+  "TERM=",
+  "TMPDIR=",
+  "TZ=",
+] as const;
+
+/**
+ * Filters environment variables to only include safe ones.
+ * This prevents secrets from leaking to act containers.
+ */
+const filterEnvironment = (): Record<string, string> => {
+  const filtered: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value === undefined) {
+      continue;
+    }
+    const entry = `${key}=`;
+    if (SAFE_ENV_PREFIXES.some((prefix) => entry.startsWith(prefix))) {
+      filtered[key] = value;
+    }
+  }
+  return filtered;
+};
+
+/**
  * State for stdout stream processing
  */
 interface StdoutProcessingState {
@@ -245,7 +280,7 @@ export class ActExecutor {
       const result = await this.executeOnce(
         actPath,
         args,
-        prepareResult.worktreePath
+        prepareResult.clonePath
       );
 
       if (result.exitCode === 0 || this.aborted) {
@@ -267,17 +302,41 @@ export class ActExecutor {
 
   /**
    * Builds command-line arguments for act based on configuration.
+   * Matches Go CLI configuration for consistency.
    */
   private buildActArgs(_prepareResult: PrepareResult): readonly string[] {
     const args: string[] = [];
 
-    if (this.config.verbose) {
-      args.push("--verbose");
-    }
+    // ALWAYS use verbose mode to capture step output for error extraction
+    // This matches Go CLI behavior - verbose is needed for parsing
+    args.push("-v");
 
-    // Note: workflow and job filtering will be implemented when
-    // CheckRunner passes these through PrepareResult or config
-    // For now, we run all workflows in the worktree
+    // Use medium-sized images pre-configured for act (catthehacker images)
+    // These have Git safe.directory configured and other act-specific setup
+    args.push("-P", "ubuntu-latest=catthehacker/ubuntu:act-latest");
+    args.push("-P", "ubuntu-22.04=catthehacker/ubuntu:act-22.04");
+    args.push("-P", "ubuntu-20.04=catthehacker/ubuntu:act-20.04");
+
+    // Docker-resilient flags to prevent container buildup and failures
+    args.push("--rm"); // Remove containers after execution
+    args.push("--no-cache-server"); // Disable cache server (can cause hangs/failures)
+
+    // Container security hardening: drop dangerous capabilities
+    args.push("--container-cap-drop", "SYS_ADMIN"); // Prevents container escapes via mount
+    args.push("--container-cap-drop", "NET_ADMIN"); // Prevents network manipulation
+    args.push("--container-cap-drop", "SYS_PTRACE"); // Prevents process debugging/injection
+    args.push("--container-cap-drop", "MKNOD"); // Prevents device node creation
+
+    // Pass CI environment to containers to disable git hook installation.
+    // This is the official approach documented by lefthook:
+    // https://lefthook.dev/usage/envs/CI.html
+    args.push("--env", "CI=true");
+    args.push("--env", "LEFTHOOK=0");
+    args.push("--env", "HUSKY=0");
+    args.push("--env", "PRE_COMMIT_ALLOW_NO_CONFIG=1");
+
+    // Note: No special mounts needed - shallow clones have self-contained .git directories
+    // that work natively with Docker (unlike worktrees which use .git files pointing externally)
 
     return args;
   }
@@ -287,7 +346,7 @@ export class ActExecutor {
    *
    * @param actPath - Absolute path to the act binary
    * @param args - Command-line arguments for act
-   * @param cwd - Working directory (worktree path)
+   * @param cwd - Working directory (clone path)
    * @returns Execution result
    */
   private executeOnce(
@@ -307,14 +366,8 @@ export class ActExecutor {
         stdio: ["ignore", "pipe", "pipe"],
         // Create new process group so we can kill all children (including Docker)
         detached: process.platform !== "win32",
-        env: {
-          ...process.env,
-          // Disable git hooks - they serve no purpose in worktree execution
-          // and fail because worktree isn't a real git repository
-          LEFTHOOK: "0",
-          HUSKY: "0",
-          PRE_COMMIT_ALLOW_NO_CONFIG: "1",
-        },
+        // Filter environment to prevent secret leakage (matches Go CLI)
+        env: filterEnvironment(),
       });
 
       this.currentChild = child;

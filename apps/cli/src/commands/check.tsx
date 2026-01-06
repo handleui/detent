@@ -111,12 +111,6 @@ const runTUIMode = async (config: RunConfig): Promise<void> => {
     process.exit(SIGINT_EXIT_CODE);
   }
 
-  if (!result.success && result.errors.length > 0) {
-    console.log(
-      `\nFound ${result.errors.length} error(s). Run with --verbose for details.`
-    );
-  }
-
   process.exit(result.success ? 0 : 1);
 };
 
@@ -175,11 +169,13 @@ export const checkCommand = defineCommand({
       verbose,
     };
 
-    // Clean up orphaned worktrees from previous runs (best-effort, non-blocking)
-    const { cleanupOrphanedWorktrees } = await import("@detent/git");
-    cleanupOrphanedWorktrees(config.repoRoot).catch(() => {
+    // Clean up orphaned clones from previous runs (best-effort)
+    try {
+      const { cleanupOrphanedClones } = await import("@detent/git");
+      cleanupOrphanedClones(config.repoRoot);
+    } catch {
       // Ignore cleanup errors - best-effort background cleanup
-    });
+    }
 
     try {
       if (verbose) {

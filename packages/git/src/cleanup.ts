@@ -2,20 +2,12 @@ import { lstatSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkLockStatus } from "./lock.js";
-import { execGit } from "./utils.js";
 
 const ORPHAN_AGE_THRESHOLD = 60 * 60 * 1000;
 const DETENT_DIR_PREFIX = "detent-" as const;
 
-export const cleanupOrphanedWorktrees = async (
-  repoRoot: string
-): Promise<number> => {
-  try {
-    await execGit(["worktree", "prune"], { cwd: repoRoot });
-  } catch {
-    // Best effort
-  }
-
+export const cleanupOrphanedClones = (repoRoot: string): number => {
+  // No git worktree prune needed - shallow clones are self-contained
   return cleanOrphanedTempDirs(repoRoot);
 };
 
@@ -70,7 +62,7 @@ const cleanOrphanedTempDirs = (repoRoot: string): number => {
       continue;
     }
 
-    if (!isWorktreeForRepo(fullPath, repoRoot)) {
+    if (!isCloneForRepo(fullPath, repoRoot)) {
       continue;
     }
 
@@ -90,12 +82,16 @@ const cleanOrphanedTempDirs = (repoRoot: string): number => {
   return removed;
 };
 
-const isWorktreeForRepo = (worktreePath: string, repoRoot: string): boolean => {
-  const gitPath = join(worktreePath, ".git");
+/**
+ * Checks if a clone directory belongs to the given repository.
+ * For shallow clones, we check .git/config for the file:// origin URL.
+ */
+const isCloneForRepo = (clonePath: string, repoRoot: string): boolean => {
+  const configPath = join(clonePath, ".git", "config");
 
   let info: ReturnType<typeof lstatSync> | undefined;
   try {
-    info = lstatSync(gitPath);
+    info = lstatSync(configPath);
   } catch {
     return false;
   }
@@ -110,11 +106,11 @@ const isWorktreeForRepo = (worktreePath: string, repoRoot: string): boolean => {
 
   let content: string;
   try {
-    content = readFileSync(gitPath, "utf-8");
+    content = readFileSync(configPath, "utf-8");
   } catch {
     return false;
   }
 
-  const repoGitDir = join(repoRoot, ".git");
-  return content.includes(repoGitDir);
+  // Shallow clones from file:// URLs have the source repo path in config
+  return content.includes(`file://${repoRoot}`) || content.includes(repoRoot);
 };

@@ -59,6 +59,8 @@ export interface TrackedJob {
   readonly steps: TrackedStep[];
   currentStep: number;
   readonly needs?: readonly string[];
+  /** Depth in dependency tree (0 = no dependencies, 1+ = nested) */
+  readonly depth: number;
 }
 
 /**

@@ -15,10 +15,12 @@ export const configListCommand = defineCommand({
   },
   run: async () => {
     const repoRoot = await findGitRoot(process.cwd());
-    const config = loadConfig(repoRoot ?? undefined);
-    const configPath = repoRoot
-      ? getRepoConfigPath(repoRoot)
-      : "(not in a git repository)";
+    if (!repoRoot) {
+      console.error("Error: Not in a git repository.");
+      process.exit(1);
+    }
+    const config = loadConfig(repoRoot);
+    const configPath = getRepoConfigPath(repoRoot);
     const hasEnvApiKey = Boolean(process.env.ANTHROPIC_API_KEY);
 
     printHeader("config list");

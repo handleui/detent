@@ -1,5 +1,7 @@
 // biome-ignore-all lint/performance/noBarrelFile: This is the package entry point
-export { cleanupOrphanedWorktrees } from "./cleanup.js";
+export { cleanupOrphanedClones } from "./cleanup.js";
+export type { PrepareCloneOptions, PrepareCloneResult } from "./clone.js";
+export { prepareClone } from "./clone.js";
 export type { LockResult } from "./lock.js";
 export {
   checkLockStatus,
@@ -20,9 +22,10 @@ export {
 export {
   computeCurrentRunID,
   computeRunID,
-  createEphemeralWorktreePath,
+  createEphemeralClonePath,
 } from "./run-id.js";
 export type {
+  CloneInfo,
   CommitSHA,
   GitExecOptions,
   GitExecResult,
@@ -30,16 +33,15 @@ export type {
   RunID,
   RunIDInfo,
   TreeHash,
-  WorktreeInfo,
 } from "./types.js";
 export {
+  ErrCloneNotInitialized,
   ErrGitTimeout,
   ErrInvalidInput,
   ErrNotGitRepository,
   ErrSubmodulesNotSupported,
   ErrSymlinkEscape,
   ErrSymlinkLimitExceeded,
-  ErrWorktreeNotInitialized,
 } from "./types.js";
 export { execGit, isValidRunID, safeGitEnv } from "./utils.js";
 export {
@@ -47,8 +49,3 @@ export {
   validateNoEscapingSymlinks,
   validateNoSubmodules,
 } from "./validation.js";
-export type {
-  PrepareWorktreeOptions,
-  PrepareWorktreeResult,
-} from "./worktree.js";
-export { prepareWorktree } from "./worktree.js";

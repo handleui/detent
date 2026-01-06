@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { computeRunID, createEphemeralWorktreePath } from "./run-id.js";
+import { computeRunID, createEphemeralClonePath } from "./run-id.js";
 import type {
   CommitSHA,
   GitRefs,
@@ -8,16 +8,16 @@ import type {
   TreeHash,
 } from "./types.js";
 import {
+  ErrCloneNotInitialized,
   ErrNotGitRepository,
   ErrSubmodulesNotSupported,
   ErrSymlinkEscape,
   ErrSymlinkLimitExceeded,
-  ErrWorktreeNotInitialized,
 } from "./types.js";
 import { isValidRunID, safeGitEnv } from "./utils.js";
 
 const HEX_16_PATTERN = /^[0-9a-f]{16}$/;
-const WORKTREE_PATH_PATTERN = /detent-[0-9a-f]+-[0-9a-z]+-[0-9a-z]+/;
+const CLONE_PATH_PATTERN = /detent-[0-9a-f]+-[0-9a-z]+-[0-9a-z]+/;
 
 describe("run-id", () => {
   test("computeRunID is deterministic", () => {
@@ -38,27 +38,27 @@ describe("run-id", () => {
     expect(result).toMatch(HEX_16_PATTERN);
   });
 
-  test("createEphemeralWorktreePath validates runID", () => {
-    expect(() =>
-      createEphemeralWorktreePath("../../etc/passwd" as RunID)
-    ).toThrow("invalid run ID");
-  });
-
-  test("createEphemeralWorktreePath generates valid path", () => {
-    const validRunID = "a1b2c3d4e5f60123" as RunID;
-    const path = createEphemeralWorktreePath(validRunID);
-    expect(path).toContain(`detent-${validRunID}`);
-    expect(path).toMatch(WORKTREE_PATH_PATTERN);
-  });
-
-  test("createEphemeralWorktreePath rejects empty runID", () => {
-    expect(() => createEphemeralWorktreePath("" as RunID)).toThrow(
+  test("createEphemeralClonePath validates runID", () => {
+    expect(() => createEphemeralClonePath("../../etc/passwd" as RunID)).toThrow(
       "invalid run ID"
     );
   });
 
-  test("createEphemeralWorktreePath rejects non-hex runID", () => {
-    expect(() => createEphemeralWorktreePath("invalid!@#" as RunID)).toThrow(
+  test("createEphemeralClonePath generates valid path", () => {
+    const validRunID = "a1b2c3d4e5f60123" as RunID;
+    const path = createEphemeralClonePath(validRunID);
+    expect(path).toContain(`detent-${validRunID}`);
+    expect(path).toMatch(CLONE_PATH_PATTERN);
+  });
+
+  test("createEphemeralClonePath rejects empty runID", () => {
+    expect(() => createEphemeralClonePath("" as RunID)).toThrow(
+      "invalid run ID"
+    );
+  });
+
+  test("createEphemeralClonePath rejects non-hex runID", () => {
+    expect(() => createEphemeralClonePath("invalid!@#" as RunID)).toThrow(
       "invalid run ID"
     );
   });
@@ -127,15 +127,15 @@ describe("utils", () => {
 });
 
 describe("types", () => {
-  test("ErrWorktreeNotInitialized can be instantiated", () => {
-    const err = new ErrWorktreeNotInitialized();
+  test("ErrCloneNotInitialized can be instantiated", () => {
+    const err = new ErrCloneNotInitialized();
     expect(err).toBeInstanceOf(Error);
-    expect(err.name).toBe("ErrWorktreeNotInitialized");
-    expect(err.message).toContain("worktree not initialized");
+    expect(err.name).toBe("ErrCloneNotInitialized");
+    expect(err.message).toContain("clone not initialized");
   });
 
-  test("ErrWorktreeNotInitialized accepts custom message", () => {
-    const err = new ErrWorktreeNotInitialized("custom message");
+  test("ErrCloneNotInitialized accepts custom message", () => {
+    const err = new ErrCloneNotInitialized("custom message");
     expect(err.message).toBe("custom message");
   });
 
