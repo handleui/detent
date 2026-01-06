@@ -163,10 +163,12 @@ export const getAccessToken = async (repoRoot: string): Promise<string> => {
   }
 
   const tokens = await refreshAccessToken(credentials.refresh_token);
+  // Default to 1 hour if expires_in not provided
+  const expiresInMs = (tokens.expires_in ?? 3600) * 1000;
   const newCredentials: Credentials = {
     access_token: tokens.access_token,
     refresh_token: tokens.refresh_token,
-    expires_at: Date.now() + tokens.expires_in * 1000,
+    expires_at: Date.now() + expiresInMs,
   };
 
   saveCredentials(newCredentials, repoRoot);
