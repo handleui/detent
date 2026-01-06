@@ -111,7 +111,7 @@ const runVerboseInit = (
   }
 
   console.log("\nInitialization complete!");
-  console.log("Run 'detent check' to scan for errors.");
+  console.log("Run 'detent mock' to scan for errors.");
 };
 
 // ============================================================================

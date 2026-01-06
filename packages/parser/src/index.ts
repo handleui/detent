@@ -1,26 +1,68 @@
-// biome-ignore-all lint/performance/noBarrelFile: This is the package's public API
-
 /**
  * @detent/parser - TypeScript error extraction library
- * Migrated from packages/core (Go)
+ *
+ * Architecture:
+ * - context/  : CI log FORMAT parsers (act, github, passthrough)
+ * - parsers/  : Tool error CONTENT parsers (go, ts, python, etc.)
+ * - events/   : CI event types (job, step, manifest)
  */
 
 // ============================================================================
-// Types
+// Context Parsers (CI log FORMAT)
 // ============================================================================
 
 export type {
   ContextParser,
+  LineContext,
+  ParseLineResult,
+} from "./context/index.js";
+
+export {
+  actParser,
+  createActParser,
+  createGitHubContextParser,
+  createPassthroughParser,
+  githubParser,
+  passthroughParser,
+} from "./context/index.js";
+
+// ============================================================================
+// CI Events (job/step lifecycle)
+// ============================================================================
+
+export type {
   JobEvent,
   JobStatus,
-  LineContext,
   ManifestEvent,
   ManifestInfo,
   ManifestJob,
-  ParseLineResult,
   StepEvent,
   StepStatus,
-} from "./ci-types.js";
+} from "./events/index.js";
+
+export { JobStatuses, StepStatuses } from "./events/index.js";
+
+// ============================================================================
+// Tool Parsers (error CONTENT)
+// ============================================================================
+
+export {
+  createESLintParser,
+  createGenericParser,
+  createGolangParser,
+  createInfrastructureParser,
+  createPythonParser,
+  createRustParser,
+  createTypeScriptParser,
+  GolangParser,
+  PythonParser,
+  TypeScriptParser,
+} from "./parsers/index.js";
+
+// ============================================================================
+// Core Types
+// ============================================================================
+
 export type { UnknownPatternReporter } from "./extractor.js";
 export type {
   NoisePatternProvider,
@@ -35,7 +77,6 @@ export type {
   DetectionResult,
 } from "./registry.js";
 export type { SerializeOptions } from "./serialize.js";
-
 export type {
   AIContext,
   CodeSnippet,
@@ -53,14 +94,9 @@ export type {
 } from "./types.js";
 
 // ============================================================================
-// Constants & Utilities
+// Core Utilities
 // ============================================================================
 
-export {
-  JobStatuses,
-  passthroughParser,
-  StepStatuses,
-} from "./ci-types.js";
 export {
   createExtractor,
   Extractor,
@@ -149,19 +185,128 @@ export {
 } from "./utils.js";
 
 // ============================================================================
-// Parsers
+// Default Registry Factory
 // ============================================================================
 
-export {
-  actParser,
-  createActParser,
+import {
   createESLintParser,
   createGenericParser,
   createGolangParser,
+  createInfrastructureParser,
   createPythonParser,
   createRustParser,
   createTypeScriptParser,
-  GolangParser,
-  PythonParser,
-  TypeScriptParser,
 } from "./parsers/index.js";
+import { createRegistry, type ParserRegistry } from "./registry.js";
+
+/**
+ * Create a parser registry with all default parsers registered.
+ * Parsers are registered in priority order (automatic sorting by registry).
+ *
+ * Priority order (highest to lowest):
+ * - Language-specific (80): Go, Python, Rust, TypeScript
+ * - ESLint (75): JavaScript/TypeScript linting
+ * - Infrastructure (70): CI/CD infrastructure failures
+ * - Generic (10): Fallback for unknown formats
+ */
+export const createDefaultRegistry = (): ParserRegistry => {
+  const registry = createRegistry();
+
+  // Language-specific parsers (priority 80)
+  registry.register(createGolangParser());
+  registry.register(createPythonParser());
+  registry.register(createRustParser());
+  registry.register(createTypeScriptParser());
+
+  // ESLint parser (priority 75)
+  registry.register(createESLintParser());
+
+  // Infrastructure parser (priority 70) - CI/CD failures
+  registry.register(createInfrastructureParser());
+
+  // Generic fallback parser (priority 10)
+  registry.register(createGenericParser());
+
+  // Initialize noise checker for optimized noise filtering
+  registry.initNoiseChecker();
+
+  return registry;
+};
+
+// ============================================================================
+// Convenience API for Simple Usage
+// ============================================================================
+
+import { actParser, githubParser, passthroughParser } from "./context/index.js";
+import { createExtractor, type Extractor } from "./extractor.js";
+import type { ExtractedError } from "./types.js";
+
+/**
+ * Singleton extractor with default registry.
+ * Created lazily on first use.
+ */
+let defaultExtractor: Extractor | undefined;
+
+/**
+ * Get the default extractor (creates it on first call).
+ * Uses the default registry with all parsers and noise checker initialized.
+ */
+export const getDefaultExtractor = (): Extractor => {
+  if (!defaultExtractor) {
+    defaultExtractor = createExtractor(createDefaultRegistry());
+  }
+  return defaultExtractor;
+};
+
+/**
+ * Parse logs using the default extractor and passthrough context parser.
+ * This is the simplest way to extract errors from raw log output.
+ *
+ * @example
+ * ```typescript
+ * import { parse } from "@detent/parser";
+ *
+ * const errors = parse(logOutput);
+ * console.log(errors); // ExtractedError[]
+ * ```
+ */
+export const parse = (logs: string): ExtractedError[] =>
+  getDefaultExtractor().extract(logs, passthroughParser);
+
+/**
+ * Parse logs from Act (local GitHub Actions runner) format.
+ * Strips [Job/Step] prefixes and extracts job/step context.
+ *
+ * @example
+ * ```typescript
+ * import { parseActLogs } from "@detent/parser";
+ *
+ * const errors = parseActLogs(actOutput);
+ * console.log(errors); // ExtractedError[] with workflowContext
+ * ```
+ */
+export const parseActLogs = (logs: string): ExtractedError[] =>
+  getDefaultExtractor().extract(logs, actParser);
+
+/**
+ * Parse logs from GitHub Actions format.
+ * Strips ISO timestamps and extracts errors.
+ *
+ * @example
+ * ```typescript
+ * import { parseGitHubLogs } from "@detent/parser";
+ *
+ * const errors = parseGitHubLogs(githubLogs);
+ * console.log(errors); // ExtractedError[]
+ * ```
+ */
+export const parseGitHubLogs = (logs: string): ExtractedError[] =>
+  getDefaultExtractor().extract(logs, githubParser);
+
+/**
+ * Reset the default extractor state.
+ * Call this between parsing unrelated log outputs to clear any accumulated state.
+ */
+export const resetDefaultExtractor = (): void => {
+  defaultExtractor?.reset();
+};

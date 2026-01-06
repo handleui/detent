@@ -1,5 +1,5 @@
 /**
- * Types for the Check command TUI
+ * Types for the Mock command TUI
  * Mirrors the Go CLI's TUI event system
  */
 

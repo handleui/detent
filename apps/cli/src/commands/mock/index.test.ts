@@ -6,11 +6,11 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 const HEX_STRING_REGEX = /^[0-9a-f]+$/;
 
-import { CheckRunner } from "../runner/index.js";
-import type { RunConfig } from "../runner/types.js";
+import { MockRunner } from "./runner/index.js";
+import type { RunConfig } from "./runner/types.js";
 
 // Mock the parser service to avoid requiring it to be running
-vi.mock("../services/parser-client.ts", () => ({
+vi.mock("./parser-client.ts", () => ({
   ParserClient: class MockParserClient {
     parse(_logs: string) {
       return { errors: [] };
@@ -19,7 +19,7 @@ vi.mock("../services/parser-client.ts", () => ({
 }));
 
 // Mock act executor to avoid requiring Docker/act for basic tests
-vi.mock("../runner/executor.ts", () => ({
+vi.mock("./runner/executor.ts", () => ({
   ActExecutor: class MockActExecutor {
     execute() {
       return {
@@ -32,7 +32,7 @@ vi.mock("../runner/executor.ts", () => ({
   },
 }));
 
-describe("check command integration", () => {
+describe("mock command integration", () => {
   let testRepoPath: string;
   let commitCounter = 0;
 
@@ -108,7 +108,7 @@ jobs:
     }
   });
 
-  test("runs full check lifecycle successfully with valid workflow", async () => {
+  test("runs full mock lifecycle successfully with valid workflow", async () => {
     await createGitRepo(testRepoPath);
     await createWorkflowFile(testRepoPath, "test.yml", simpleWorkflow);
 
@@ -117,7 +117,7 @@ jobs:
       verbose: false,
     };
 
-    const runner = new CheckRunner(config);
+    const runner = new MockRunner(config);
     const result = await runner.run();
 
     expect(result).toHaveProperty("runID");
@@ -141,7 +141,7 @@ jobs:
       verbose: false,
     };
 
-    const runner = new CheckRunner(config);
+    const runner = new MockRunner(config);
     const result = await runner.run();
 
     expect(result.success).toBe(true);
@@ -158,7 +158,7 @@ jobs:
       verbose: false,
     };
 
-    const runner = new CheckRunner(config);
+    const runner = new MockRunner(config);
 
     await expect(runner.run()).rejects.toThrow(
       'Workflow "nonexistent.yml" not found in .github/workflows/'
@@ -174,7 +174,7 @@ jobs:
       verbose: false,
     };
 
-    const runner = new CheckRunner(config);
+    const runner = new MockRunner(config);
 
     await expect(runner.run()).rejects.toThrow(
       "Workflows directory not found (.github/workflows)"
@@ -189,7 +189,7 @@ jobs:
       verbose: false,
     };
 
-    const runner = new CheckRunner(config);
+    const runner = new MockRunner(config);
 
     await expect(runner.run()).rejects.toThrow();
   });
@@ -214,7 +214,7 @@ jobs:
       verbose: false,
     };
 
-    const runner = new CheckRunner(config);
+    const runner = new MockRunner(config);
 
     // Should fail during workflow injection when trying to parse YAML
     await expect(runner.run()).rejects.toThrow();
@@ -231,7 +231,7 @@ jobs:
       verbose: false,
     };
 
-    const runner = new CheckRunner(config);
+    const runner = new MockRunner(config);
 
     await expect(runner.run()).rejects.toThrow(
       'Job "nonexistent-job" not found in workflow ci.yml'
@@ -249,7 +249,7 @@ jobs:
       verbose: false,
     };
 
-    const runner = new CheckRunner(config);
+    const runner = new MockRunner(config);
     const result = await runner.run();
 
     // Should succeed because 'lint' job exists
@@ -266,7 +266,7 @@ jobs:
       verbose: false,
     };
 
-    const runner = new CheckRunner(config);
+    const runner = new MockRunner(config);
 
     await expect(runner.run()).rejects.toThrow(
       "Workflow file empty.yml is empty"
@@ -284,7 +284,7 @@ jobs:
       verbose: false,
     };
 
-    const runner = new CheckRunner(config);
+    const runner = new MockRunner(config);
     const result = await runner.run();
 
     expect(result.success).toBe(true);
@@ -300,7 +300,7 @@ jobs:
       verbose: false,
     };
 
-    const runner1 = new CheckRunner(config);
+    const runner1 = new MockRunner(config);
     const result1 = await runner1.run();
 
     // Make a commit to change the git state
@@ -311,7 +311,7 @@ jobs:
       stdio: "ignore",
     });
 
-    const runner2 = new CheckRunner(config);
+    const runner2 = new MockRunner(config);
     const result2 = await runner2.run();
 
     expect(result1.runID).toBeDefined();

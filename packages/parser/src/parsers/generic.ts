@@ -57,14 +57,6 @@ const actualErrorPatterns: readonly RegExp[] = [
   /^\s{0,4}\[(ERROR|FATAL|FAIL)\]\s*:?\s+\S/i,
   // Build/compile/test failure with clear structure
   /^(?:build|compilation|compile)\s+failed\s*$/i,
-  // Non-zero exit codes (must be unambiguous)
-  /^exit\s+(?:code|status)\s*[1-9]\d{0,4}\s*$/i,
-  /exited\s+with\s+(?:code\s+)?[1-9]\d{0,4}\s*$/i,
-  // Permission/access errors (unambiguous)
-  /^permission\s+denied/i,
-  /^access\s+denied/i,
-  // Command not found (unambiguous)
-  /^(?:bash:\s*)?command\s+not\s+found/i,
   // File/directory not found (unambiguous format)
   /^no\s+such\s+file\s+or\s+directory/i,
   // Segfault/crash (unambiguous)
@@ -105,7 +97,6 @@ const noisePatterns: readonly RegExp[] = [
   /(?:0\s+(error|failure)s?\s*(found)?)/i, // "0 errors found"
   /(?:no\s+(error|failure)s?\s*(found)?)/i, // "no errors found"
   /(?:completed\s+(successfully|with\s+exit\s+code\s+0))/i, // Success completion
-  /(?:process\s+completed\s+with\s+exit\s+code)/i, // GitHub Actions process completion (even non-zero)
   /(?:build\s+succeeded)/i, // Build success
   /(?:all\s+tests?\s+passed)/i, // Test success
 
@@ -133,9 +124,11 @@ const noisePatterns: readonly RegExp[] = [
   /(?:retrying\s+in)/i,
   /(?:connection\s+reset.*retry)/i,
 
-  // === GITHUB ACTIONS WORKFLOW COMMANDS ===
+  // === CI PLATFORM WORKFLOW COMMANDS ===
+  // GitHub Actions: ::command::, Azure DevOps: ##[command]
+  // These are CI platform annotations, not actual errors
   /(?:^::(debug|notice|warning|error|group|endgroup|set-output|save-state|add-mask)::)/i,
-  /(?:^##\[)/, // GitHub Actions annotation format
+  /(?:^##\[)/, // Azure DevOps/GitHub Actions annotation format
 
   // === TEST FRAMEWORK OUTPUT ===
   /(?:^(=== RUN|=== PAUSE|=== CONT|--- PASS|--- SKIP))/i, // Go test
@@ -241,9 +234,6 @@ const fastErrorPrefixes: readonly string[] = [
   "error:",
   "fatal:",
   "panic:",
-  "permission denied",
-  "access denied",
-  "command not found",
   "no such file",
   "segmentation fault",
   "killed",
@@ -252,8 +242,6 @@ const fastErrorPrefixes: readonly string[] = [
   "build failed",
   "compilation failed",
   "compile failed",
-  "exit code",
-  "exit status",
 ];
 
 /**
@@ -329,11 +317,6 @@ const mightBeError = (lowerTrimmed: string): boolean => {
     if (afterColon >= 48 && afterColon <= 57) {
       return true;
     }
-  }
-
-  // Check for "exited with" pattern (not at start)
-  if (lowerTrimmed.includes("exited with")) {
-    return true;
   }
 
   // Check for bracketed error indicators

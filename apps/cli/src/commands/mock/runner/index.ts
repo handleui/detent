@@ -1,5 +1,5 @@
-import { DebugLogger } from "../utils/debug-logger.js";
-import { toDisplayErrors } from "../utils/format.js";
+import { DebugLogger } from "../debug-logger.js";
+import { toDisplayErrors } from "../format.js";
 import type { TUIEventEmitter } from "./event-emitter.js";
 import { ActExecutor } from "./executor.js";
 import { WorkflowPreparer } from "./preparer.js";
@@ -19,7 +19,7 @@ import type {
  * 3. Process: Parse execution output for errors
  * 4. Cleanup: Remove clone and temporary resources
  */
-export class CheckRunner {
+export class MockRunner {
   private readonly config: RunConfig;
   private readonly eventEmitter?: TUIEventEmitter;
   private debugLogger?: DebugLogger;

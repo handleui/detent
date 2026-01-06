@@ -3,7 +3,7 @@
  * Migrated from packages/core/extract/extractor.go
  */
 
-import type { ContextParser, ParseLineResult } from "./ci-types.js";
+import type { ContextParser, ParseLineResult } from "./context/types.js";
 import type { ParseContext, ToolParser } from "./parser-types.js";
 import type { ParserRegistry } from "./registry.js";
 import { sanitizeForTelemetry } from "./sanitize.js";
@@ -132,14 +132,11 @@ export class Extractor {
         parseCtx.step = ctx.step;
       }
 
-      // Check if registry considers this line as noise
-      if (this.registry.isNoise(cleanLine)) {
-        continue;
-      }
-
       let found: ExtractedError | null = null;
 
-      // If we have an active multi-line parser, try to continue
+      // If we have an active multi-line parser, try to continue BEFORE noise check.
+      // Multi-line parsers (tracebacks, panics) need to see all lines including
+      // empty lines and lines that would otherwise be filtered as noise.
       // Note: activeParser is only set when supportsMultiLine() is true
       if (activeParser) {
         if (activeParser.continueMultiLine(cleanLine, parseCtx)) {
@@ -148,6 +145,11 @@ export class Extractor {
         // Multi-line sequence ended, finalize it
         found = activeParser.finishMultiLine(parseCtx);
         activeParser = undefined;
+      }
+
+      // Check if registry considers this line as noise (only when not in multi-line context)
+      if (!found && this.registry.isNoise(cleanLine)) {
+        continue;
       }
 
       // Try to find a parser for this line

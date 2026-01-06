@@ -1,5 +1,5 @@
 import { dump, load } from "js-yaml";
-import { formatError } from "../utils/error.js";
+import { formatError } from "../../../utils/error.js";
 import { isSensitiveJob } from "../workflow/sensitivity.js";
 import type { Job } from "../workflow/types.js";
 

@@ -1,12 +1,15 @@
 import { defineCommand } from "citty";
 import { render } from "ink";
-import { TUIEventEmitter } from "../runner/event-emitter.js";
-import { CheckRunner } from "../runner/index.js";
-import type { RunConfig, RunResult } from "../runner/types.js";
-import { CheckTUI } from "../tui/check-tui.js";
-import { printHeaderWithUpdateCheck } from "../tui/components/index.js";
-import { formatError } from "../utils/error.js";
-import { createSignalController, SIGINT_EXIT_CODE } from "../utils/signal.js";
+import { printHeaderWithUpdateCheck } from "../../tui/components/index.js";
+import { formatError } from "../../utils/error.js";
+import {
+  createSignalController,
+  SIGINT_EXIT_CODE,
+} from "../../utils/signal.js";
+import { TUIEventEmitter } from "./runner/event-emitter.js";
+import { MockRunner } from "./runner/index.js";
+import type { RunConfig, RunResult } from "./runner/types.js";
+import { MockTUI } from "./tui.js";
 
 const printVerboseResults = (result: RunResult): void => {
   console.log("=".repeat(60));
@@ -37,7 +40,7 @@ const printVerboseResults = (result: RunResult): void => {
 
 const runVerboseMode = async (config: RunConfig): Promise<void> => {
   const signalCtrl = createSignalController();
-  const runner = new CheckRunner(config);
+  const runner = new MockRunner(config);
 
   // Abort runner when signal received
   signalCtrl.signal.addEventListener("abort", () => {
@@ -45,7 +48,7 @@ const runVerboseMode = async (config: RunConfig): Promise<void> => {
     runner.abort();
   });
 
-  console.log("Detent check (verbose mode)\n");
+  console.log("Detent mock (verbose mode)\n");
 
   try {
     const result = await runner.run();
@@ -70,11 +73,11 @@ const runVerboseMode = async (config: RunConfig): Promise<void> => {
 };
 
 const runTUIMode = async (config: RunConfig): Promise<void> => {
-  await printHeaderWithUpdateCheck("check");
+  await printHeaderWithUpdateCheck("mock");
 
   const signalCtrl = createSignalController();
   const eventEmitter = new TUIEventEmitter();
-  const runner = new CheckRunner(config, eventEmitter);
+  const runner = new MockRunner(config, eventEmitter);
 
   // Abort runner when process signal received
   signalCtrl.signal.addEventListener("abort", () => {
@@ -88,7 +91,7 @@ const runTUIMode = async (config: RunConfig): Promise<void> => {
   // The TUI will call onCancel when Ctrl+C is pressed, which aborts the runner.
   // The runner will then emit a "done" event, and the TUI will exit.
   const { waitUntilExit } = render(
-    <CheckTUI
+    <MockTUI
       onCancel={() => {
         runner.abort();
       }}
@@ -114,20 +117,20 @@ const runTUIMode = async (config: RunConfig): Promise<void> => {
   process.exit(result.success ? 0 : 1);
 };
 
-export const checkCommand = defineCommand({
+export const mockCommand = defineCommand({
   meta: {
-    name: "check",
+    name: "mock",
     description:
-      "Run GitHub Actions workflows locally and extract errors\n\n" +
+      "Run GitHub Actions workflows locally using act and extract errors\n\n" +
       "EXAMPLES\n" +
       "  # Run all workflows\n" +
-      "  detent check\n\n" +
+      "  detent mock\n\n" +
       "  # Run specific workflow\n" +
-      "  detent check ci.yml\n\n" +
+      "  detent mock ci.yml\n\n" +
       "  # Run specific job in a workflow\n" +
-      "  detent check ci.yml build\n\n" +
+      "  detent mock ci.yml build\n\n" +
       "  # Show detailed output\n" +
-      "  detent check --verbose",
+      "  detent mock --verbose",
   },
   args: {
     workflow: {
@@ -156,8 +159,8 @@ export const checkCommand = defineCommand({
       console.error(
         "Error: Job argument requires a workflow to be specified\n" +
           "\n" +
-          "Usage: detent check <workflow> <job>\n" +
-          "Example: detent check ci.yml build"
+          "Usage: detent mock <workflow> <job>\n" +
+          "Example: detent mock ci.yml build"
       );
       process.exit(1);
     }
@@ -185,7 +188,7 @@ export const checkCommand = defineCommand({
       }
     } catch (error) {
       const message = formatError(error);
-      console.error(`\n✗ Check failed: ${message}\n`);
+      console.error(`\n✗ Mock failed: ${message}\n`);
 
       if (!verbose) {
         console.error("Run with --verbose for more details.");

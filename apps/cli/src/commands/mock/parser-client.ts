@@ -10,7 +10,7 @@ import {
   type ExtractedError,
   type Extractor,
 } from "@detent/parser";
-import type { ParsedError } from "../runner/types.js";
+import type { ParsedError } from "./runner/types.js";
 
 /**
  * Response from the parser service.

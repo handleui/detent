@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { ensureInstalled } from "../act/index.js";
-import type { DebugLogger } from "../utils/debug-logger.js";
+import type { DebugLogger } from "../debug-logger.js";
 import { ActOutputParser } from "./act-output-parser.js";
 import type { TUIEventEmitter } from "./event-emitter.js";
 import type { ExecuteResult, PrepareResult } from "./types.js";

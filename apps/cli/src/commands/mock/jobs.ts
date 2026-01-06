@@ -1,16 +1,16 @@
 import { join } from "node:path";
 import { defineCommand } from "citty";
-import { printHeaderWithUpdateCheck } from "../tui/components/index.js";
-import { ANSI_RESET, colors, hexToAnsi } from "../tui/styles.js";
-import { detectAgent } from "../utils/agent.js";
-import type { ParsedWorkflow } from "../workflow/parser.js";
-import { parseWorkflowsFromDir } from "../workflow/parser.js";
-import type { SensitivityReason } from "../workflow/sensitivity.js";
+import { printHeaderWithUpdateCheck } from "../../tui/components/index.js";
+import { ANSI_RESET, colors, hexToAnsi } from "../../tui/styles.js";
+import { detectAgent } from "../../utils/agent.js";
+import type { ParsedWorkflow } from "./workflow/parser.js";
+import { parseWorkflowsFromDir } from "./workflow/parser.js";
+import type { SensitivityReason } from "./workflow/sensitivity.js";
 import {
   formatSensitivityReason,
   getSensitivityReason,
   isSensitiveWorkflow,
-} from "../workflow/sensitivity.js";
+} from "./workflow/sensitivity.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Styling
@@ -153,7 +153,7 @@ export const jobsCommand = defineCommand({
     description:
       "List all jobs in GitHub Actions workflows with sensitivity markers\n\n" +
       "Jobs that perform deployment, publishing, or release operations are marked\n" +
-      "as sensitive and will be skipped during `detent check` to prevent accidental\n" +
+      "as sensitive and will be skipped during `detent mock` to prevent accidental\n" +
       "production releases.\n\n" +
       "EXAMPLES\n" +
       "  # List all jobs\n" +

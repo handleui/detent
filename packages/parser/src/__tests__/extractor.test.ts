@@ -3,7 +3,7 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { passthroughParser } from "../ci-types.js";
+import { passthroughParser } from "../context/passthrough.js";
 import {
   createExtractor,
   Extractor,

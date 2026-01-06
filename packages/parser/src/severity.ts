@@ -25,6 +25,7 @@ import type {
  * - lint → "warning" by default (linting is advisory)
  * - docs → "warning" (documentation issues are advisory)
  * - metadata → undefined (not counted as problems)
+ * - infrastructure → undefined (CI config issues, not code problems)
  * - unknown → "warning" (conservative default)
  */
 export const inferSeverity = (
@@ -49,7 +50,9 @@ export const inferSeverity = (
     case "security":
       return "error";
     case "infrastructure":
-      return "error";
+      // Infrastructure errors are CI configuration issues, not code problems
+      // Return undefined so they're not counted in error/warning totals
+      return undefined;
     case "lint":
       // Linters typically report warnings unless explicitly marked as errors
       return "warning";

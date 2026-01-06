@@ -1,4 +1,4 @@
-import type { TUIEvent } from "../tui/check-tui-types.js";
+import type { TUIEvent } from "../types.js";
 
 /**
  * Simple type-safe event emitter for TUI events

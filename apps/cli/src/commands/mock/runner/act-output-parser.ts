@@ -1,9 +1,4 @@
-import type {
-  JobEvent,
-  ManifestEvent,
-  StepEvent,
-  TUIEvent,
-} from "../tui/check-tui-types.js";
+import type { JobEvent, ManifestEvent, StepEvent, TUIEvent } from "../types.js";
 import type { ManifestInfo, ManifestJob } from "./workflow-injector.js";
 
 // Regex patterns for detent markers (compiled once at module level)

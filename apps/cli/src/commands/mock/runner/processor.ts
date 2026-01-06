@@ -1,5 +1,5 @@
-import { ParserClient } from "../services/parser-client.js";
-import type { DebugLogger } from "../utils/debug-logger.js";
+import type { DebugLogger } from "../debug-logger.js";
+import { ParserClient } from "../parser-client.js";
 import type { ExecuteResult, ParsedError, ProcessResult } from "./types.js";
 
 /**

@@ -65,6 +65,7 @@ export type ErrorSource =
   | "docker"
   | "nodejs"
   | "metadata"
+  | "infrastructure"
   | "generic";
 
 export const ErrorSources = {
@@ -77,6 +78,7 @@ export const ErrorSources = {
   Docker: "docker" as const,
   NodeJS: "nodejs" as const,
   Metadata: "metadata" as const,
+  Infrastructure: "infrastructure" as const,
   Generic: "generic" as const,
 };
 
@@ -166,6 +168,14 @@ export interface ExtractedError {
   readonly stackTraceTruncated?: boolean;
   /** True if message was truncated due to size limits */
   readonly messageTruncated?: boolean;
+
+  // Infrastructure error fields
+  /** Actionable hint for fixing the error */
+  readonly hint?: string;
+  /** Exit code if this was a process failure */
+  readonly exitCode?: number;
+  /** Whether this is CI configuration vs code error */
+  readonly isInfrastructure?: boolean;
 }
 
 /**
@@ -192,6 +202,9 @@ export interface MutableExtractedError {
   columnKnown?: boolean;
   stackTraceTruncated?: boolean;
   messageTruncated?: boolean;
+  hint?: string;
+  exitCode?: number;
+  isInfrastructure?: boolean;
 }
 
 /**

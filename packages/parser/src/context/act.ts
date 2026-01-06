@@ -10,11 +10,7 @@
  * The parser extracts job and step names from the prefix and cleans the line.
  */
 
-import type {
-  ContextParser,
-  LineContext,
-  ParseLineResult,
-} from "../ci-types.js";
+import type { ContextParser, LineContext, ParseLineResult } from "./types.js";
 
 /**
  * Regex to match Act's line prefix format: [Job Name/Step Name] or [Job Name]

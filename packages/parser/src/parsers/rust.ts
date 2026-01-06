@@ -310,6 +310,7 @@ class RustParser extends MultiLineParser {
     return false;
   };
 
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Multi-line error accumulation requires handling multiple Rust-specific patterns (location arrows, code lines, notes, helps, boundaries)
   continueMultiLine = (line: string, _ctx: ParseContext): boolean => {
     if (!this.state.inError) {
       return false;
@@ -361,8 +362,14 @@ class RustParser extends MultiLineParser {
       return true;
     }
 
-    // Location arrow for secondary spans
-    if (rustLocationPattern.test(stripped)) {
+    // Location arrow - extract file/line/col if not already set
+    const locationMatch = rustLocationPattern.exec(stripped);
+    if (locationMatch) {
+      if (!this.state.errorFile) {
+        this.state.errorFile = locationMatch[1] ?? "";
+        this.state.errorLine = safeParseInt(locationMatch[2]) ?? 0;
+        this.state.errorColumn = safeParseInt(locationMatch[3]) ?? 0;
+      }
       this.addContextLine(line);
       return true;
     }

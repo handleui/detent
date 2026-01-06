@@ -1,8 +1,10 @@
 import { Spinner } from "@inkjs/ui";
 import { Box, Text, useApp, useInput } from "ink";
 import { useEffect, useState } from "react";
-import { formatErrorForTUI } from "../utils/error.js";
-import { formatDuration, formatDurationMs } from "../utils/format.js";
+import { colors } from "../../tui/styles.js";
+import { useShimmer } from "../../tui/use-shimmer.js";
+import { formatErrorForTUI } from "../../utils/error.js";
+import { formatDuration, formatDurationMs } from "../../utils/format.js";
 import type {
   DoneEvent,
   JobEvent,
@@ -11,9 +13,7 @@ import type {
   StepEvent,
   TrackedJob,
   TUIEvent,
-} from "./check-tui-types.js";
-import { colors } from "./styles.js";
-import { useShimmer } from "./use-shimmer.js";
+} from "./types.js";
 
 interface ShimmerTextProps {
   readonly text: string;
@@ -253,7 +253,7 @@ const JobLine = ({
   );
 };
 
-interface CheckTUIProps {
+interface MockTUIProps {
   /**
    * Event stream from the runner
    */
@@ -408,10 +408,10 @@ const updateJobsForStepEvent = (
 };
 
 /**
- * Main TUI component for the check command
+ * Main TUI component for the mock command
  * Replicates Go CLI TUI behavior with real-time job/step tracking
  */
-export const CheckTUI = ({ onEvent, onCancel }: CheckTUIProps): JSX.Element => {
+export const MockTUI = ({ onEvent, onCancel }: MockTUIProps): JSX.Element => {
   const { exit } = useApp();
   const [jobs, setJobs] = useState<TrackedJob[]>([]);
   const [waiting, setWaiting] = useState(true);
@@ -686,7 +686,7 @@ const renderCompletionView = (
           if (errorMessage) {
             return (
               <Text bold color={colors.error}>
-                ✗ Check failed: {formatErrorForTUI(errorMessage)}
+                ✗ Mock failed: {formatErrorForTUI(errorMessage)}
               </Text>
             );
           }
@@ -701,13 +701,13 @@ const renderCompletionView = (
           if (hasErrors || workflowFailed) {
             return (
               <Text bold color={colors.error}>
-                ✗ Check failed in {durationStr}
+                ✗ Mock failed in {durationStr}
               </Text>
             );
           }
           return (
             <Text bold color={colors.brand}>
-              ✓ Check passed in {durationStr}
+              ✓ Mock passed in {durationStr}
             </Text>
           );
         })()}
@@ -1170,4 +1170,4 @@ const renderErrorsView = (
   );
 };
 
-type DisplayError = import("./check-tui-types.js").DisplayError;
+type DisplayError = import("./types.js").DisplayError;
