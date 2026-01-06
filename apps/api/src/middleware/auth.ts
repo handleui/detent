@@ -20,18 +20,20 @@ declare module "hono" {
   }
 }
 
+const BEARER_TOKEN_REGEX = /^Bearer\s+(.+)$/i;
+
 const extractBearerToken = (header: string | undefined): string | null => {
   if (!header) {
     return null;
   }
-  const match = header.match(/^Bearer\s+(.+)$/i);
+  const match = header.match(BEARER_TOKEN_REGEX);
   return match?.[1] ?? null;
 };
 
 export const authMiddleware = async (
   c: Context<{ Bindings: Env }>,
   next: Next
-): Promise<Response | void> => {
+): Promise<Response | undefined> => {
   const token = extractBearerToken(c.req.header("authorization"));
 
   if (!token) {
