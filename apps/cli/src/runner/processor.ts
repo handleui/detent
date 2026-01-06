@@ -13,6 +13,13 @@ interface ProcessorConfig {
 }
 
 /**
+ * Pattern indicating act's action cache may be corrupted.
+ * EOF errors during git clone suggest cache corruption.
+ */
+const ACT_CACHE_CORRUPTION_PATTERN =
+  /Unable to (checkout|pull).*EOF|cloning.*EOF/i;
+
+/**
  * Processes workflow execution output to extract and parse errors.
  *
  * Responsibilities:
@@ -20,6 +27,7 @@ interface ProcessorConfig {
  * - Uses local @detent/parser package to extract errors
  * - Handles parser failures gracefully
  * - Returns structured error information
+ * - Detects act cache corruption issues
  */
 export class ErrorProcessor {
   private readonly parser: ParserClient;
@@ -126,5 +134,16 @@ export class ErrorProcessor {
     }
 
     return parts.join("\n");
+  }
+
+  /**
+   * Checks if the output indicates act's action cache may be corrupted.
+   * EOF errors during action cloning suggest the cache needs clearing.
+   *
+   * @param logs - Combined output logs
+   * @returns True if cache corruption is suspected
+   */
+  detectCacheCorruption(logs: string): boolean {
+    return ACT_CACHE_CORRUPTION_PATTERN.test(logs);
   }
 }

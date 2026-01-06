@@ -131,7 +131,7 @@ export interface ErrorEvent {
 export interface WarningEvent {
   readonly type: "warning";
   readonly message: string;
-  readonly category: "parser" | "skipped";
+  readonly category: "parser" | "skipped" | "cache";
 }
 
 /**

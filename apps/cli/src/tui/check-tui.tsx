@@ -544,7 +544,7 @@ const renderCompletionView = (
       {hasSecuritySkipped && (
         <Box marginTop={1}>
           <Text color={colors.muted} italic>
-            Locked jobs skipped for safety. Manage with: detent workflows
+            Locked jobs skipped for safety. Manage with: dt workflows
           </Text>
         </Box>
       )}

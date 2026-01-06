@@ -123,7 +123,9 @@ export class ActExecutor {
   constructor(config: ExecutorConfig = {}) {
     this.config = {
       verbose: config.verbose ?? false,
-      maxRetries: config.maxRetries ?? 2,
+      // Disable retries by default - act completing with failed jobs shouldn't trigger retry
+      // Retries were causing duplicate job runs (ShellCheck running 3x)
+      maxRetries: config.maxRetries ?? 0,
       retryDelay: config.retryDelay ?? 1000,
     };
     this.eventEmitter = config.eventEmitter;

@@ -126,7 +126,25 @@ export class CheckRunner {
     }
     this.debugLogger?.logSection("ERROR PARSING");
 
-    const processResult = await this.process(executeResult);
+    const processor = new ErrorProcessor({ debugLogger: this.debugLogger });
+    const combinedLogs = [executeResult.stdout, executeResult.stderr].join(
+      "\n"
+    );
+
+    // Check for act cache corruption (EOF errors during action cloning)
+    if (processor.detectCacheCorruption(combinedLogs) && this.eventEmitter) {
+      this.debugLogger?.log(
+        "[Runner] Detected potential act cache corruption (EOF errors)"
+      );
+      this.eventEmitter.emit({
+        type: "warning",
+        message:
+          "Act cache may be corrupted. Run: rm -rf ~/.cache/act/ to clear",
+        category: "cache",
+      });
+    }
+
+    const processResult = await processor.process(executeResult);
 
     this.debugLogger?.log(`Total errors found: ${processResult.errorCount}`);
 
@@ -305,17 +323,6 @@ export class CheckRunner {
       debugLogger: this.debugLogger,
     });
     return await this.executor.execute(prepareResult);
-  }
-
-  /**
-   * Processes execution output to extract and parse errors.
-   *
-   * @param executeResult - Result from the execute step
-   * @returns Processing result with parsed errors
-   */
-  private async process(executeResult: ExecuteResult): Promise<ProcessResult> {
-    const processor = new ErrorProcessor({ debugLogger: this.debugLogger });
-    return await processor.process(executeResult);
   }
 
   /**
