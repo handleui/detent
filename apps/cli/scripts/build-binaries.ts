@@ -96,6 +96,7 @@ const compileBinary = async (
       `--define=DETENT_VERSION=${JSON.stringify(version)}`,
       `--define=process.env.NODE_ENV="production"`,
       "--minify",
+      "--external=@aws-sdk/client-s3",
       SRC_ENTRY,
       `--outfile=${outPath}`,
     ],
