@@ -11,7 +11,7 @@ export interface Env {
   // TODO: Add PlanetScale connection
   // DATABASE_URL: string;
 
-  // TODO: Add WorkOS credentials
-  // WORKOS_API_KEY: string;
-  // WORKOS_CLIENT_ID: string;
+  // WorkOS AuthKit credentials
+  WORKOS_CLIENT_ID: string;
+  WORKOS_SUBDOMAIN: string;
 }

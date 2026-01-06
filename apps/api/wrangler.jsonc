@@ -4,5 +4,14 @@
   "main": "src/index.ts",
   "minify": true,
   "compatibility_date": "2025-01-06",
-  "compatibility_flags": ["nodejs_compat"]
+  "compatibility_flags": ["nodejs_compat"],
+  "routes": [
+    {
+      "pattern": "api.detent.sh",
+      "custom_domain": true
+    }
+  ],
+  "vars": {
+    "WORKOS_SUBDOMAIN": "detent"
+  }
 }

@@ -27,7 +27,8 @@
     "@handleui/shimmer": "^0.1.0",
     "tar": "^7.4.3",
     "unzipper": "^0.12.3",
-    "js-yaml": "^4.1.0"
+    "js-yaml": "^4.1.0",
+    "jose": "^6.0.10"
   },
   "devDependencies": {
     "@detent/typescript-config": "*",

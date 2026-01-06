@@ -1,13 +1,17 @@
-import type { Context, Next } from "hono";
-import { HTTPException } from "hono/http-exception";
+/**
+ * JWT authentication middleware
+ *
+ * Validates WorkOS AuthKit access tokens from the Authorization header.
+ * Sets userId and organizationId in context for downstream handlers.
+ */
 
-// TODO: Replace with WorkOS AuthKit
-// TODO: Add organization context
-// TODO: Add rate limiting per API key
+import type { Context, Next } from "hono";
+import { verifyAccessToken } from "../lib/auth";
+import type { Env } from "../types/env";
 
 interface AuthContext {
-  apiKey: string;
-  // TODO: Add organization ID, user ID, permissions
+  userId: string;
+  organizationId?: string;
 }
 
 declare module "hono" {
@@ -16,19 +20,37 @@ declare module "hono" {
   }
 }
 
-export const authMiddleware = async (c: Context, next: Next) => {
-  const apiKey = c.req.header("X-API-Key");
+const extractBearerToken = (header: string | undefined): string | null => {
+  if (!header) {
+    return null;
+  }
+  const match = header.match(/^Bearer\s+(.+)$/i);
+  return match?.[1] ?? null;
+};
 
-  if (!apiKey) {
-    throw new HTTPException(401, { message: "Missing X-API-Key header" });
+export const authMiddleware = async (
+  c: Context<{ Bindings: Env }>,
+  next: Next
+): Promise<Response | void> => {
+  const token = extractBearerToken(c.req.header("authorization"));
+
+  if (!token) {
+    return c.json({ error: "Missing authorization header" }, 401);
   }
 
-  // TODO: Validate API key against WorkOS/database
-  // TODO: Check rate limits
-  // TODO: Load organization context
+  try {
+    const payload = await verifyAccessToken(token, {
+      clientId: c.env.WORKOS_CLIENT_ID,
+      subdomain: c.env.WORKOS_SUBDOMAIN,
+    });
 
-  // Stub: Accept any non-empty API key
-  c.set("auth", { apiKey });
+    c.set("auth", {
+      userId: payload.sub,
+      organizationId: payload.org_id,
+    });
 
-  await next();
+    await next();
+  } catch {
+    return c.json({ error: "Invalid or expired token" }, 401);
+  }
 };
