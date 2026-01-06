@@ -7,10 +7,6 @@
       "inputs": ["$TURBO_DEFAULT$", ".env*"],
       "outputs": [".next/**", "!.next/cache/**", "dist/**"]
     },
-    "@detent/go-cli#build": {
-      "inputs": ["**/*.go", "go.mod", "go.sum", "package.json"],
-      "outputs": ["dist/**"]
-    },
     "@detent/cli#build": {
       "dependsOn": [
         "@detent/persistence#build",
@@ -25,12 +21,8 @@
       ],
       "outputs": ["dist/**"]
     },
-    "//#check": {},
-    "//#lint:go": {
-      "inputs": ["apps/go-cli/**/*.go", ".golangci.yml"]
-    },
     "check-types": {
-      "dependsOn": ["^check-types"]
+      "dependsOn": ["^build"]
     },
     "test": {
       "dependsOn": ["^build"],

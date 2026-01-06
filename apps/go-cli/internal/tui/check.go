@@ -118,14 +118,21 @@ func (m *CheckModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "q":
-			if m.done || m.quitting {
+			if m.done {
 				return m, tea.Quit
 			}
+			if m.quitting {
+				// Second Ctrl+C - force quit immediately
+				return m, tea.Quit
+			}
+			// First Ctrl+C - start graceful cancellation with visual feedback
 			m.quitting = true
 			if m.cancelFunc != nil {
 				m.cancelFunc()
 			}
-			return m, tea.Quit
+			m.shimmer = m.shimmer.SetText("Cancelling").SetLoading(true)
+			// Don't quit yet - let DoneMsg handle the exit after cleanup
+			return m, nil
 		}
 
 	case ManifestMsg:
@@ -233,6 +240,11 @@ func (m *CheckModel) View() string {
 		return ""
 	}
 
+	// Show cancelling view when user requests exit
+	if m.quitting {
+		return m.renderCancellingView()
+	}
+
 	if m.waiting || m.tracker == nil {
 		return m.renderWaitingView()
 	}
@@ -253,6 +265,19 @@ func (m *CheckModel) renderWaitingView() string {
 	if elapsed > 5 {
 		b.WriteString(MutedStyle.Render("  This may take a moment on first run.") + "\n")
 	}
+
+	return b.String()
+}
+
+// renderCancellingView renders feedback while gracefully shutting down
+func (m *CheckModel) renderCancellingView() string {
+	var b strings.Builder
+
+	elapsed := int(time.Since(m.startTime).Seconds())
+	header := fmt.Sprintf("$ act · %ds", elapsed)
+	b.WriteString(SecondaryStyle.Render(header) + "\n\n")
+	b.WriteString("  " + m.shimmer.View() + "\n")
+	b.WriteString(MutedStyle.Render("  Press Ctrl+C again to force quit.") + "\n")
 
 	return b.String()
 }
