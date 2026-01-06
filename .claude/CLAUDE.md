@@ -4,19 +4,17 @@
 Always use Context7 for library/API documentation, code generation, or configuration steps without being asked.
 
 ## Commands (Critical)
-- **Build**: `bun run build` (Turborepo - NEVER use `go build` directly)
+- **Build**: `bun run build` (Turborepo)
 - **Run CLI**: `detent <command>` (alias - NEVER use `./dist/dt`). AI runs verbose (no TUI). Use `--force` to skip cache.
 - **Lint/Fix**: `bun run lint` / `bun run fix`
 - **Types**: `bun run check-types`
-- **Go lint**: `cd apps/go-cli && golangci-lint run ./...`
-- **Go test**: `cd apps/go-cli && go test ./...`
 
 ## Git
 - Conventional commits, header only, no description
 
 ## Project Structure
-- Turborepo monorepo: `apps/go-cli` (Go), `apps/web` (Next.js)
-- Shared packages: `packages/*` (ui, parsing business logic, typescript-config)
+- Turborepo monorepo: `apps/cli` (TypeScript), `apps/web` (Next.js), `apps/docs` (Documentation)
+- Shared packages: `packages/*` (ui, parser, git, healing, persistence, typescript-config)
 - Formatter: Biome via ultracite (`bun run fix` auto-fixes)
 
 ## Style Deviations from Defaults
@@ -25,7 +23,6 @@ Always use Context7 for library/API documentation, code generation, or configura
 - **Functions**: Arrow functions only, no `function` declarations
 - **Type casting**: Avoid `as` unless absolutely necessary
 - **Comments**: None unless critical; prefix hacks with `// HACK: reason`
-- **Go errors**: Prefix with `Err`, handle explicitly
 
 
 # Ultracite Code Standards

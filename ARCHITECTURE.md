@@ -13,7 +13,6 @@ apps/cli/                   # TypeScript CLI (main)
 ├── src/tui/                # Terminal UI components
 └── scripts/                # Build & upload scripts
 
-apps/go-cli/                # Go CLI (deprecated)
 apps/web/                   # Next.js landing
 apps/docs/                  # Documentation
 
@@ -25,7 +24,6 @@ packages/parser/            # TypeScript error parsing
 packages/git/               # Git operations (worktrees, branches)
 packages/healing/           # Claude-based healing loop
 packages/persistence/       # Caching & state persistence
-packages/core/              # Go shared logic (legacy)
 packages/ui/                # Shared UI components
 packages/typescript-config/ # Shared TS config
 ```
@@ -55,7 +53,6 @@ packages/typescript-config/ # Shared TS config
 | `packages/git` | Git operations, worktree management |
 | `packages/healing` | Claude-based error healing loop |
 | `packages/persistence` | Cache parsed errors, healing state |
-| `packages/core` | Legacy Go shared logic |
 
 ## Release Flow
 

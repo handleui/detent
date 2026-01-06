@@ -15,8 +15,3 @@ pre-commit:
         - "*.css"
       stage_fixed: true
 
-    - name: golangci-lint
-      root: apps/go-cli
-      run: golangci-lint run --fix ./...
-      glob: "apps/go-cli/**/*.go"
-      stage_fixed: true

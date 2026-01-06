@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   release:
-    name: "[Release] Changesets"
+    name: Changesets
     runs-on: ubuntu-latest
     outputs:
       tagged: ${{ steps.tag.outputs.tagged }}
@@ -61,7 +61,7 @@ jobs:
           fi
 
   build:
-    name: "[Release] Build Binaries"
+    name: Build Binaries
     needs: release
     if: needs.release.outputs.tagged == 'true'
     uses: ./.github/workflows/build.yml

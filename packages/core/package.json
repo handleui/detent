@@ -1,6 +1,0 @@
-{
-  "name": "@detent/core",
-  "version": "0.9.0",
-  "private": true,
-  "description": "Core detent logic for error parsing & healing"
-}
