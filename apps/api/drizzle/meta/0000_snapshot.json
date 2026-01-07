@@ -1,5 +1,5 @@
 {
-  "id": "e84e7cc9-8467-4700-80c2-a107dff99cd5",
+  "id": "46111b86-7ee1-4c23-8f86-7134a9adac42",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -132,7 +132,7 @@
           "tableTo": "teams",
           "columnsFrom": ["team_id"],
           "columnsTo": ["id"],
-          "onDelete": "no action",
+          "onDelete": "cascade",
           "onUpdate": "no action"
         }
       },
@@ -232,7 +232,7 @@
           "tableTo": "teams",
           "columnsFrom": ["team_id"],
           "columnsTo": ["id"],
-          "onDelete": "no action",
+          "onDelete": "cascade",
           "onUpdate": "no action"
         }
       },

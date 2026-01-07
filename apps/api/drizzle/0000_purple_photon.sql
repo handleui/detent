@@ -41,8 +41,8 @@ CREATE TABLE "teams" (
 	CONSTRAINT "teams_provider_installation_id_unique" UNIQUE("provider_installation_id")
 );
 --> statement-breakpoint
-ALTER TABLE "projects" ADD CONSTRAINT "projects_team_id_teams_id_fk" FOREIGN KEY ("team_id") REFERENCES "public"."teams"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "team_members" ADD CONSTRAINT "team_members_team_id_teams_id_fk" FOREIGN KEY ("team_id") REFERENCES "public"."teams"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "projects" ADD CONSTRAINT "projects_team_id_teams_id_fk" FOREIGN KEY ("team_id") REFERENCES "public"."teams"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "team_members" ADD CONSTRAINT "team_members_team_id_teams_id_fk" FOREIGN KEY ("team_id") REFERENCES "public"."teams"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "projects_team_id_idx" ON "projects" USING btree ("team_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "projects_team_repo_idx" ON "projects" USING btree ("team_id","provider_repo_id");--> statement-breakpoint
 CREATE INDEX "projects_provider_repo_full_name_idx" ON "projects" USING btree ("provider_repo_full_name");--> statement-breakpoint
