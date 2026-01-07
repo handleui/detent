@@ -1,6 +1,10 @@
 import { defineCommand } from "citty";
 import { syncIdentity } from "../../lib/api.js";
-import { pollForTokens, requestDeviceAuthorization } from "../../lib/auth.js";
+import {
+  getJwtExpiration,
+  pollForTokens,
+  requestDeviceAuthorization,
+} from "../../lib/auth.js";
 import type { Credentials } from "../../lib/credentials.js";
 import { isLoggedIn, saveCredentials } from "../../lib/credentials.js";
 
@@ -70,11 +74,11 @@ export const loginCommand = defineCommand({
 
     console.log("\n");
 
-    const expiresInMs = (tokens.expires_in ?? 3600) * 1000;
+    // Use the JWT's actual exp claim for accurate expiration tracking
     const credentials: Credentials = {
       access_token: tokens.access_token,
       refresh_token: tokens.refresh_token,
-      expires_at: Date.now() + expiresInMs,
+      expires_at: getJwtExpiration(tokens.access_token),
     };
 
     saveCredentials(credentials);

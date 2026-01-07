@@ -33,7 +33,6 @@ const mockFetch = vi.fn();
 const MOCK_ENV = {
   WORKOS_API_KEY: "sk_test_workos_key",
   WORKOS_CLIENT_ID: "client_123",
-  WORKOS_SUBDOMAIN: "test",
   HYPERDRIVE: {
     connectionString: "postgres://test:test@localhost:5432/test",
   },

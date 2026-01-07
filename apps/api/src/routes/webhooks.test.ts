@@ -48,7 +48,6 @@ const MOCK_ENV = {
     connectionString: "postgres://test:test@localhost:5432/test",
   },
   WORKOS_CLIENT_ID: "test-workos-client",
-  WORKOS_SUBDOMAIN: "test",
   WORKOS_API_KEY: "test-workos-key",
 };
 

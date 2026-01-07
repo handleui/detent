@@ -87,8 +87,8 @@ app.post("/sync-identity", async (c) => {
   const identities =
     (await identitiesResponse.json()) as WorkOSIdentitiesResponse;
 
-  // Find GitHub OAuth identity
-  const githubIdentity = identities.data.find(
+  // Find GitHub OAuth identity (with null check for malformed responses)
+  const githubIdentity = identities.data?.find(
     (identity) => identity.provider === "GitHubOAuth"
   );
 
@@ -211,7 +211,7 @@ app.get("/me", async (c) => {
       if (identitiesResponse.ok) {
         const identities =
           (await identitiesResponse.json()) as WorkOSIdentitiesResponse;
-        const githubIdentity = identities.data.find(
+        const githubIdentity = identities.data?.find(
           (identity) => identity.provider === "GitHubOAuth"
         );
 

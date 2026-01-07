@@ -43,7 +43,6 @@ export const authMiddleware = async (
   try {
     const payload = await verifyAccessToken(token, {
       clientId: c.env.WORKOS_CLIENT_ID,
-      subdomain: c.env.WORKOS_SUBDOMAIN,
     });
 
     c.set("auth", {
@@ -53,7 +52,12 @@ export const authMiddleware = async (
 
     await next();
     return undefined;
-  } catch {
+  } catch (error) {
+    // Log verification failure details for debugging
+    console.error("Token verification failed:", {
+      error: error instanceof Error ? error.message : String(error),
+      clientId: c.env.WORKOS_CLIENT_ID,
+    });
     return c.json({ error: "Invalid or expired token" }, 401);
   }
 };

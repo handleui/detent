@@ -151,6 +151,18 @@ export const refreshAccessToken = async (
   return response.json() as Promise<TokenResponse>;
 };
 
+/**
+ * Extract expiration time from JWT's exp claim
+ */
+export const getJwtExpiration = (token: string): number => {
+  const payload = decodeJwt(token);
+  if (typeof payload.exp === "number") {
+    return payload.exp * 1000; // Convert seconds to milliseconds
+  }
+  // Fallback: 1 hour from now if no exp claim
+  return Date.now() + 3600 * 1000;
+};
+
 export const getAccessToken = async (): Promise<string> => {
   const credentials = loadCredentials();
 
@@ -163,11 +175,11 @@ export const getAccessToken = async (): Promise<string> => {
   }
 
   const tokens = await refreshAccessToken(credentials.refresh_token);
-  const expiresInMs = (tokens.expires_in ?? 3600) * 1000;
+  // Use the JWT's actual exp claim, not expires_in from response
   const newCredentials: Credentials = {
     access_token: tokens.access_token,
     refresh_token: tokens.refresh_token,
-    expires_at: Date.now() + expiresInMs,
+    expires_at: getJwtExpiration(tokens.access_token),
   };
 
   saveCredentials(newCredentials);
