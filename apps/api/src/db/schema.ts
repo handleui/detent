@@ -77,6 +77,13 @@ export const teamMembers = pgTable(
       .references(() => teams.id, { onDelete: "cascade" }),
     userId: varchar("user_id", { length: 255 }).notNull(), // WorkOS user_xxx ID
     role: teamRoleEnum("role").default("member").notNull(),
+
+    // Provider account linking (GitHub/GitLab via WorkOS OAuth)
+    // Provider is inherited from the team's provider field
+    providerUserId: varchar("provider_user_id", { length: 255 }),
+    providerUsername: varchar("provider_username", { length: 255 }),
+    providerLinkedAt: timestamp("provider_linked_at"),
+
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },

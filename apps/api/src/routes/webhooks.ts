@@ -1,5 +1,8 @@
+import { eq } from "drizzle-orm";
 import type { Context } from "hono";
 import { Hono } from "hono";
+import { createDb } from "../db/client";
+import { teams } from "../db/schema";
 import { webhookSignatureMiddleware } from "../middleware/webhook-signature";
 import { createGitHubService } from "../services/github";
 import type { Env } from "../types/env";
@@ -45,6 +48,30 @@ interface PingPayload {
   hook_id: number;
 }
 
+interface InstallationPayload {
+  action:
+    | "created"
+    | "deleted"
+    | "suspend"
+    | "unsuspend"
+    | "new_permissions_accepted";
+  installation: {
+    id: number;
+    account: {
+      id: number;
+      login: string;
+      type: "Organization" | "User";
+      avatar_url?: string;
+    };
+  };
+  repositories?: Array<{
+    id: number;
+    name: string;
+    full_name: string;
+    private: boolean;
+  }>;
+}
+
 interface DetentCommand {
   type: "heal" | "status" | "help" | "unknown";
   dryRun?: boolean;
@@ -52,7 +79,11 @@ interface DetentCommand {
 
 // Variables stored in context by middleware
 interface WebhookVariables {
-  webhookPayload: WorkflowRunPayload | IssueCommentPayload | PingPayload;
+  webhookPayload:
+    | WorkflowRunPayload
+    | IssueCommentPayload
+    | PingPayload
+    | InstallationPayload;
 }
 
 type WebhookContext = Context<{ Bindings: Env; Variables: WebhookVariables }>;
@@ -79,6 +110,9 @@ app.post("/github", webhookSignatureMiddleware, (c: WebhookContext) => {
     case "ping":
       // GitHub sends this when webhook is first configured
       return c.json({ message: "pong", zen: (payload as PingPayload).zen });
+
+    case "installation":
+      return handleInstallationEvent(c, payload as InstallationPayload);
 
     default:
       console.log(`[webhook] Ignoring unhandled event: ${event}`);
@@ -178,6 +212,157 @@ const handleWorkflowRunEvent = async (
       },
       500
     );
+  }
+};
+
+// Handle installation events (GitHub App installed/uninstalled)
+const handleInstallationEvent = async (
+  c: WebhookContext,
+  payload: InstallationPayload
+) => {
+  const { action, installation } = payload;
+  const { account } = installation;
+
+  console.log(
+    `[installation] ${action}: ${account.login} (${account.type}, installation ${installation.id})`
+  );
+
+  const { db, client } = await createDb(c.env);
+
+  try {
+    switch (action) {
+      case "created": {
+        // Idempotency check: if team already exists for this installation, return success
+        const existingTeam = await db
+          .select({ id: teams.id, slug: teams.slug })
+          .from(teams)
+          .where(eq(teams.providerInstallationId, String(installation.id)))
+          .limit(1);
+
+        const existing = existingTeam[0];
+        if (existing) {
+          console.log(
+            `[installation] Team already exists for installation ${installation.id}: ${existing.slug}`
+          );
+          return c.json({
+            message: "installation already exists",
+            team_id: existing.id,
+            team_slug: existing.slug,
+            account: account.login,
+          });
+        }
+
+        // Create team when app is installed
+        const teamId = crypto.randomUUID();
+        const baseSlug = account.login
+          .toLowerCase()
+          .replace(/[^a-z0-9-]/g, "-");
+
+        // Handle slug uniqueness - try base slug, then append suffix if needed
+        let slug = baseSlug;
+        let slugAttempt = 0;
+        const maxSlugAttempts = 10;
+
+        while (slugAttempt < maxSlugAttempts) {
+          const slugConflict = await db
+            .select({ id: teams.id })
+            .from(teams)
+            .where(eq(teams.slug, slug))
+            .limit(1);
+
+          if (slugConflict.length === 0) {
+            break;
+          }
+
+          slugAttempt++;
+          slug = `${baseSlug}-${slugAttempt}`;
+        }
+
+        if (slugAttempt >= maxSlugAttempts) {
+          // Fallback: append random suffix
+          slug = `${baseSlug}-${crypto.randomUUID().slice(0, 8)}`;
+        }
+
+        await db.insert(teams).values({
+          id: teamId,
+          name: account.login,
+          slug,
+          provider: "github",
+          providerAccountId: String(account.id),
+          providerAccountLogin: account.login,
+          providerAccountType:
+            account.type === "Organization" ? "organization" : "user",
+          providerInstallationId: String(installation.id),
+          providerAvatarUrl: account.avatar_url ?? null,
+        });
+
+        console.log(`[installation] Created team: ${slug} (${teamId})`);
+
+        return c.json({
+          message: "installation created",
+          team_id: teamId,
+          team_slug: slug,
+          account: account.login,
+        });
+      }
+
+      case "deleted": {
+        // Soft-delete team when app is uninstalled
+        await db
+          .update(teams)
+          .set({ deletedAt: new Date(), updatedAt: new Date() })
+          .where(eq(teams.providerInstallationId, String(installation.id)));
+
+        console.log(
+          `[installation] Soft-deleted team for installation ${installation.id}`
+        );
+
+        return c.json({
+          message: "installation deleted",
+          account: account.login,
+        });
+      }
+
+      case "suspend": {
+        // Suspend team
+        await db
+          .update(teams)
+          .set({ suspendedAt: new Date(), updatedAt: new Date() })
+          .where(eq(teams.providerInstallationId, String(installation.id)));
+
+        return c.json({
+          message: "installation suspended",
+          account: account.login,
+        });
+      }
+
+      case "unsuspend": {
+        // Unsuspend team
+        await db
+          .update(teams)
+          .set({ suspendedAt: null, updatedAt: new Date() })
+          .where(eq(teams.providerInstallationId, String(installation.id)));
+
+        return c.json({
+          message: "installation unsuspended",
+          account: account.login,
+        });
+      }
+
+      default:
+        return c.json({ message: "ignored", action });
+    }
+  } catch (error) {
+    console.error("[installation] Error processing:", error);
+    return c.json(
+      {
+        message: "installation error",
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
+      500
+    );
+  } finally {
+    await client.end();
   }
 };
 

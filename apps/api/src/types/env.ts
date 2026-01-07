@@ -18,4 +18,8 @@ export interface Env {
   // WorkOS AuthKit credentials
   WORKOS_CLIENT_ID: string;
   WORKOS_SUBDOMAIN: string;
+  WORKOS_API_KEY: string; // For OAuth code exchange
+
+  // OAuth configuration (optional)
+  ALLOWED_REDIRECT_URIS?: string; // Comma-separated list of allowed redirect URIs
 }
