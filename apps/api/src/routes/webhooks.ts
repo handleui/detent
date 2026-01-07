@@ -2,7 +2,7 @@ import { eq, inArray } from "drizzle-orm";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { createDb } from "../db/client";
-import { organizations, projects } from "../db/schema";
+import { createProviderSlug, organizations, projects } from "../db/schema";
 import { webhookSignatureMiddleware } from "../middleware/webhook-signature";
 import { createGitHubService } from "../services/github";
 import type { Env } from "../types/env";
@@ -96,6 +96,23 @@ interface InstallationRepositoriesPayload {
   }>;
 }
 
+interface RepositoryPayload {
+  action: "renamed" | "transferred" | "privatized" | "publicized";
+  repository: {
+    id: number;
+    name: string;
+    full_name: string;
+    private: boolean;
+    default_branch?: string;
+  };
+  changes?: {
+    repository?: {
+      name?: { from: string };
+    };
+  };
+  installation?: { id: number };
+}
+
 interface DetentCommand {
   type: "heal" | "status" | "help" | "unknown";
   dryRun?: boolean;
@@ -108,7 +125,8 @@ interface WebhookVariables {
     | IssueCommentPayload
     | PingPayload
     | InstallationPayload
-    | InstallationRepositoriesPayload;
+    | InstallationRepositoriesPayload
+    | RepositoryPayload;
 }
 
 type WebhookContext = Context<{ Bindings: Env; Variables: WebhookVariables }>;
@@ -144,6 +162,9 @@ app.post("/github", webhookSignatureMiddleware, (c: WebhookContext) => {
         c,
         payload as InstallationRepositoriesPayload
       );
+
+    case "repository":
+      return handleRepositoryEvent(c, payload as RepositoryPayload);
 
     default:
       console.log(`[webhook] Ignoring unhandled event: ${event}`);
@@ -257,26 +278,33 @@ const generateUniqueSlug = async (
   db: DbClient,
   baseSlug: string
 ): Promise<string> => {
-  let slug = baseSlug;
-  let slugAttempt = 0;
   const maxSlugAttempts = 10;
 
-  while (slugAttempt < maxSlugAttempts) {
-    const slugConflict = await db
-      .select({ id: organizations.id })
-      .from(organizations)
-      .where(eq(organizations.slug, slug))
-      .limit(1);
+  // Generate all potential slugs upfront: baseSlug, baseSlug-1, baseSlug-2, ...
+  const potentialSlugs = [
+    baseSlug,
+    ...Array.from(
+      { length: maxSlugAttempts },
+      (_, i) => `${baseSlug}-${i + 1}`
+    ),
+  ];
 
-    if (slugConflict.length === 0) {
+  // Single query to find all existing slugs that match our potential slugs
+  const existingSlugs = await db
+    .select({ slug: organizations.slug })
+    .from(organizations)
+    .where(inArray(organizations.slug, potentialSlugs));
+
+  const existingSlugSet = new Set(existingSlugs.map((r) => r.slug));
+
+  // Return the first available slug
+  for (const slug of potentialSlugs) {
+    if (!existingSlugSet.has(slug)) {
       return slug;
     }
-
-    slugAttempt++;
-    slug = `${baseSlug}-${slugAttempt}`;
   }
 
-  // Fallback: append random suffix
+  // Fallback: append random suffix (all 11 potential slugs are taken)
   return `${baseSlug}-${crypto.randomUUID().slice(0, 8)}`;
 };
 
@@ -308,7 +336,8 @@ const handleInstallationCreated = async (
 
   // Create organization when app is installed
   const organizationId = crypto.randomUUID();
-  const baseSlug = account.login.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+  // Use provider-prefixed slug format: gh/login or gl/login
+  const baseSlug = createProviderSlug("github", account.login);
   const slug = await generateUniqueSlug(db, baseSlug);
 
   await db.insert(organizations).values({
@@ -333,6 +362,7 @@ const handleInstallationCreated = async (
     const projectValues = repositories.map((repo) => ({
       id: crypto.randomUUID(),
       organizationId,
+      handle: repo.name.toLowerCase(), // URL-friendly handle defaults to repo name
       providerRepoId: String(repo.id),
       providerRepoName: repo.name,
       providerRepoFullName: repo.full_name,
@@ -436,6 +466,26 @@ const handleInstallationEvent = async (
         });
       }
 
+      case "new_permissions_accepted": {
+        // User accepted new permissions requested by the app
+        // Update the organization's updatedAt to track this event
+        await db
+          .update(organizations)
+          .set({ updatedAt: new Date() })
+          .where(
+            eq(organizations.providerInstallationId, String(installation.id))
+          );
+
+        console.log(
+          `[installation] New permissions accepted for installation ${installation.id}`
+        );
+
+        return c.json({
+          message: "permissions updated",
+          account: account.login,
+        });
+      }
+
       default:
         return c.json({ message: "ignored", action });
     }
@@ -491,6 +541,7 @@ const handleInstallationRepositoriesEvent = async (
       const projectValues = repositories_added.map((repo) => ({
         id: crypto.randomUUID(),
         organizationId: org.id,
+        handle: repo.name.toLowerCase(), // URL-friendly handle defaults to repo name
         providerRepoId: String(repo.id),
         providerRepoName: repo.name,
         providerRepoFullName: repo.full_name,
@@ -529,6 +580,134 @@ const handleInstallationRepositoriesEvent = async (
     return c.json(
       {
         message: "installation_repositories error",
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
+      500
+    );
+  } finally {
+    await client.end();
+  }
+};
+
+// Handle repository events (renamed, transferred, visibility changed)
+const handleRepositoryEvent = async (
+  c: WebhookContext,
+  payload: RepositoryPayload
+) => {
+  const { action, repository, installation } = payload;
+
+  // Only process if we have an installation ID (app is installed)
+  if (!installation?.id) {
+    return c.json({ message: "ignored", reason: "no installation" });
+  }
+
+  console.log(
+    `[repository] ${action}: ${repository.full_name} (repo ID: ${repository.id})`
+  );
+
+  const { db, client } = await createDb(c.env);
+
+  try {
+    // Find the project by provider repo ID
+    const existingProject = await db
+      .select({
+        id: projects.id,
+        handle: projects.handle,
+        providerRepoName: projects.providerRepoName,
+        providerRepoFullName: projects.providerRepoFullName,
+        isPrivate: projects.isPrivate,
+      })
+      .from(projects)
+      .where(eq(projects.providerRepoId, String(repository.id)))
+      .limit(1);
+
+    const project = existingProject[0];
+    if (!project) {
+      console.log(
+        `[repository] Project not found for repo ID ${repository.id}, skipping`
+      );
+      return c.json({
+        message: "project not found",
+        repo_id: repository.id,
+      });
+    }
+
+    switch (action) {
+      case "renamed": {
+        // Update repo name and full_name, but preserve custom handle
+        await db
+          .update(projects)
+          .set({
+            providerRepoName: repository.name,
+            providerRepoFullName: repository.full_name,
+            updatedAt: new Date(),
+          })
+          .where(eq(projects.id, project.id));
+
+        console.log(
+          `[repository] Updated project ${project.id}: ${project.providerRepoFullName} -> ${repository.full_name}`
+        );
+
+        return c.json({
+          message: "repository renamed",
+          project_id: project.id,
+          old_name: project.providerRepoFullName,
+          new_name: repository.full_name,
+        });
+      }
+
+      case "privatized":
+      case "publicized": {
+        const isPrivate = action === "privatized";
+        await db
+          .update(projects)
+          .set({
+            isPrivate,
+            updatedAt: new Date(),
+          })
+          .where(eq(projects.id, project.id));
+
+        console.log(
+          `[repository] Updated project ${project.id} visibility: private=${isPrivate}`
+        );
+
+        return c.json({
+          message: `repository ${action}`,
+          project_id: project.id,
+          is_private: isPrivate,
+        });
+      }
+
+      case "transferred": {
+        // Repository was transferred to another owner
+        // The project stays with the original org, but we update the full_name
+        await db
+          .update(projects)
+          .set({
+            providerRepoFullName: repository.full_name,
+            updatedAt: new Date(),
+          })
+          .where(eq(projects.id, project.id));
+
+        console.log(
+          `[repository] Repository transferred, updated full_name to ${repository.full_name}`
+        );
+
+        return c.json({
+          message: "repository transferred",
+          project_id: project.id,
+          new_full_name: repository.full_name,
+        });
+      }
+
+      default:
+        return c.json({ message: "ignored", action });
+    }
+  } catch (error) {
+    console.error("[repository] Error processing:", error);
+    return c.json(
+      {
+        message: "repository error",
         error: error instanceof Error ? error.message : "Unknown error",
       },
       500

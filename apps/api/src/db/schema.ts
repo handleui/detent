@@ -101,6 +101,9 @@ export const organizations = pgTable(
     suspendedAt: timestamp("suspended_at"),
     deletedAt: timestamp("deleted_at"),
 
+    // Sync tracking - when we last verified state with the provider
+    lastSyncedAt: timestamp("last_synced_at"),
+
     // Timestamps
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -201,6 +204,8 @@ export const projects = pgTable(
     index("projects_provider_repo_full_name_idx").on(
       table.providerRepoFullName
     ),
+    // Index for webhook lookups by provider repo ID (e.g., repository.renamed events)
+    index("projects_provider_repo_id_idx").on(table.providerRepoId),
   ]
 );
 

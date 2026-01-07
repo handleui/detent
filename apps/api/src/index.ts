@@ -3,6 +3,7 @@ import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { secureHeaders } from "hono/secure-headers";
 import { authMiddleware } from "./middleware/auth";
+import { rateLimitMiddleware } from "./middleware/rate-limit";
 import authRoutes from "./routes/auth";
 import healRoutes from "./routes/heal";
 import healthRoutes from "./routes/health";
@@ -60,7 +61,12 @@ app.use(
     },
     allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowHeaders: ["Content-Type", "Authorization"],
-    exposeHeaders: ["Content-Length"],
+    exposeHeaders: [
+      "Content-Length",
+      "X-RateLimit-Limit",
+      "X-RateLimit-Remaining",
+      "X-RateLimit-Reset",
+    ],
     maxAge: 86_400,
     credentials: true,
   })
@@ -73,9 +79,10 @@ app.route("/health", healthRoutes);
 // Webhook routes (verified by signature, not API key)
 app.route("/webhooks", webhookRoutes);
 
-// Protected routes (require JWT auth)
+// Protected routes (require JWT auth + rate limiting)
 const api = new Hono<{ Bindings: Env }>();
 api.use("*", authMiddleware);
+api.use("*", rateLimitMiddleware);
 api.route("/auth", authRoutes);
 api.route("/parse", parseRoutes);
 api.route("/heal", healRoutes);

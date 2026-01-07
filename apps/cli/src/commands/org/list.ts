@@ -44,7 +44,7 @@ const displayOrganizationWithProjects = (
       );
     }
   }
-  console.log("└" + "─".repeat(50));
+  console.log(`└${"─".repeat(50)}`);
 };
 
 const displayOrganizationSimple = (organization: Organization): void => {

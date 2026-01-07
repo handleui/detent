@@ -28,4 +28,8 @@ export interface Env {
   // Encryption key for sensitive data (GitLab tokens, etc.)
   // Generate with: openssl rand -base64 32
   ENCRYPTION_KEY?: string;
+
+  // Upstash Redis for rate limiting
+  UPSTASH_REDIS_REST_URL: string;
+  UPSTASH_REDIS_REST_TOKEN: string;
 }

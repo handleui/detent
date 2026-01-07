@@ -4,7 +4,7 @@
  * Leave an organization you are a member of.
  */
 
-import * as readline from "node:readline/promises";
+import { createInterface } from "node:readline/promises";
 import { defineCommand } from "citty";
 import {
   getOrganizations,
@@ -18,7 +18,7 @@ import {
 } from "../../lib/ui.js";
 
 const confirm = async (message: string): Promise<boolean> => {
-  const rl = readline.createInterface({
+  const rl = createInterface({
     input: process.stdin,
     output: process.stdout,
   });
@@ -29,6 +29,20 @@ const confirm = async (message: string): Promise<boolean> => {
   } finally {
     rl.close();
   }
+};
+
+const handleLeaveError = (error: unknown): never => {
+  const message = error instanceof Error ? error.message : String(error);
+
+  if (message.includes("only owner")) {
+    console.error("\n✗ Cannot leave organization");
+    console.error("You are the only owner. Transfer ownership before leaving.");
+  } else if (message.includes("not a member")) {
+    console.error("\n✗ You are not a member of this organization");
+  } else {
+    console.error("\nFailed to leave organization:", message);
+  }
+  process.exit(1);
 };
 
 export const leaveCommand = defineCommand({
@@ -126,19 +140,7 @@ export const leaveCommand = defineCommand({
         `\n✓ Successfully left "${selectedOrganization.organization_name}"`
       );
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-
-      if (message.includes("only owner")) {
-        console.error("\n✗ Cannot leave organization");
-        console.error(
-          "You are the only owner. Transfer ownership before leaving."
-        );
-      } else if (message.includes("not a member")) {
-        console.error("\n✗ You are not a member of this organization");
-      } else {
-        console.error("\nFailed to leave organization:", message);
-      }
-      process.exit(1);
+      handleLeaveError(error);
     }
   },
 });

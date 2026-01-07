@@ -148,6 +148,28 @@ interface RefResponse {
   object: { sha: string };
 }
 
+interface InstallationInfo {
+  id: number;
+  account: {
+    id: number;
+    login: string;
+    type: "Organization" | "User";
+    avatar_url?: string;
+  };
+  suspended_at: string | null;
+}
+
+interface InstallationReposResponse {
+  total_count: number;
+  repositories: Array<{
+    id: number;
+    name: string;
+    full_name: string;
+    private: boolean;
+    default_branch: string;
+  }>;
+}
+
 export const createGitHubService = (env: Env) => {
   const config: GitHubServiceConfig = {
     appId: env.GITHUB_APP_ID,
@@ -422,8 +444,85 @@ export const createGitHubService = (env: Env) => {
     return firstPR?.number ?? null;
   };
 
+  const getInstallationInfo = async (
+    installationId: number
+  ): Promise<InstallationInfo | null> => {
+    // Generate app JWT to call app-level endpoints
+    const jwt = await generateAppJwt(config);
+
+    const response = await fetch(
+      `${GITHUB_API}/app/installations/${installationId}`,
+      {
+        headers: {
+          Authorization: `Bearer ${jwt}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "User-Agent": "Detent-App",
+        },
+      }
+    );
+
+    if (response.status === 404) {
+      // Installation not found (uninstalled)
+      return null;
+    }
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(
+        `Failed to get installation info: ${response.status} ${error}`
+      );
+    }
+
+    return (await response.json()) as InstallationInfo;
+  };
+
+  const getInstallationRepos = async (
+    installationId: number
+  ): Promise<InstallationReposResponse["repositories"]> => {
+    const token = await getInstallationToken(installationId);
+    const allRepos: InstallationReposResponse["repositories"] = [];
+    let page = 1;
+    const perPage = 100;
+
+    // Paginate through all repos
+    while (true) {
+      const response = await fetch(
+        `${GITHUB_API}/installation/repositories?per_page=${perPage}&page=${page}`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "Detent-App",
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.text();
+        throw new Error(
+          `Failed to get installation repos: ${response.status} ${error}`
+        );
+      }
+
+      const data = (await response.json()) as InstallationReposResponse;
+      allRepos.push(...data.repositories);
+
+      // Check if we've fetched all repos
+      if (allRepos.length >= data.total_count) {
+        break;
+      }
+      page++;
+    }
+
+    return allRepos;
+  };
+
   return {
     getInstallationToken,
+    getInstallationInfo,
+    getInstallationRepos,
     fetchWorkflowLogs,
     postComment,
     pushCommit,
