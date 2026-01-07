@@ -27,7 +27,7 @@ export const selectOrganization = async (
 ): Promise<Organization | null> => {
   if (organizations.length === 0) {
     console.error(
-      "You are not a member of any organizations. Ask an organization admin to invite you."
+      "You are not a member of any organizations. You must be a member of a GitHub organization where Detent is installed."
     );
     return null;
   }

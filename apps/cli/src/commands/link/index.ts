@@ -80,7 +80,9 @@ export const linkCommand = defineCommand({
 
     if (organizationsResponse.organizations.length === 0) {
       console.error("You are not a member of any organizations.");
-      console.error("Ask an organization admin to invite you.");
+      console.error(
+        "You must be a member of the GitHub organization where Detent is installed."
+      );
       process.exit(1);
     }
 

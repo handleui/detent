@@ -220,16 +220,6 @@ export interface OrganizationMembersResponse {
   members: OrganizationMember[];
 }
 
-export interface JoinOrganizationResponse {
-  organization_id: string;
-  organization_name: string;
-  organization_slug: string;
-  role: "member" | "admin" | "owner";
-  github_linked: boolean;
-  github_username: string | null;
-  joined: boolean;
-}
-
 export interface LeaveOrganizationResponse {
   success: boolean;
 }
@@ -244,16 +234,6 @@ export const listOrganizationMembers = (
     { accessToken }
   );
 
-export const joinOrganization = (
-  accessToken: string,
-  organizationSlug: string
-): Promise<JoinOrganizationResponse> =>
-  apiRequest<JoinOrganizationResponse>("/v1/organization-members/join", {
-    accessToken,
-    method: "POST",
-    body: { organization_slug: organizationSlug },
-  });
-
 export const leaveOrganization = (
   accessToken: string,
   organizationId: string
@@ -263,3 +243,26 @@ export const leaveOrganization = (
     method: "POST",
     body: { organization_id: organizationId },
   });
+
+// ============================================================================
+// GitHub Organization Types (for --available flag)
+// ============================================================================
+
+export interface GitHubOrgWithStatus {
+  id: number;
+  login: string;
+  avatar_url: string;
+  can_install: boolean;
+  already_installed: boolean;
+  detent_org_id?: string;
+}
+
+export interface GitHubOrgsResponse {
+  orgs: GitHubOrgWithStatus[];
+}
+
+// GitHub Organizations API methods
+export const getGitHubOrgs = (
+  accessToken: string
+): Promise<GitHubOrgsResponse> =>
+  apiRequest<GitHubOrgsResponse>("/v1/auth/github-orgs", { accessToken });

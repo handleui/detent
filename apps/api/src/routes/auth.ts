@@ -5,11 +5,33 @@
  * with GitHub identity information obtained during authentication.
  */
 
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { Hono } from "hono";
 import { createDb } from "../db/client";
-import { organizationMembers } from "../db/schema";
+import { organizationMembers, organizations } from "../db/schema";
 import type { Env } from "../types/env";
+
+// GitHub API types
+interface GitHubOrg {
+  id: number;
+  login: string;
+  avatar_url: string;
+}
+
+interface GitHubOrgMembership {
+  role: "admin" | "member";
+  state: "active" | "pending";
+}
+
+// Response type for github-orgs endpoint
+interface GitHubOrgWithStatus {
+  id: number;
+  login: string;
+  avatar_url: string;
+  can_install: boolean;
+  already_installed: boolean;
+  detent_org_id?: string;
+}
 
 // WorkOS identity from /user_management/users/:id/identities
 interface WorkOSIdentity {
@@ -146,6 +168,37 @@ app.post("/sync-identity", async (c) => {
         providerUsername: organizationMembers.providerUsername,
       });
 
+    // Auto-link organizations where this user is the installer but has no membership
+    const installerOrgs = await db.query.organizations.findMany({
+      where: and(
+        eq(organizations.installerGithubId, githubUserId),
+        isNull(organizations.deletedAt)
+      ),
+    });
+
+    let autoLinkedCount = 0;
+    for (const org of installerOrgs) {
+      const existingMembership = await db.query.organizationMembers.findFirst({
+        where: and(
+          eq(organizationMembers.userId, auth.userId),
+          eq(organizationMembers.organizationId, org.id)
+        ),
+      });
+
+      if (!existingMembership) {
+        await db.insert(organizationMembers).values({
+          id: crypto.randomUUID(),
+          organizationId: org.id,
+          userId: auth.userId,
+          role: "owner",
+          providerUserId: githubUserId,
+          providerUsername: githubUsername,
+          providerLinkedAt: new Date(),
+        });
+        autoLinkedCount++;
+      }
+    }
+
     return c.json({
       user_id: auth.userId,
       email: user.email,
@@ -155,6 +208,7 @@ app.post("/sync-identity", async (c) => {
       github_user_id: githubUserId,
       github_username: githubUsername,
       organizations_updated: updatedMembers.length,
+      installer_orgs_linked: autoLinkedCount,
     });
   } finally {
     await client.end();
@@ -235,6 +289,153 @@ app.get("/me", async (c) => {
   } finally {
     await client.end();
   }
+});
+
+/**
+ * GET /github-orgs
+ * List GitHub organizations where the authenticated user can install the Detent GitHub App.
+ * Returns org details with installation status and user's admin capability.
+ */
+app.get("/github-orgs", async (c) => {
+  const auth = c.get("auth");
+
+  // Fetch GitHub OAuth token from WorkOS Pipes API
+  const tokenResponse = await fetch(
+    "https://api.workos.com/data-integrations/github/token",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${c.env.WORKOS_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        user_id: auth.userId,
+      }),
+    }
+  );
+
+  if (!tokenResponse.ok) {
+    console.error(
+      `Failed to fetch GitHub token from WorkOS: ${tokenResponse.status} ${tokenResponse.statusText}`
+    );
+    return c.json({ error: "Failed to fetch GitHub OAuth token" }, 500);
+  }
+
+  const tokenData = (await tokenResponse.json()) as {
+    active: boolean;
+    access_token?: { token: string; expires_at: string };
+    error?: string;
+  };
+
+  if (!(tokenData.active && tokenData.access_token)) {
+    let errorMessage = "GitHub OAuth token not available";
+    if (tokenData.error === "not_installed") {
+      errorMessage =
+        "GitHub account not connected. Please authenticate with GitHub.";
+    } else if (tokenData.error === "needs_reauthorization") {
+      errorMessage =
+        "GitHub authorization expired. Please re-authenticate with GitHub.";
+    }
+    return c.json({ error: errorMessage, code: tokenData.error }, 401);
+  }
+
+  const githubToken = tokenData.access_token.token;
+
+  // Fetch user's GitHub organizations
+  const orgsResponse = await fetch("https://api.github.com/user/orgs", {
+    headers: {
+      Authorization: `Bearer ${githubToken}`,
+      Accept: "application/vnd.github.v3+json",
+      "User-Agent": "Detent-API",
+    },
+  });
+
+  if (!orgsResponse.ok) {
+    console.error(
+      `Failed to fetch GitHub orgs: ${orgsResponse.status} ${orgsResponse.statusText}`
+    );
+    return c.json({ error: "Failed to fetch GitHub organizations" }, 500);
+  }
+
+  const githubOrgs = (await orgsResponse.json()) as GitHubOrg[];
+
+  if (githubOrgs.length === 0) {
+    return c.json({ orgs: [] });
+  }
+
+  // Fetch membership details for each org in parallel to check admin status
+  const membershipPromises = githubOrgs.map((org) =>
+    fetch(`https://api.github.com/user/memberships/orgs/${org.login}`, {
+      headers: {
+        Authorization: `Bearer ${githubToken}`,
+        Accept: "application/vnd.github.v3+json",
+        "User-Agent": "Detent-API",
+      },
+    }).then(async (res) => {
+      if (!res.ok) {
+        return { org: org.login, membership: null };
+      }
+      const membership = (await res.json()) as GitHubOrgMembership;
+      return { org: org.login, membership };
+    })
+  );
+
+  const memberships = await Promise.all(membershipPromises);
+  const membershipMap = new Map(memberships.map((m) => [m.org, m.membership]));
+
+  // Query our database to find which orgs are already installed
+  const { db, client } = await createDb(c.env);
+  try {
+    const githubOrgIds = githubOrgs.map((org) => String(org.id));
+    const installedOrgs = await db.query.organizations.findMany({
+      where: (orgs, { and, eq, inArray }) =>
+        and(
+          eq(orgs.provider, "github"),
+          inArray(orgs.providerAccountId, githubOrgIds)
+        ),
+    });
+
+    const installedOrgMap = new Map(
+      installedOrgs.map((org) => [org.providerAccountId, org])
+    );
+
+    // Build response
+    const orgsWithStatus: GitHubOrgWithStatus[] = githubOrgs.map((org) => {
+      const membership = membershipMap.get(org.login);
+      const installedOrg = installedOrgMap.get(String(org.id));
+
+      return {
+        id: org.id,
+        login: org.login,
+        avatar_url: org.avatar_url,
+        can_install:
+          membership?.role === "admin" && membership?.state === "active",
+        already_installed: Boolean(installedOrg),
+        ...(installedOrg && { detent_org_id: installedOrg.id }),
+      };
+    });
+
+    return c.json({ orgs: orgsWithStatus });
+  } finally {
+    await client.end();
+  }
+});
+
+/**
+ * GET /install-url
+ * Generate a GitHub App installation URL with a pre-selected target organization
+ */
+app.get("/install-url", (c) => {
+  const targetId = c.req.query("target_id");
+
+  if (!targetId) {
+    return c.json({ error: "target_id query parameter is required" }, 400);
+  }
+
+  const appName = "detent";
+  const url = `https://github.com/apps/${appName}/installations/new?target_id=${targetId}`;
+
+  return c.json({ url });
 });
 
 /**

@@ -44,7 +44,7 @@ const displayOrgStatus = (status: OrgStatusResponse): void => {
       console.log("GitHub App:   Installed ✓");
     } else {
       console.log("GitHub App:   Not installed");
-      console.log("\nRun `detent org create` to install the GitHub App.");
+      console.log("\nRun `detent org install` to install the GitHub App.");
     }
   }
 

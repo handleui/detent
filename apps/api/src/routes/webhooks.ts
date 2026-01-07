@@ -2,7 +2,12 @@ import { and, eq, inArray, isNotNull } from "drizzle-orm";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { createDb } from "../db/client";
-import { createProviderSlug, organizations, projects } from "../db/schema";
+import {
+  createProviderSlug,
+  organizationMembers,
+  organizations,
+  projects,
+} from "../db/schema";
 import { webhookSignatureMiddleware } from "../middleware/webhook-signature";
 import { createGitHubService } from "../services/github";
 import type { Env } from "../types/env";
@@ -299,6 +304,64 @@ const handleWorkflowRunEvent = async (
 // Generate a unique slug for an organization
 type DbClient = Awaited<ReturnType<typeof createDb>>["db"];
 
+// Auto-link installer to organization if they have an existing Detent account
+const autoLinkInstaller = async (
+  db: DbClient,
+  organizationId: string,
+  installerGithubId: string,
+  installerUsername: string
+): Promise<boolean> => {
+  // Check if installer already has a Detent account (via any org membership with matching GitHub ID)
+  const existingMember = await db
+    .select({
+      userId: organizationMembers.userId,
+    })
+    .from(organizationMembers)
+    .where(eq(organizationMembers.providerUserId, installerGithubId))
+    .limit(1);
+
+  if (!existingMember[0]) {
+    // User doesn't exist in Detent system yet - will be linked via sync-identity endpoint later
+    return false;
+  }
+
+  // Check if they already have membership to this specific org
+  const existingMembership = await db
+    .select({ id: organizationMembers.id })
+    .from(organizationMembers)
+    .where(
+      and(
+        eq(organizationMembers.userId, existingMember[0].userId),
+        eq(organizationMembers.organizationId, organizationId)
+      )
+    )
+    .limit(1);
+
+  if (existingMembership[0]) {
+    // Already a member of this org
+    console.log(
+      `[webhook] Installer ${installerGithubId} already has membership to org ${organizationId}`
+    );
+    return false;
+  }
+
+  // Create owner membership for the installer
+  await db.insert(organizationMembers).values({
+    id: crypto.randomUUID(),
+    organizationId,
+    userId: existingMember[0].userId,
+    role: "owner",
+    providerUserId: installerGithubId,
+    providerUsername: installerUsername,
+    providerLinkedAt: new Date(),
+  });
+
+  console.log(
+    `[webhook] Auto-linked installer ${installerGithubId} (${installerUsername}) as owner to org ${organizationId}`
+  );
+  return true;
+};
+
 const generateUniqueSlug = async (
   db: DbClient,
   baseSlug: string
@@ -411,6 +474,9 @@ const handleInstallationCreated = async (
         await db.insert(projects).values(projectValues).onConflictDoNothing();
       }
 
+      // Try to auto-link the installer if they have an existing Detent account
+      await autoLinkInstaller(db, existing.id, String(sender.id), sender.login);
+
       return {
         existing: true,
         id: existing.id,
@@ -497,6 +563,9 @@ const handleInstallationCreated = async (
       `[installation] Created ${repositories.length} projects for organization ${slug}`
     );
   }
+
+  // Try to auto-link the installer if they have an existing Detent account
+  await autoLinkInstaller(db, organizationId, String(sender.id), sender.login);
 
   return { organizationId, slug };
 };

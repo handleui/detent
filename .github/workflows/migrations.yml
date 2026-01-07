@@ -7,6 +7,9 @@ on:
       - "apps/api/src/db/schema.ts"
       - "apps/api/drizzle/**"
 
+permissions:
+  contents: read
+
 jobs:
   migrate:
     runs-on: ubuntu-latest

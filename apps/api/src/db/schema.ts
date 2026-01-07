@@ -127,6 +127,8 @@ export const organizations = pgTable(
     ),
     // Enterprise lookup
     index("organizations_enterprise_id_idx").on(table.enterpriseId),
+    // Installer lookup (for granting owner role on first access)
+    index("organizations_installer_github_id_idx").on(table.installerGithubId),
   ]
 );
 

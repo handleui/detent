@@ -109,7 +109,7 @@ describe("selectOrganization", () => {
 
     expect(result).toBeNull();
     expect(consoleErrorSpy).toHaveBeenCalledWith(
-      "You are not a member of any organizations. Ask an organization admin to invite you."
+      "You are not a member of any organizations. You must be a member of a GitHub organization where Detent is installed."
     );
   });
 
