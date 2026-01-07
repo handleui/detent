@@ -167,6 +167,10 @@ export const projects = pgTable(
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
 
+    // Handle for URL-friendly identification (e.g., "api" in @gh/handleui/api)
+    // Defaults to providerRepoName, unique within organization
+    handle: varchar("handle", { length: 255 }).notNull(),
+
     // CI Provider repo info (GitHub repo, GitLab project)
     providerRepoId: varchar("provider_repo_id", { length: 255 }).notNull(),
     providerRepoName: varchar("provider_repo_name", { length: 255 }).notNull(),
@@ -185,6 +189,11 @@ export const projects = pgTable(
   },
   (table) => [
     index("projects_organization_id_idx").on(table.organizationId),
+    // Handle must be unique within organization
+    uniqueIndex("projects_org_handle_idx").on(
+      table.organizationId,
+      table.handle
+    ),
     uniqueIndex("projects_org_repo_idx").on(
       table.organizationId,
       table.providerRepoId

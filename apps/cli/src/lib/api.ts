@@ -148,3 +148,118 @@ export const getOrgStatus = (
     `/v1/organizations/${encodeURIComponent(organizationId)}/status`,
     { accessToken }
   );
+
+// ============================================================================
+// Project Types
+// ============================================================================
+
+export interface Project {
+  project_id: string;
+  organization_id: string;
+  organization_name?: string;
+  organization_slug?: string;
+  provider_repo_id: string;
+  provider_repo_name: string;
+  provider_repo_full_name: string;
+  provider_default_branch: string | null;
+  is_private: boolean;
+  created_at: string;
+}
+
+export interface ListProjectsResponse {
+  projects: Project[];
+}
+
+export interface ProjectDetailsResponse extends Project {
+  organization_name: string;
+  organization_slug: string;
+}
+
+// Project API methods
+export const listProjects = (
+  accessToken: string,
+  organizationId: string
+): Promise<ListProjectsResponse> =>
+  apiRequest<ListProjectsResponse>(
+    `/v1/projects?organization_id=${encodeURIComponent(organizationId)}`,
+    { accessToken }
+  );
+
+export const getProject = (
+  accessToken: string,
+  projectId: string
+): Promise<ProjectDetailsResponse> =>
+  apiRequest<ProjectDetailsResponse>(
+    `/v1/projects/${encodeURIComponent(projectId)}`,
+    { accessToken }
+  );
+
+export const lookupProject = (
+  accessToken: string,
+  repoFullName: string
+): Promise<ProjectDetailsResponse> =>
+  apiRequest<ProjectDetailsResponse>(
+    `/v1/projects/lookup?repo=${encodeURIComponent(repoFullName)}`,
+    { accessToken }
+  );
+
+// ============================================================================
+// Organization Member Types
+// ============================================================================
+
+export interface OrganizationMember {
+  user_id: string;
+  role: "owner" | "admin" | "member";
+  github_linked: boolean;
+  github_user_id: string | null;
+  github_username: string | null;
+  joined_at: string;
+}
+
+export interface OrganizationMembersResponse {
+  members: OrganizationMember[];
+}
+
+export interface JoinOrganizationResponse {
+  organization_id: string;
+  organization_name: string;
+  organization_slug: string;
+  role: "member" | "admin" | "owner";
+  github_linked: boolean;
+  github_username: string | null;
+  joined: boolean;
+}
+
+export interface LeaveOrganizationResponse {
+  success: boolean;
+}
+
+// Organization member API methods
+export const listOrganizationMembers = (
+  accessToken: string,
+  organizationId: string
+): Promise<OrganizationMembersResponse> =>
+  apiRequest<OrganizationMembersResponse>(
+    `/v1/organization-members?organization_id=${encodeURIComponent(organizationId)}`,
+    { accessToken }
+  );
+
+export const joinOrganization = (
+  accessToken: string,
+  organizationSlug: string
+): Promise<JoinOrganizationResponse> =>
+  apiRequest<JoinOrganizationResponse>("/v1/organization-members/join", {
+    accessToken,
+    method: "POST",
+    body: { organization_slug: organizationSlug },
+  });
+
+export const leaveOrganization = (
+  accessToken: string,
+  organizationId: string
+): Promise<LeaveOrganizationResponse> =>
+  apiRequest<LeaveOrganizationResponse>("/v1/organization-members/leave", {
+    accessToken,
+    method: "POST",
+    body: { organization_id: organizationId },
+  });
