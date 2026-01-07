@@ -97,6 +97,10 @@ export const organizations = pgTable(
     // GitLab-specific: Webhook secret for manual webhook setup
     providerWebhookSecret: varchar("provider_webhook_secret", { length: 255 }),
 
+    // Installer tracking - GitHub ID of user who installed the app (immutable)
+    // Used to grant "owner" role to the installer when they first access the org
+    installerGithubId: varchar("installer_github_id", { length: 255 }),
+
     // Status
     suspendedAt: timestamp("suspended_at"),
     deletedAt: timestamp("deleted_at"),

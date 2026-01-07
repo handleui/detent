@@ -22,6 +22,13 @@
       "when": 1767813401064,
       "tag": "0002_pale_albert_cleary",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1767815779021,
+      "tag": "0003_dry_nightshade",
+      "breakpoints": true
     }
   ]
 }

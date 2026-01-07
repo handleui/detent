@@ -1,4 +1,4 @@
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNotNull } from "drizzle-orm";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { createDb } from "../db/client";
@@ -64,6 +64,12 @@ interface InstallationPayload {
       avatar_url?: string;
     };
   };
+  // The user who triggered the webhook event (installer for "created" action)
+  sender: {
+    id: number;
+    login: string;
+    type: "User";
+  };
   repositories?: Array<{
     id: number;
     name: string;
@@ -113,6 +119,21 @@ interface RepositoryPayload {
   installation?: { id: number };
 }
 
+interface OrganizationPayload {
+  action: "renamed" | "member_added" | "member_removed" | "member_invited";
+  organization: {
+    id: number;
+    login: string;
+    avatar_url?: string;
+  };
+  changes?: {
+    login?: {
+      from: string;
+    };
+  };
+  installation?: { id: number };
+}
+
 interface DetentCommand {
   type: "heal" | "status" | "help" | "unknown";
   dryRun?: boolean;
@@ -126,7 +147,8 @@ interface WebhookVariables {
     | PingPayload
     | InstallationPayload
     | InstallationRepositoriesPayload
-    | RepositoryPayload;
+    | RepositoryPayload
+    | OrganizationPayload;
 }
 
 type WebhookContext = Context<{ Bindings: Env; Variables: WebhookVariables }>;
@@ -165,6 +187,9 @@ app.post("/github", webhookSignatureMiddleware, (c: WebhookContext) => {
 
     case "repository":
       return handleRepositoryEvent(c, payload as RepositoryPayload);
+
+    case "organization":
+      return handleOrganizationEvent(c, payload as OrganizationPayload);
 
     default:
       console.log(`[webhook] Ignoring unhandled event: ${event}`);
@@ -312,26 +337,121 @@ const generateUniqueSlug = async (
 const handleInstallationCreated = async (
   db: DbClient,
   installation: InstallationPayload["installation"],
-  repositories: InstallationPayload["repositories"]
+  repositories: InstallationPayload["repositories"],
+  sender: InstallationPayload["sender"]
 ): Promise<
   | { organizationId: string; slug: string }
-  | { existing: true; id: string; slug: string }
+  | { existing: true; id: string; slug: string; reactivated?: boolean }
 > => {
   const { account } = installation;
 
-  // Idempotency check: if organization already exists for this installation, return it
-  const existingOrg = await db
+  // Check by providerAccountId first (survives reinstalls - GitHub org/user ID is immutable)
+  const existingByAccount = await db
+    .select({
+      id: organizations.id,
+      slug: organizations.slug,
+      deletedAt: organizations.deletedAt,
+    })
+    .from(organizations)
+    .where(
+      and(
+        eq(organizations.provider, "github"),
+        eq(organizations.providerAccountId, String(account.id))
+      )
+    )
+    .limit(1);
+
+  if (existingByAccount[0]) {
+    const existing = existingByAccount[0];
+
+    if (existing.deletedAt) {
+      // Reactivate soft-deleted org with new installation
+      await db
+        .update(organizations)
+        .set({
+          deletedAt: null,
+          providerInstallationId: String(installation.id),
+          installerGithubId: String(sender.id),
+          providerAccountLogin: account.login, // May have changed
+          providerAvatarUrl: account.avatar_url ?? null,
+          updatedAt: new Date(),
+        })
+        .where(eq(organizations.id, existing.id));
+
+      // Reactivate soft-deleted projects for this org
+      await db
+        .update(projects)
+        .set({
+          removedAt: null,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(projects.organizationId, existing.id),
+            isNotNull(projects.removedAt)
+          )
+        );
+
+      console.log(
+        `[installation] Reactivated soft-deleted organization: ${existing.slug} (${existing.id})`
+      );
+
+      // Create any new projects that weren't in the previous installation
+      if (repositories && repositories.length > 0) {
+        const projectValues = repositories.map((repo) => ({
+          id: crypto.randomUUID(),
+          organizationId: existing.id,
+          handle: repo.name.toLowerCase(),
+          providerRepoId: String(repo.id),
+          providerRepoName: repo.name,
+          providerRepoFullName: repo.full_name,
+          isPrivate: repo.private,
+        }));
+
+        await db.insert(projects).values(projectValues).onConflictDoNothing();
+      }
+
+      return {
+        existing: true,
+        id: existing.id,
+        slug: existing.slug,
+        reactivated: true,
+      };
+    }
+
+    // Active org exists - idempotency: update installation ID and return
+    await db
+      .update(organizations)
+      .set({
+        providerInstallationId: String(installation.id),
+        providerAccountLogin: account.login, // May have changed
+        providerAvatarUrl: account.avatar_url ?? null,
+        updatedAt: new Date(),
+      })
+      .where(eq(organizations.id, existing.id));
+
+    console.log(
+      `[installation] Organization already exists for account ${account.id}, updated installation: ${existing.slug}`
+    );
+    return { existing: true, id: existing.id, slug: existing.slug };
+  }
+
+  // Fallback: check by installation ID (handles edge case of duplicate webhooks)
+  const existingByInstall = await db
     .select({ id: organizations.id, slug: organizations.slug })
     .from(organizations)
     .where(eq(organizations.providerInstallationId, String(installation.id)))
     .limit(1);
 
-  const existing = existingOrg[0];
-  if (existing) {
+  if (existingByInstall[0]) {
     console.log(
-      `[installation] Organization already exists for installation ${installation.id}: ${existing.slug}`
+      `[installation] Organization already exists for installation ${installation.id}: ${existingByInstall[0].slug}`
     );
-    return { existing: true, id: existing.id, slug: existing.slug };
+    return {
+      existing: true,
+      id: existingByInstall[0].id,
+      slug: existingByInstall[0].slug,
+    };
   }
 
   // Create organization when app is installed
@@ -351,6 +471,8 @@ const handleInstallationCreated = async (
       account.type === "Organization" ? "organization" : "user",
     providerInstallationId: String(installation.id),
     providerAvatarUrl: account.avatar_url ?? null,
+    // Track installer's GitHub ID (immutable) for owner role assignment
+    installerGithubId: String(sender.id),
   });
 
   console.log(
@@ -399,15 +521,19 @@ const handleInstallationEvent = async (
         const result = await handleInstallationCreated(
           db,
           installation,
-          repositories
+          repositories,
+          payload.sender
         );
 
         if ("existing" in result) {
           return c.json({
-            message: "installation already exists",
+            message: result.reactivated
+              ? "installation reactivated"
+              : "installation already exists",
             organization_id: result.id,
             organization_slug: result.slug,
             account: account.login,
+            reactivated: result.reactivated ?? false,
           });
         }
 
@@ -708,6 +834,118 @@ const handleRepositoryEvent = async (
     return c.json(
       {
         message: "repository error",
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
+      500
+    );
+  } finally {
+    await client.end();
+  }
+};
+
+// Handle organization events (GitHub org renamed, etc.)
+const handleOrganizationEvent = async (
+  c: WebhookContext,
+  payload: OrganizationPayload
+) => {
+  const { action, organization, changes, installation } = payload;
+
+  // Only process if we have an installation ID (app is installed)
+  if (!installation?.id) {
+    return c.json({ message: "ignored", reason: "no installation" });
+  }
+
+  console.log(
+    `[organization] ${action}: ${organization.login} (org ID: ${organization.id})`
+  );
+
+  // Only handle renamed action for now
+  if (action !== "renamed") {
+    return c.json({ message: "ignored", action });
+  }
+
+  const oldLogin = changes?.login?.from;
+  if (!oldLogin) {
+    console.log("[organization] No login change found in payload, skipping");
+    return c.json({ message: "ignored", reason: "no login change" });
+  }
+
+  const { db, client } = await createDb(c.env);
+
+  try {
+    // Find the organization by provider account ID (immutable)
+    const existingOrg = await db
+      .select({
+        id: organizations.id,
+        slug: organizations.slug,
+        providerAccountLogin: organizations.providerAccountLogin,
+      })
+      .from(organizations)
+      .where(
+        and(
+          eq(organizations.provider, "github"),
+          eq(organizations.providerAccountId, String(organization.id))
+        )
+      )
+      .limit(1);
+
+    const org = existingOrg[0];
+    if (!org) {
+      console.log(
+        `[organization] Organization not found for GitHub org ID ${organization.id}, skipping`
+      );
+      return c.json({
+        message: "organization not found",
+        github_org_id: organization.id,
+      });
+    }
+
+    // Update providerAccountLogin
+    const updates: {
+      providerAccountLogin: string;
+      providerAvatarUrl: string | null;
+      updatedAt: Date;
+      slug?: string;
+      name?: string;
+    } = {
+      providerAccountLogin: organization.login,
+      providerAvatarUrl: organization.avatar_url ?? null,
+      updatedAt: new Date(),
+    };
+
+    // Check if slug matches the provider pattern (gh/old-login)
+    const oldProviderSlug = createProviderSlug("github", oldLogin);
+    if (org.slug === oldProviderSlug) {
+      // Update slug to match new login
+      const newProviderSlug = createProviderSlug("github", organization.login);
+      updates.slug = newProviderSlug;
+      updates.name = organization.login;
+    }
+
+    await db
+      .update(organizations)
+      .set(updates)
+      .where(eq(organizations.id, org.id));
+
+    console.log(
+      `[organization] Updated organization ${org.id}: login ${oldLogin} -> ${organization.login}${
+        updates.slug ? `, slug ${org.slug} -> ${updates.slug}` : ""
+      }`
+    );
+
+    return c.json({
+      message: "organization renamed",
+      organization_id: org.id,
+      old_login: oldLogin,
+      new_login: organization.login,
+      old_slug: org.slug,
+      new_slug: updates.slug ?? org.slug,
+    });
+  } catch (error) {
+    console.error("[organization] Error processing:", error);
+    return c.json(
+      {
+        message: "organization error",
         error: error instanceof Error ? error.message : "Unknown error",
       },
       500

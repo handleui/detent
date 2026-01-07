@@ -8,9 +8,84 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { Hono } from "hono";
 import { createDb } from "../db/client";
-import { organizationMembers, organizations, projects } from "../db/schema";
+import { organizations, projects } from "../db/schema";
+import { getVerifiedGitHubIdentity } from "../lib/github-identity";
+import { verifyGitHubMembership } from "../lib/github-membership";
 import { validateHandle, validateSlug, validateUUID } from "../lib/validation";
 import type { Env } from "../types/env";
+
+interface OrgForVerification {
+  id: string;
+  provider: string;
+  providerAccountLogin: string;
+  providerInstallationId: string | null;
+  providerAccountType: string;
+  providerAccountId: string;
+  installerGithubId: string | null;
+}
+
+interface OrgAccessResult {
+  allowed: boolean;
+  role?: "owner" | "admin" | "member";
+  error?: string;
+}
+
+/**
+ * Verify user has access to an organization via on-demand GitHub membership check.
+ * This replaces stale database lookups with real-time verification.
+ */
+const verifyOrgAccess = async (
+  userId: string,
+  org: OrgForVerification,
+  env: Env
+): Promise<OrgAccessResult> => {
+  // Only GitHub orgs supported
+  if (org.provider !== "github" || !org.providerInstallationId) {
+    return { allowed: false, error: "GitHub App not installed" };
+  }
+
+  // Get verified GitHub identity
+  const githubIdentity = await getVerifiedGitHubIdentity(
+    userId,
+    env.WORKOS_API_KEY
+  );
+  if (!githubIdentity) {
+    return { allowed: false, error: "GitHub account not linked" };
+  }
+
+  // For personal accounts, check if user is the owner
+  if (org.providerAccountType === "user") {
+    if (githubIdentity.userId === org.providerAccountId) {
+      return { allowed: true, role: "owner" };
+    }
+    return { allowed: false, error: "Not the owner of this account" };
+  }
+
+  // Verify GitHub org membership
+  const membership = await verifyGitHubMembership(
+    githubIdentity.username,
+    org.providerAccountLogin,
+    org.providerInstallationId,
+    env
+  );
+
+  if (!membership.isMember) {
+    return {
+      allowed: false,
+      error: "Not a member of this GitHub organization",
+    };
+  }
+
+  // Determine role
+  let role: "owner" | "admin" | "member" = "member";
+  if (org.installerGithubId === githubIdentity.userId) {
+    role = "owner";
+  } else if (membership.role === "admin") {
+    role = "admin";
+  }
+
+  return { allowed: true, role };
+};
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -73,26 +148,28 @@ app.post("/", async (c) => {
 
   const { db, client } = await createDb(c.env);
   try {
-    // Verify user is a member of this organization
-    const member = await db.query.organizationMembers.findFirst({
-      where: and(
-        eq(organizationMembers.userId, auth.userId),
-        eq(organizationMembers.organizationId, organizationId)
-      ),
-      with: { organization: true },
+    // Fetch the organization
+    const org = await db.query.organizations.findFirst({
+      where: eq(organizations.id, organizationId),
     });
 
-    if (!member) {
-      return c.json({ error: "Not a member of this organization" }, 403);
+    if (!org) {
+      return c.json({ error: "Organization not found" }, 404);
     }
 
     // Check if organization is suspended or deleted
-    if (member.organization.suspendedAt) {
+    if (org.suspendedAt) {
       return c.json({ error: "Organization is suspended" }, 403);
     }
 
-    if (member.organization.deletedAt) {
+    if (org.deletedAt) {
       return c.json({ error: "Organization has been deleted" }, 404);
+    }
+
+    // Verify user has access via on-demand GitHub membership check
+    const access = await verifyOrgAccess(auth.userId, org, c.env);
+    if (!access.allowed) {
+      return c.json({ error: access.error }, 403);
     }
 
     // Check if project already exists for this repo in this organization
@@ -175,16 +252,19 @@ app.get("/", async (c) => {
 
   const { db, client } = await createDb(c.env);
   try {
-    // Verify user is a member of this organization
-    const member = await db.query.organizationMembers.findFirst({
-      where: and(
-        eq(organizationMembers.userId, auth.userId),
-        eq(organizationMembers.organizationId, organizationId)
-      ),
+    // Fetch the organization
+    const org = await db.query.organizations.findFirst({
+      where: eq(organizations.id, organizationId),
     });
 
-    if (!member) {
-      return c.json({ error: "Not a member of this organization" }, 403);
+    if (!org) {
+      return c.json({ error: "Organization not found" }, 404);
+    }
+
+    // Verify user has access via on-demand GitHub membership check
+    const access = await verifyOrgAccess(auth.userId, org, c.env);
+    if (!access.allowed) {
+      return c.json({ error: access.error }, 403);
     }
 
     // Get all active projects for this organization
@@ -228,7 +308,7 @@ app.get("/lookup", async (c) => {
 
   const { db, client } = await createDb(c.env);
   try {
-    // Find project by repo full name
+    // Find project by repo full name, including organization for verification
     const project = await db.query.projects.findFirst({
       where: and(
         eq(projects.providerRepoFullName, repoFullName),
@@ -241,16 +321,14 @@ app.get("/lookup", async (c) => {
       return c.json({ error: "Project not found" }, 404);
     }
 
-    // Verify user is a member of the project's organization
-    const member = await db.query.organizationMembers.findFirst({
-      where: and(
-        eq(organizationMembers.userId, auth.userId),
-        eq(organizationMembers.organizationId, project.organizationId)
-      ),
-    });
-
-    if (!member) {
-      return c.json({ error: "Not a member of this organization" }, 403);
+    // Verify user has access via on-demand GitHub membership check
+    const access = await verifyOrgAccess(
+      auth.userId,
+      project.organization,
+      c.env
+    );
+    if (!access.allowed) {
+      return c.json({ error: access.error }, 403);
     }
 
     return c.json({
@@ -301,7 +379,7 @@ app.get("/by-handle", async (c) => {
 
   const { db, client } = await createDb(c.env);
   try {
-    // Single query: find org, project, and verify membership in parallel
+    // Find org by slug
     const org = await db.query.organizations.findFirst({
       where: and(
         eq(organizations.slug, orgSlug),
@@ -313,26 +391,20 @@ app.get("/by-handle", async (c) => {
       return c.json({ error: "Organization not found" }, 404);
     }
 
-    // Fetch project and verify membership in parallel (both depend only on org.id)
-    const [project, member] = await Promise.all([
-      db.query.projects.findFirst({
-        where: and(
-          eq(projects.organizationId, org.id),
-          eq(projects.handle, projectHandle.toLowerCase()),
-          isNull(projects.removedAt)
-        ),
-      }),
-      db.query.organizationMembers.findFirst({
-        where: and(
-          eq(organizationMembers.userId, auth.userId),
-          eq(organizationMembers.organizationId, org.id)
-        ),
-      }),
-    ]);
-
-    if (!member) {
-      return c.json({ error: "Not a member of this organization" }, 403);
+    // Verify user has access via on-demand GitHub membership check
+    const access = await verifyOrgAccess(auth.userId, org, c.env);
+    if (!access.allowed) {
+      return c.json({ error: access.error }, 403);
     }
+
+    // Find project by handle
+    const project = await db.query.projects.findFirst({
+      where: and(
+        eq(projects.organizationId, org.id),
+        eq(projects.handle, projectHandle.toLowerCase()),
+        isNull(projects.removedAt)
+      ),
+    });
 
     if (!project) {
       return c.json({ error: "Project not found" }, 404);
@@ -372,7 +444,7 @@ app.get("/:projectId", async (c) => {
 
   const { db, client } = await createDb(c.env);
   try {
-    // Get the project
+    // Get the project with organization for verification
     const project = await db.query.projects.findFirst({
       where: and(eq(projects.id, projectId), isNull(projects.removedAt)),
       with: { organization: true },
@@ -382,16 +454,14 @@ app.get("/:projectId", async (c) => {
       return c.json({ error: "Project not found" }, 404);
     }
 
-    // Verify user is a member of the project's organization
-    const member = await db.query.organizationMembers.findFirst({
-      where: and(
-        eq(organizationMembers.userId, auth.userId),
-        eq(organizationMembers.organizationId, project.organizationId)
-      ),
-    });
-
-    if (!member) {
-      return c.json({ error: "Not a member of this organization" }, 403);
+    // Verify user has access via on-demand GitHub membership check
+    const access = await verifyOrgAccess(
+      auth.userId,
+      project.organization,
+      c.env
+    );
+    if (!access.allowed) {
+      return c.json({ error: access.error }, 403);
     }
 
     return c.json({
@@ -428,28 +498,28 @@ app.delete("/:projectId", async (c) => {
 
   const { db, client } = await createDb(c.env);
   try {
-    // Get the project
+    // Get the project with organization for verification
     const project = await db.query.projects.findFirst({
       where: and(eq(projects.id, projectId), isNull(projects.removedAt)),
+      with: { organization: true },
     });
 
     if (!project) {
       return c.json({ error: "Project not found" }, 404);
     }
 
-    // Verify user is a member of the project's organization with admin or owner role
-    const member = await db.query.organizationMembers.findFirst({
-      where: and(
-        eq(organizationMembers.userId, auth.userId),
-        eq(organizationMembers.organizationId, project.organizationId)
-      ),
-    });
-
-    if (!member) {
-      return c.json({ error: "Not a member of this organization" }, 403);
+    // Verify user has access via on-demand GitHub membership check
+    const access = await verifyOrgAccess(
+      auth.userId,
+      project.organization,
+      c.env
+    );
+    if (!access.allowed) {
+      return c.json({ error: access.error }, 403);
     }
 
-    if (member.role === "member") {
+    // Only admins and owners can delete projects
+    if (access.role === "member") {
       return c.json(
         { error: "Only organization owners and admins can remove projects" },
         403

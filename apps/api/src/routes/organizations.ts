@@ -7,8 +7,12 @@
 import { and, count, eq, inArray, isNull } from "drizzle-orm";
 import { Hono } from "hono";
 import { createDb } from "../db/client";
-import { organizationMembers, organizations, projects } from "../db/schema";
-import { validateUUID } from "../lib/validation";
+import { organizations, projects } from "../db/schema";
+import {
+  githubOrgAccessMiddleware,
+  type OrgAccessContext,
+  requireRole,
+} from "../middleware/github-org-access";
 import { createGitHubService } from "../services/github";
 import type { Env } from "../types/env";
 
@@ -125,35 +129,19 @@ const app = new Hono<{ Bindings: Env }>();
  * GET /:organizationId/status
  * Get detailed status of an organization including GitHub App installation
  */
-app.get("/:organizationId/status", async (c) => {
-  const auth = c.get("auth");
-  const organizationId = c.req.param("organizationId");
-
-  // Validate organizationId format
-  const validation = validateUUID(organizationId, "organizationId");
-  if (!validation.valid) {
-    return c.json({ error: validation.error }, 400);
-  }
+app.get("/:organizationId/status", githubOrgAccessMiddleware, async (c) => {
+  const orgAccess = c.get("orgAccess") as OrgAccessContext;
+  const { organization } = orgAccess;
 
   const { db, client } = await createDb(c.env);
   try {
-    // Verify user is a member of this organization
-    const member = await db.query.organizationMembers.findFirst({
-      where: and(
-        eq(organizationMembers.userId, auth.userId),
-        eq(organizationMembers.organizationId, organizationId)
-      ),
-      with: { organization: true },
+    // Fetch full organization details (middleware only provides subset)
+    const fullOrg = await db.query.organizations.findFirst({
+      where: eq(organizations.id, organization.id),
     });
 
-    if (!member) {
-      return c.json({ error: "Not a member of this organization" }, 403);
-    }
-
-    const { organization } = member;
-
-    if (organization.deletedAt) {
-      return c.json({ error: "Organization has been deleted" }, 404);
+    if (!fullOrg) {
+      return c.json({ error: "Organization not found" }, 404);
     }
 
     // Count active projects efficiently using SQL COUNT
@@ -162,7 +150,7 @@ app.get("/:organizationId/status", async (c) => {
       .from(projects)
       .where(
         and(
-          eq(projects.organizationId, organizationId),
+          eq(projects.organizationId, organization.id),
           isNull(projects.removedAt)
         )
       );
@@ -171,17 +159,17 @@ app.get("/:organizationId/status", async (c) => {
     const projectCount = projectCountResult[0]?.count ?? 0;
 
     return c.json({
-      organization_id: organization.id,
-      organization_name: organization.name,
-      organization_slug: organization.slug,
-      provider: organization.provider,
-      provider_account_login: organization.providerAccountLogin,
-      provider_account_type: organization.providerAccountType,
+      organization_id: fullOrg.id,
+      organization_name: fullOrg.name,
+      organization_slug: fullOrg.slug,
+      provider: fullOrg.provider,
+      provider_account_login: fullOrg.providerAccountLogin,
+      provider_account_type: fullOrg.providerAccountType,
       app_installed: appInstalled,
-      suspended_at: organization.suspendedAt?.toISOString() ?? null,
+      suspended_at: fullOrg.suspendedAt?.toISOString() ?? null,
       project_count: projectCount,
-      created_at: organization.createdAt.toISOString(),
-      last_synced_at: organization.lastSyncedAt?.toISOString() ?? null,
+      created_at: fullOrg.createdAt.toISOString(),
+      last_synced_at: fullOrg.lastSyncedAt?.toISOString() ?? null,
     });
   } finally {
     await client.end();
@@ -193,186 +181,158 @@ app.get("/:organizationId/status", async (c) => {
  * Sync organization state with GitHub (check installation, update repos)
  * This reconciles our database with the current GitHub state
  */
-app.post("/:organizationId/sync", async (c) => {
-  const auth = c.get("auth");
-  const organizationId = c.req.param("organizationId");
+app.post(
+  "/:organizationId/sync",
+  githubOrgAccessMiddleware,
+  requireRole("owner", "admin"),
+  async (c) => {
+    const orgAccess = c.get("orgAccess") as OrgAccessContext;
+    const { organization } = orgAccess;
+    const organizationId = organization.id;
 
-  // Validate organizationId format
-  const validation = validateUUID(organizationId, "organizationId");
-  if (!validation.valid) {
-    return c.json({ error: validation.error }, 400);
-  }
-
-  const { db, client } = await createDb(c.env);
-  try {
-    // Verify user is an admin or owner of this organization
-    const member = await db.query.organizationMembers.findFirst({
-      where: and(
-        eq(organizationMembers.userId, auth.userId),
-        eq(organizationMembers.organizationId, organizationId)
-      ),
-      with: { organization: true },
-    });
-
-    if (!member) {
-      return c.json({ error: "Not a member of this organization" }, 403);
-    }
-
-    if (member.role === "member") {
-      return c.json(
-        { error: "Only organization owners and admins can trigger sync" },
-        403
-      );
-    }
-
-    const { organization } = member;
-
-    if (organization.deletedAt) {
-      return c.json({ error: "Organization has been deleted" }, 404);
-    }
-
-    // Only GitHub organizations can be synced (GitLab uses different mechanism)
-    if (organization.provider !== "github") {
-      return c.json(
-        { error: "Sync only supported for GitHub organizations" },
-        400
-      );
-    }
-
-    if (!organization.providerInstallationId) {
-      return c.json({ error: "No GitHub App installation found" }, 400);
-    }
-
+    // Middleware already verifies: GitHub provider, app installed, not suspended
     const github = createGitHubService(c.env);
     const installationId = Number(organization.providerInstallationId);
 
-    // 1. Check if installation still exists and get its status
-    const installationInfo = await github.getInstallationInfo(installationId);
+    const { db, client } = await createDb(c.env);
+    try {
+      // Fetch full org to get suspendedAt (middleware subset doesn't include it)
+      const fullOrg = await db.query.organizations.findFirst({
+        where: eq(organizations.id, organizationId),
+      });
 
-    if (!installationInfo) {
-      // Installation was removed - mark organization as deleted
+      if (!fullOrg) {
+        return c.json({ error: "Organization not found" }, 404);
+      }
+
+      // 1. Check if installation still exists and get its status
+      const installationInfo = await github.getInstallationInfo(installationId);
+
+      if (!installationInfo) {
+        // Installation was removed - mark organization as deleted
+        await db
+          .update(organizations)
+          .set({
+            deletedAt: new Date(),
+            lastSyncedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(eq(organizations.id, organizationId));
+
+        return c.json({
+          message: "installation_removed",
+          organization_id: organizationId,
+          synced: true,
+        });
+      }
+
+      // 2. Update suspension status if changed
+      const wasSuspended = Boolean(fullOrg.suspendedAt);
+      const isSuspended = Boolean(installationInfo.suspended_at);
+
+      if (wasSuspended !== isSuspended) {
+        await db
+          .update(organizations)
+          .set({
+            suspendedAt: isSuspended
+              ? new Date(installationInfo.suspended_at as string)
+              : null,
+            updatedAt: new Date(),
+          })
+          .where(eq(organizations.id, organizationId));
+      }
+
+      // 3. Get current repos from GitHub and reconcile with our projects
+      const githubRepos = await github.getInstallationRepos(installationId);
+      const githubRepoIds = new Set(githubRepos.map((r) => String(r.id)));
+
+      // Get our current active projects
+      const ourProjects = await db
+        .select({
+          id: projects.id,
+          providerRepoId: projects.providerRepoId,
+          providerRepoName: projects.providerRepoName,
+          providerRepoFullName: projects.providerRepoFullName,
+          isPrivate: projects.isPrivate,
+          removedAt: projects.removedAt,
+        })
+        .from(projects)
+        .where(eq(projects.organizationId, organizationId));
+
+      const ourProjectsByRepoId = new Map(
+        ourProjects.map((p) => [p.providerRepoId, p])
+      );
+
+      const result: SyncResult = { added: 0, removed: 0, updated: 0 };
+
+      // Find repos to add (in GitHub but not in our DB or were soft-deleted)
+      const reposToAdd = githubRepos.filter((repo) => {
+        const existing = ourProjectsByRepoId.get(String(repo.id));
+        return !existing || existing.removedAt;
+      });
+
+      // Process repos to add/reactivate
+      if (reposToAdd.length > 0) {
+        const addResult = await processReposToAdd(
+          db,
+          reposToAdd,
+          ourProjectsByRepoId,
+          organizationId
+        );
+        result.added = addResult.added;
+        result.updated += addResult.updated;
+      }
+
+      // Find repos to remove (in our DB but no longer in GitHub)
+      const projectsToRemove = ourProjects.filter(
+        (p) => !(p.removedAt || githubRepoIds.has(p.providerRepoId))
+      );
+
+      if (projectsToRemove.length > 0) {
+        const idsToRemove = projectsToRemove.map((p) => p.id);
+        await db
+          .update(projects)
+          .set({ removedAt: new Date(), updatedAt: new Date() })
+          .where(inArray(projects.id, idsToRemove));
+        result.removed = projectsToRemove.length;
+      }
+
+      // Update projects that exist in both (check for name/visibility changes)
+      const changedCount = await updateChangedProjects(
+        db,
+        githubRepos,
+        ourProjectsByRepoId
+      );
+      result.updated += changedCount;
+
+      // 4. Update lastSyncedAt
       await db
         .update(organizations)
-        .set({
-          deletedAt: new Date(),
-          lastSyncedAt: new Date(),
-          updatedAt: new Date(),
-        })
+        .set({ lastSyncedAt: new Date(), updatedAt: new Date() })
         .where(eq(organizations.id, organizationId));
 
       return c.json({
-        message: "installation_removed",
+        message: "sync completed",
         organization_id: organizationId,
-        synced: true,
+        suspended: isSuspended,
+        projects_added: result.added,
+        projects_removed: result.removed,
+        projects_updated: result.updated,
+        total_repos: githubRepos.length,
       });
-    }
-
-    // 2. Update suspension status if changed
-    const wasSuspended = Boolean(organization.suspendedAt);
-    const isSuspended = Boolean(installationInfo.suspended_at);
-
-    if (wasSuspended !== isSuspended) {
-      await db
-        .update(organizations)
-        .set({
-          suspendedAt: isSuspended
-            ? new Date(installationInfo.suspended_at as string)
-            : null,
-          updatedAt: new Date(),
-        })
-        .where(eq(organizations.id, organizationId));
-    }
-
-    // 3. Get current repos from GitHub and reconcile with our projects
-    const githubRepos = await github.getInstallationRepos(installationId);
-    const githubRepoIds = new Set(githubRepos.map((r) => String(r.id)));
-
-    // Get our current active projects
-    const ourProjects = await db
-      .select({
-        id: projects.id,
-        providerRepoId: projects.providerRepoId,
-        providerRepoName: projects.providerRepoName,
-        providerRepoFullName: projects.providerRepoFullName,
-        isPrivate: projects.isPrivate,
-        removedAt: projects.removedAt,
-      })
-      .from(projects)
-      .where(eq(projects.organizationId, organizationId));
-
-    const ourProjectsByRepoId = new Map(
-      ourProjects.map((p) => [p.providerRepoId, p])
-    );
-
-    const result: SyncResult = { added: 0, removed: 0, updated: 0 };
-
-    // Find repos to add (in GitHub but not in our DB or were soft-deleted)
-    const reposToAdd = githubRepos.filter((repo) => {
-      const existing = ourProjectsByRepoId.get(String(repo.id));
-      return !existing || existing.removedAt;
-    });
-
-    // Process repos to add/reactivate
-    if (reposToAdd.length > 0) {
-      const addResult = await processReposToAdd(
-        db,
-        reposToAdd,
-        ourProjectsByRepoId,
-        organizationId
+    } catch (error) {
+      console.error("[organizations/sync] Error:", error);
+      return c.json(
+        {
+          message: "sync error",
+          error: error instanceof Error ? error.message : "Unknown error",
+        },
+        500
       );
-      result.added = addResult.added;
-      result.updated += addResult.updated;
+    } finally {
+      await client.end();
     }
-
-    // Find repos to remove (in our DB but no longer in GitHub)
-    const projectsToRemove = ourProjects.filter(
-      (p) => !(p.removedAt || githubRepoIds.has(p.providerRepoId))
-    );
-
-    if (projectsToRemove.length > 0) {
-      const idsToRemove = projectsToRemove.map((p) => p.id);
-      await db
-        .update(projects)
-        .set({ removedAt: new Date(), updatedAt: new Date() })
-        .where(inArray(projects.id, idsToRemove));
-      result.removed = projectsToRemove.length;
-    }
-
-    // Update projects that exist in both (check for name/visibility changes)
-    const changedCount = await updateChangedProjects(
-      db,
-      githubRepos,
-      ourProjectsByRepoId
-    );
-    result.updated += changedCount;
-
-    // 4. Update lastSyncedAt
-    await db
-      .update(organizations)
-      .set({ lastSyncedAt: new Date(), updatedAt: new Date() })
-      .where(eq(organizations.id, organizationId));
-
-    return c.json({
-      message: "sync completed",
-      organization_id: organizationId,
-      suspended: isSuspended,
-      projects_added: result.added,
-      projects_removed: result.removed,
-      projects_updated: result.updated,
-      total_repos: githubRepos.length,
-    });
-  } catch (error) {
-    console.error("[organizations/sync] Error:", error);
-    return c.json(
-      {
-        message: "sync error",
-        error: error instanceof Error ? error.message : "Unknown error",
-      },
-      500
-    );
-  } finally {
-    await client.end();
   }
-});
+);
 
 export default app;
