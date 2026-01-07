@@ -21,6 +21,18 @@ export const organizationRoleEnum = pgEnum("organization_role", [
   "member",
 ]);
 
+// Provider short codes for handles (used in slugs/URLs)
+export const providerShortCodes: Record<"github" | "gitlab", string> = {
+  github: "gh",
+  gitlab: "gl",
+};
+
+// Helper to create provider-prefixed slug
+export const createProviderSlug = (
+  provider: "github" | "gitlab",
+  login: string
+): string => `${providerShortCodes[provider]}/${login.toLowerCase()}`;
+
 // ============================================================================
 // Enterprises (Groups multiple organizations - stub for future use)
 // ============================================================================

@@ -9,6 +9,28 @@ Always use Context7 for library/API documentation, code generation, or configura
 - **Lint/Fix**: `bun run lint` / `bun run fix`
 - **Types**: `bun run check-types`
 
+## Database Migrations (Critical)
+
+The API uses Drizzle ORM with a **migration-based workflow**. NEVER edit SQL files directly.
+
+### Commands
+- **Generate migration**: `cd apps/api && bun run db:generate` (after editing `schema.ts`)
+- **Apply migrations**: `cd apps/api && bun run db:migrate`
+- **View database**: `cd apps/api && bun run db:studio`
+
+### Workflow
+1. Edit `apps/api/src/db/schema.ts` (source of truth)
+2. Run `db:generate` → creates SQL file in `drizzle/` with snapshot
+3. Run `db:migrate` → applies unapplied migrations to database
+4. Commit both `schema.ts` AND generated `drizzle/` files
+
+### Rules
+- **NEVER manually edit** files in `drizzle/*.sql` or `drizzle/meta/`
+- **NEVER use `db:push`** in production - it can cause data loss on renames
+- Always let `db:generate` create migrations - it maintains snapshots for diffing
+- The `_journal.json` tracks migration order; snapshots track schema state
+- CI runs `db:migrate` on merge to main (see `.github/workflows/migrations.yml`)
+
 ## Git
 - Conventional commits, header only, no description
 
