@@ -49,12 +49,12 @@ export interface ConfigLoadResult {
 }
 
 /**
- * Project config for linking a repo to a team
+ * Project config for linking a repo to an organization
  * Stored in .detent/project.json
  */
 export interface ProjectConfig {
-  teamId: string;
-  teamSlug: string;
+  organizationId: string;
+  organizationSlug: string;
 }
 
 export interface ProjectConfigLoadResult {
@@ -521,7 +521,7 @@ export const validateTimeout = (value: number): ValidationResult => {
 export const getAllowedModels = (): readonly string[] => ALLOWED_MODELS;
 
 // ============================================================================
-// Project Config (repo-to-team binding)
+// Project Config (repo-to-organization binding)
 // ============================================================================
 
 /**
@@ -562,10 +562,11 @@ export const getProjectConfigSafe = (
     }
     const parsed = JSON.parse(data) as ProjectConfig;
 
-    if (!(parsed.teamId && parsed.teamSlug)) {
+    if (!(parsed.organizationId && parsed.organizationSlug)) {
       return {
         config: null,
-        error: "invalid project config: missing teamId or teamSlug",
+        error:
+          "invalid project config: missing organizationId or organizationSlug",
       };
     }
 
@@ -614,7 +615,7 @@ export const saveProjectConfig = (
 };
 
 /**
- * Removes project config (unlinks repo from team)
+ * Removes project config (unlinks repo from organization)
  */
 export const removeProjectConfig = async (repoRoot: string): Promise<void> => {
   const configPath = getProjectConfigPath(repoRoot);
@@ -626,7 +627,7 @@ export const removeProjectConfig = async (repoRoot: string): Promise<void> => {
 };
 
 /**
- * Checks if a repository is linked to a team
+ * Checks if a repository is linked to an organization
  */
 export const isRepoLinked = (repoRoot: string): boolean => {
   return existsSync(getProjectConfigPath(repoRoot));

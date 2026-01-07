@@ -1,5 +1,5 @@
 /**
- * Unlink command - removes the link between this repository and a team
+ * Unlink command - removes the link between this repository and an organization
  */
 
 import { findGitRoot } from "@detent/git";
@@ -24,7 +24,7 @@ const confirm = async (message: string): Promise<boolean> => {
 export const unlinkCommand = defineCommand({
   meta: {
     name: "unlink",
-    description: "Unlink this repository from its team",
+    description: "Unlink this repository from its organization",
   },
   args: {
     force: {
@@ -44,11 +44,11 @@ export const unlinkCommand = defineCommand({
     // Check if repository is linked
     const projectConfig = getProjectConfig(repoRoot);
     if (!projectConfig) {
-      console.log("\nThis repository is not linked to any team.");
+      console.log("\nThis repository is not linked to any organization.");
       return;
     }
 
-    console.log(`\nLinked to team: ${projectConfig.teamSlug}`);
+    console.log(`\nLinked to organization: ${projectConfig.organizationSlug}`);
 
     if (!args.force) {
       const confirmed = await confirm("\nAre you sure you want to unlink?");
@@ -59,6 +59,6 @@ export const unlinkCommand = defineCommand({
     }
 
     await removeProjectConfig(repoRoot);
-    console.log("\nSuccessfully unlinked repository from team.");
+    console.log("\nSuccessfully unlinked repository from organization.");
   },
 });

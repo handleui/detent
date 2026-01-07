@@ -71,45 +71,26 @@ export const apiRequest = async <T>(
   return response.json() as Promise<T>;
 };
 
-// GitHub linking types
-export interface Team {
-  team_id: string;
-  team_name: string;
-  team_slug: string;
+// Organization types
+export interface Organization {
+  organization_id: string;
+  organization_name: string;
+  organization_slug: string;
   github_org: string;
   role: string;
   github_linked: boolean;
   github_username: string | null;
 }
 
-export interface TeamsResponse {
-  teams: Team[];
+export interface OrganizationsResponse {
+  organizations: Organization[];
 }
 
-// GitHub linking API methods
-export const getTeams = (accessToken: string): Promise<TeamsResponse> =>
-  apiRequest<TeamsResponse>("/v1/github/teams", { accessToken });
-
-// GitHub App installation types
-export interface AppStatusResponse {
-  team_id: string;
-  team_name: string;
-  team_slug: string;
-  github_org: string;
-  app_installed: boolean;
-  installation_id: string | null;
-  installed_at: string | null;
-  suspended_at: string | null;
-}
-
-export const getAppStatus = (
-  accessToken: string,
-  teamId: string
-): Promise<AppStatusResponse> =>
-  apiRequest<AppStatusResponse>(
-    `/v1/github/app-status?team_id=${encodeURIComponent(teamId)}`,
-    { accessToken }
-  );
+// Organization API methods
+export const getOrganizations = (
+  accessToken: string
+): Promise<OrganizationsResponse> =>
+  apiRequest<OrganizationsResponse>("/v1/auth/organizations", { accessToken });
 
 // Auth identity sync types
 export interface SyncIdentityResponse {
@@ -120,7 +101,7 @@ export interface SyncIdentityResponse {
   github_synced: boolean;
   github_user_id?: string;
   github_username: string | null;
-  teams_updated?: number;
+  organizations_updated?: number;
 }
 
 export interface MeResponse {
@@ -144,3 +125,26 @@ export const syncIdentity = (
 
 export const getMe = (accessToken: string): Promise<MeResponse> =>
   apiRequest<MeResponse>("/v1/auth/me", { accessToken });
+
+// Organization status types
+export interface OrgStatusResponse {
+  organization_id: string;
+  organization_name: string;
+  organization_slug: string;
+  provider: "github" | "gitlab";
+  provider_account_login: string;
+  provider_account_type: "organization" | "user";
+  app_installed: boolean;
+  suspended_at: string | null;
+  project_count: number;
+  created_at: string;
+}
+
+export const getOrgStatus = (
+  accessToken: string,
+  organizationId: string
+): Promise<OrgStatusResponse> =>
+  apiRequest<OrgStatusResponse>(
+    `/v1/organizations/${encodeURIComponent(organizationId)}/status`,
+    { accessToken }
+  );

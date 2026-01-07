@@ -34,7 +34,7 @@ vi.mock("../db/client", () => ({
   createDb: vi.fn(() => Promise.resolve({ db: mockDb, client: mockClient })),
 }));
 
-// Mock crypto.randomUUID for deterministic team IDs
+// Mock crypto.randomUUID for deterministic organization IDs
 const mockUUID = "test-uuid-1234-5678-9abc-def012345678";
 vi.spyOn(crypto, "randomUUID").mockImplementation(() => mockUUID);
 
@@ -102,8 +102,8 @@ const makeWebhookRequest = async (
 // Response JSON type for installation events
 interface InstallationResponse {
   message: string;
-  team_id?: string;
-  team_slug?: string;
+  organization_id?: string;
+  organization_slug?: string;
   account?: string;
   action?: string;
   error?: string;
@@ -129,7 +129,7 @@ describe("webhooks - installation events", () => {
   });
 
   describe("installation.created", () => {
-    it("creates a new team with correct fields", async () => {
+    it("creates a new organization with correct fields", async () => {
       const payload = createInstallationPayload("created");
 
       const res = await makeWebhookRequest("installation", payload);
@@ -138,9 +138,10 @@ describe("webhooks - installation events", () => {
       expect(res.status).toBe(200);
       expect(json).toEqual({
         message: "installation created",
-        team_id: mockUUID,
-        team_slug: "test-org",
+        organization_id: mockUUID,
+        organization_slug: "test-org",
         account: "test-org",
+        projects_created: 0,
       });
 
       // Verify insert was called with correct values
@@ -158,7 +159,7 @@ describe("webhooks - installation events", () => {
       });
     });
 
-    it("creates team for User account type", async () => {
+    it("creates organization for User account type", async () => {
       const payload = createInstallationPayload("created", {
         accountType: "User",
         accountLogin: "my-user",
@@ -168,7 +169,7 @@ describe("webhooks - installation events", () => {
       const json = (await res.json()) as InstallationResponse;
 
       expect(res.status).toBe(200);
-      expect(json.team_slug).toBe("my-user");
+      expect(json.organization_slug).toBe("my-user");
 
       expect(mockValues).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -186,7 +187,7 @@ describe("webhooks - installation events", () => {
       const json = (await res.json()) as InstallationResponse;
 
       expect(res.status).toBe(200);
-      expect(json.team_slug).toBe("my-test-org");
+      expect(json.organization_slug).toBe("my-test-org");
     });
 
     it("handles null avatar URL", async () => {
@@ -207,12 +208,12 @@ describe("webhooks - installation events", () => {
   });
 
   describe("idempotency - duplicate installation", () => {
-    it("returns success when team already exists for installation", async () => {
-      // Mock existing team found
+    it("returns success when organization already exists for installation", async () => {
+      // Mock existing organization found
       mockLimit.mockResolvedValueOnce([
         {
-          id: "existing-team-id",
-          slug: "existing-team",
+          id: "existing-organization-id",
+          slug: "existing-organization",
         },
       ]);
 
@@ -224,8 +225,8 @@ describe("webhooks - installation events", () => {
       expect(res.status).toBe(200);
       expect(json).toEqual({
         message: "installation already exists",
-        team_id: "existing-team-id",
-        team_slug: "existing-team",
+        organization_id: "existing-organization-id",
+        organization_slug: "existing-organization",
         account: "test-org",
       });
 
@@ -236,10 +237,10 @@ describe("webhooks - installation events", () => {
 
   describe("slug collision handling", () => {
     it("appends suffix when slug already exists", async () => {
-      // First query: no existing team with this installation
+      // First query: no existing organization with this installation
       mockLimit.mockResolvedValueOnce([]);
       // Second query: slug conflict found
-      mockLimit.mockResolvedValueOnce([{ id: "other-team-id" }]);
+      mockLimit.mockResolvedValueOnce([{ id: "other-organization-id" }]);
       // Third query: suffixed slug is available
       mockLimit.mockResolvedValueOnce([]);
 
@@ -251,16 +252,16 @@ describe("webhooks - installation events", () => {
       const json = (await res.json()) as InstallationResponse;
 
       expect(res.status).toBe(200);
-      expect(json.team_slug).toBe("test-org-1");
+      expect(json.organization_slug).toBe("test-org-1");
     });
 
     it("increments suffix for multiple collisions", async () => {
-      // First query: no existing team with this installation
+      // First query: no existing organization with this installation
       mockLimit.mockResolvedValueOnce([]);
       // Queries 2-4: slug conflicts
-      mockLimit.mockResolvedValueOnce([{ id: "other-team-1" }]);
-      mockLimit.mockResolvedValueOnce([{ id: "other-team-2" }]);
-      mockLimit.mockResolvedValueOnce([{ id: "other-team-3" }]);
+      mockLimit.mockResolvedValueOnce([{ id: "other-organization-1" }]);
+      mockLimit.mockResolvedValueOnce([{ id: "other-organization-2" }]);
+      mockLimit.mockResolvedValueOnce([{ id: "other-organization-3" }]);
       // Query 5: suffixed slug is available
       mockLimit.mockResolvedValueOnce([]);
 
@@ -272,15 +273,15 @@ describe("webhooks - installation events", () => {
       const json = (await res.json()) as InstallationResponse;
 
       expect(res.status).toBe(200);
-      expect(json.team_slug).toBe("popular-name-3");
+      expect(json.organization_slug).toBe("popular-name-3");
     });
 
     it("falls back to UUID suffix after max attempts", async () => {
-      // First query: no existing team with this installation
+      // First query: no existing organization with this installation
       mockLimit.mockResolvedValueOnce([]);
       // Next 10 queries: all slug conflicts
       for (let i = 0; i < 10; i++) {
-        mockLimit.mockResolvedValueOnce([{ id: `team-${i}` }]);
+        mockLimit.mockResolvedValueOnce([{ id: `organization-${i}` }]);
       }
 
       const payload = createInstallationPayload("created", {
@@ -292,12 +293,12 @@ describe("webhooks - installation events", () => {
 
       expect(res.status).toBe(200);
       // Falls back to UUID prefix (first 8 chars of mockUUID)
-      expect(json.team_slug).toBe("super-popular-test-uui");
+      expect(json.organization_slug).toBe("super-popular-test-uui");
     });
   });
 
   describe("installation.deleted", () => {
-    it("soft-deletes the team by setting deletedAt", async () => {
+    it("soft-deletes the organization by setting deletedAt", async () => {
       const payload = createInstallationPayload("deleted");
 
       const res = await makeWebhookRequest("installation", payload);
@@ -321,7 +322,7 @@ describe("webhooks - installation events", () => {
   });
 
   describe("installation.suspend", () => {
-    it("marks team as suspended by setting suspendedAt", async () => {
+    it("marks organization as suspended by setting suspendedAt", async () => {
       const payload = createInstallationPayload("suspend");
 
       const res = await makeWebhookRequest("installation", payload);

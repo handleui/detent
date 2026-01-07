@@ -25,8 +25,20 @@ export const whoamiCommand = defineCommand({
     let accessToken: string;
     try {
       accessToken = await getAccessToken();
-    } catch {
-      console.error("Not logged in. Run `detent auth login` first.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes("Not logged in")) {
+        console.error("Not logged in. Run `detent auth login` first.");
+      } else if (message.includes("refresh")) {
+        console.error(
+          "Session expired and refresh failed. Run `detent auth login` to re-authenticate."
+        );
+        if (args.debug) {
+          console.error("  Error:", message);
+        }
+      } else {
+        console.error("Authentication error:", message);
+      }
       process.exit(1);
     }
 

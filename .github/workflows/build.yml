@@ -10,6 +10,12 @@ on:
         description: "Tag or ref to build (e.g., v0.10.0). Defaults to latest tag."
         required: false
         type: string
+  workflow_call:
+    inputs:
+      ref:
+        description: "Tag to build (e.g., v0.10.0)"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -59,25 +65,32 @@ jobs:
       - name: Build binaries
         run: bun run build:binaries
         working-directory: apps/cli
+        env:
+          WORKOS_CLIENT_ID: ${{ secrets.WORKOS_CLIENT_ID }}
 
       - name: Verify binary version
         run: |
           cd apps/cli/dist
           tar -xzf dt-linux-amd64.tar.gz
 
-          # Get version from binary (handles prerelease versions like 0.10.0-beta.1)
-          BINARY_VERSION=$(./dt-linux-amd64 version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?' || echo "")
-
           # Get version from package.json
           PKG_VERSION=$(jq -r .version ../package.json)
+
+          # Get version from binary - filter for clean semver line (ignore debug output from dotenv etc)
+          # The version command outputs just the version number on its own line
+          BINARY_OUTPUT=$(./dt-linux-amd64 version 2>/dev/null || true)
+          echo "Full binary output:"
+          echo "$BINARY_OUTPUT"
+          echo "---"
+
+          # Extract the line that is ONLY a semver (no other text)
+          BINARY_VERSION=$(echo "$BINARY_OUTPUT" | grep -xE '[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?' | head -1 || echo "")
 
           echo "Binary version: $BINARY_VERSION"
           echo "Package version: $PKG_VERSION"
 
           if [ -z "$BINARY_VERSION" ]; then
             echo "ERROR: Could not extract version from binary output"
-            echo "Binary output:"
-            ./dt-linux-amd64 version || true
             exit 1
           fi
 

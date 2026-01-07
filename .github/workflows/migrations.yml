@@ -25,7 +25,7 @@ jobs:
         run: bun install
         working-directory: .
 
-      - name: Push schema to production
-        run: bunx drizzle-kit push --force
+      - name: Run migrations
+        run: bunx drizzle-kit migrate
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}

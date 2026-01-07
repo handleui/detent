@@ -1,64 +1,91 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Team } from "./api.js";
-import { findTeamByIdOrSlug, selectTeam } from "./ui.js";
+import type { Organization } from "./api.js";
+import { findOrganizationByIdOrSlug, selectOrganization } from "./ui.js";
 
-const createMockTeam = (overrides: Partial<Team> = {}): Team => ({
-  team_id: "team-123",
-  team_name: "Test Team",
-  team_slug: "test-team",
-  github_org: "test-org",
+const createMockOrganization = (
+  overrides: Partial<Organization> = {}
+): Organization => ({
+  organization_id: "org-123",
+  organization_name: "Test Organization",
+  organization_slug: "test-org",
+  github_org: "test-github-org",
   role: "member",
   github_linked: false,
   github_username: null,
   ...overrides,
 });
 
-describe("findTeamByIdOrSlug", () => {
-  it("returns undefined for empty teams array", () => {
-    expect(findTeamByIdOrSlug([], "team-123")).toBeUndefined();
+describe("findOrganizationByIdOrSlug", () => {
+  it("returns undefined for empty organizations array", () => {
+    expect(findOrganizationByIdOrSlug([], "org-123")).toBeUndefined();
   });
 
-  it("finds team by ID", () => {
-    const teams = [
-      createMockTeam({ team_id: "team-1", team_slug: "slug-1" }),
-      createMockTeam({ team_id: "team-2", team_slug: "slug-2" }),
+  it("finds organization by ID", () => {
+    const organizations = [
+      createMockOrganization({
+        organization_id: "org-1",
+        organization_slug: "slug-1",
+      }),
+      createMockOrganization({
+        organization_id: "org-2",
+        organization_slug: "slug-2",
+      }),
     ];
 
-    const result = findTeamByIdOrSlug(teams, "team-2");
-    expect(result?.team_id).toBe("team-2");
+    const result = findOrganizationByIdOrSlug(organizations, "org-2");
+    expect(result?.organization_id).toBe("org-2");
   });
 
-  it("finds team by slug", () => {
-    const teams = [
-      createMockTeam({ team_id: "team-1", team_slug: "slug-1" }),
-      createMockTeam({ team_id: "team-2", team_slug: "slug-2" }),
+  it("finds organization by slug", () => {
+    const organizations = [
+      createMockOrganization({
+        organization_id: "org-1",
+        organization_slug: "slug-1",
+      }),
+      createMockOrganization({
+        organization_id: "org-2",
+        organization_slug: "slug-2",
+      }),
     ];
 
-    const result = findTeamByIdOrSlug(teams, "slug-1");
-    expect(result?.team_slug).toBe("slug-1");
+    const result = findOrganizationByIdOrSlug(organizations, "slug-1");
+    expect(result?.organization_slug).toBe("slug-1");
   });
 
-  it("returns undefined when team not found", () => {
-    const teams = [createMockTeam({ team_id: "team-1", team_slug: "slug-1" })];
+  it("returns undefined when organization not found", () => {
+    const organizations = [
+      createMockOrganization({
+        organization_id: "org-1",
+        organization_slug: "slug-1",
+      }),
+    ];
 
-    expect(findTeamByIdOrSlug(teams, "nonexistent")).toBeUndefined();
+    expect(
+      findOrganizationByIdOrSlug(organizations, "nonexistent")
+    ).toBeUndefined();
   });
 
   it("prefers ID match over slug match", () => {
-    // Edge case: a team's ID matches another team's slug
-    const teams = [
-      createMockTeam({ team_id: "team-1", team_slug: "team-2" }),
-      createMockTeam({ team_id: "team-2", team_slug: "other-slug" }),
+    // Edge case: an organization's ID matches another organization's slug
+    const organizations = [
+      createMockOrganization({
+        organization_id: "org-1",
+        organization_slug: "org-2",
+      }),
+      createMockOrganization({
+        organization_id: "org-2",
+        organization_slug: "other-slug",
+      }),
     ];
 
-    // Should find team-1 first since it has team_id matching OR team_slug matching
-    const result = findTeamByIdOrSlug(teams, "team-2");
-    // find() returns first match, which is team-1 (matching by slug)
-    expect(result?.team_id).toBe("team-1");
+    // Should find org-1 first since it has organization_id matching OR organization_slug matching
+    const result = findOrganizationByIdOrSlug(organizations, "org-2");
+    // find() returns first match, which is org-1 (matching by slug)
+    expect(result?.organization_id).toBe("org-1");
   });
 });
 
-describe("selectTeam", () => {
+describe("selectOrganization", () => {
   let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
   let consoleLogSpy: ReturnType<typeof vi.spyOn>;
 
@@ -77,36 +104,36 @@ describe("selectTeam", () => {
     vi.restoreAllMocks();
   });
 
-  it("returns null and logs error for empty teams array", async () => {
-    const result = await selectTeam([]);
+  it("returns null and logs error for empty organizations array", async () => {
+    const result = await selectOrganization([]);
 
     expect(result).toBeNull();
     expect(consoleErrorSpy).toHaveBeenCalledWith(
-      "You are not a member of any teams. Ask a team admin to invite you."
+      "You are not a member of any organizations. Ask an organization admin to invite you."
     );
   });
 
-  it("returns single team without prompting", async () => {
-    const team = createMockTeam();
-    const result = await selectTeam([team]);
+  it("returns single organization without prompting", async () => {
+    const organization = createMockOrganization();
+    const result = await selectOrganization([organization]);
 
-    expect(result).toEqual(team);
+    expect(result).toEqual(organization);
     expect(consoleLogSpy).not.toHaveBeenCalled();
   });
 
-  it("prompts for selection with multiple teams", async () => {
-    const teams = [
-      createMockTeam({
-        team_id: "team-1",
-        team_name: "Team One",
-        github_org: "org-1",
+  it("prompts for selection with multiple organizations", async () => {
+    const organizations = [
+      createMockOrganization({
+        organization_id: "org-1",
+        organization_name: "Organization One",
+        github_org: "github-org-1",
         github_linked: true,
         github_username: "user1",
       }),
-      createMockTeam({
-        team_id: "team-2",
-        team_name: "Team Two",
-        github_org: "org-2",
+      createMockOrganization({
+        organization_id: "org-2",
+        organization_name: "Organization Two",
+        github_org: "github-org-2",
         github_linked: false,
       }),
     ];
@@ -121,18 +148,18 @@ describe("selectTeam", () => {
       }),
     }));
 
-    const result = await selectTeam(teams);
+    const result = await selectOrganization(organizations);
 
-    expect(result).toEqual(teams[0]);
+    expect(result).toEqual(organizations[0]);
     expect(consoleLogSpy).toHaveBeenCalledWith(
-      "\nYou are a member of multiple teams:\n"
+      "\nYou are a member of multiple organizations:\n"
     );
   });
 
   it("returns null for invalid numeric selection", async () => {
-    const teams = [
-      createMockTeam({ team_id: "team-1" }),
-      createMockTeam({ team_id: "team-2" }),
+    const organizations = [
+      createMockOrganization({ organization_id: "org-1" }),
+      createMockOrganization({ organization_id: "org-2" }),
     ];
 
     // Mock readline with invalid selection
@@ -146,17 +173,19 @@ describe("selectTeam", () => {
     }));
 
     // Re-import to pick up the mock
-    const { selectTeam: selectTeamMocked } = await import("./ui.js");
-    const result = await selectTeamMocked(teams);
+    const { selectOrganization: selectOrganizationMocked } = await import(
+      "./ui.js"
+    );
+    const result = await selectOrganizationMocked(organizations);
 
     expect(result).toBeNull();
     expect(consoleErrorSpy).toHaveBeenCalledWith("Invalid selection");
   });
 
   it("returns null for non-numeric selection", async () => {
-    const teams = [
-      createMockTeam({ team_id: "team-1" }),
-      createMockTeam({ team_id: "team-2" }),
+    const organizations = [
+      createMockOrganization({ organization_id: "org-1" }),
+      createMockOrganization({ organization_id: "org-2" }),
     ];
 
     // Mock readline with non-numeric input
@@ -170,8 +199,10 @@ describe("selectTeam", () => {
     }));
 
     // Re-import to pick up the mock
-    const { selectTeam: selectTeamMocked } = await import("./ui.js");
-    const result = await selectTeamMocked(teams);
+    const { selectOrganization: selectOrganizationMocked } = await import(
+      "./ui.js"
+    );
+    const result = await selectOrganizationMocked(organizations);
 
     expect(result).toBeNull();
     expect(consoleErrorSpy).toHaveBeenCalledWith("Invalid selection");

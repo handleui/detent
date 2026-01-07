@@ -13,8 +13,16 @@ import {
   saveCredentials,
 } from "./credentials.js";
 
-const WORKOS_CLIENT_ID = process.env.WORKOS_CLIENT_ID ?? "";
 const WORKOS_API_BASE = "https://api.workos.com";
+
+/**
+ * Get WorkOS client ID at runtime (not module load time)
+ * This ensures dotenv has been loaded before we read the env variable
+ */
+const getWorkosClientId = (): string => {
+  const clientId = process.env.WORKOS_CLIENT_ID ?? "";
+  return clientId;
+};
 
 export interface DeviceAuthorizationResponse {
   device_code: string;
@@ -50,7 +58,8 @@ const sleep = (ms: number): Promise<void> =>
 
 export const requestDeviceAuthorization =
   async (): Promise<DeviceAuthorizationResponse> => {
-    if (!WORKOS_CLIENT_ID) {
+    const clientId = getWorkosClientId();
+    if (!clientId) {
       throw new Error(
         "WORKOS_CLIENT_ID environment variable is not set. " +
           "Set it in your shell or .env file."
@@ -62,7 +71,7 @@ export const requestDeviceAuthorization =
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ client_id: WORKOS_CLIENT_ID }),
+        body: JSON.stringify({ client_id: clientId }),
       }
     );
 
@@ -81,6 +90,7 @@ export const pollForTokens = async (
   interval: number,
   onPoll?: () => void
 ): Promise<TokenResponse> => {
+  const clientId = getWorkosClientId();
   let pollInterval = interval;
   let attempts = 0;
 
@@ -97,7 +107,7 @@ export const pollForTokens = async (
         body: JSON.stringify({
           grant_type: "urn:ietf:params:oauth:grant-type:device_code",
           device_code: deviceCode,
-          client_id: WORKOS_CLIENT_ID,
+          client_id: clientId,
         }),
       }
     );
@@ -132,16 +142,21 @@ export const pollForTokens = async (
 export const refreshAccessToken = async (
   refreshToken: string
 ): Promise<TokenResponse> => {
-  // Use /v1/sessions/token for public clients (CLIs) - doesn't require client_secret
-  const response = await fetch(`${WORKOS_API_BASE}/v1/sessions/token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      grant_type: "refresh_token",
-      refresh_token: refreshToken,
-      client_id: WORKOS_CLIENT_ID,
-    }),
-  });
+  const clientId = getWorkosClientId();
+  // Use the same /user_management/authenticate endpoint with refresh_token grant type
+  // For CLI (public client) apps using device flow, client_secret is not required
+  const response = await fetch(
+    `${WORKOS_API_BASE}/user_management/authenticate`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        grant_type: "refresh_token",
+        refresh_token: refreshToken,
+        client_id: clientId,
+      }),
+    }
+  );
 
   if (!response.ok) {
     const error = await response.text();

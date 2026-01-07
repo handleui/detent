@@ -1,8 +1,8 @@
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { createDb } from "../db/client";
-import { teams } from "../db/schema";
+import { organizations, projects } from "../db/schema";
 import { webhookSignatureMiddleware } from "../middleware/webhook-signature";
 import { createGitHubService } from "../services/github";
 import type { Env } from "../types/env";
@@ -72,6 +72,30 @@ interface InstallationPayload {
   }>;
 }
 
+interface InstallationRepositoriesPayload {
+  action: "added" | "removed";
+  installation: {
+    id: number;
+    account: {
+      id: number;
+      login: string;
+      type: "Organization" | "User";
+    };
+  };
+  repositories_added: Array<{
+    id: number;
+    name: string;
+    full_name: string;
+    private: boolean;
+  }>;
+  repositories_removed: Array<{
+    id: number;
+    name: string;
+    full_name: string;
+    private: boolean;
+  }>;
+}
+
 interface DetentCommand {
   type: "heal" | "status" | "help" | "unknown";
   dryRun?: boolean;
@@ -83,7 +107,8 @@ interface WebhookVariables {
     | WorkflowRunPayload
     | IssueCommentPayload
     | PingPayload
-    | InstallationPayload;
+    | InstallationPayload
+    | InstallationRepositoriesPayload;
 }
 
 type WebhookContext = Context<{ Bindings: Env; Variables: WebhookVariables }>;
@@ -113,6 +138,12 @@ app.post("/github", webhookSignatureMiddleware, (c: WebhookContext) => {
 
     case "installation":
       return handleInstallationEvent(c, payload as InstallationPayload);
+
+    case "installation_repositories":
+      return handleInstallationRepositoriesEvent(
+        c,
+        payload as InstallationRepositoriesPayload
+      );
 
     default:
       console.log(`[webhook] Ignoring unhandled event: ${event}`);
@@ -219,12 +250,111 @@ const handleWorkflowRunEvent = async (
   }
 };
 
+// Generate a unique slug for an organization
+type DbClient = Awaited<ReturnType<typeof createDb>>["db"];
+
+const generateUniqueSlug = async (
+  db: DbClient,
+  baseSlug: string
+): Promise<string> => {
+  let slug = baseSlug;
+  let slugAttempt = 0;
+  const maxSlugAttempts = 10;
+
+  while (slugAttempt < maxSlugAttempts) {
+    const slugConflict = await db
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(eq(organizations.slug, slug))
+      .limit(1);
+
+    if (slugConflict.length === 0) {
+      return slug;
+    }
+
+    slugAttempt++;
+    slug = `${baseSlug}-${slugAttempt}`;
+  }
+
+  // Fallback: append random suffix
+  return `${baseSlug}-${crypto.randomUUID().slice(0, 8)}`;
+};
+
+// Handle installation.created event - create organization and projects
+const handleInstallationCreated = async (
+  db: DbClient,
+  installation: InstallationPayload["installation"],
+  repositories: InstallationPayload["repositories"]
+): Promise<
+  | { organizationId: string; slug: string }
+  | { existing: true; id: string; slug: string }
+> => {
+  const { account } = installation;
+
+  // Idempotency check: if organization already exists for this installation, return it
+  const existingOrg = await db
+    .select({ id: organizations.id, slug: organizations.slug })
+    .from(organizations)
+    .where(eq(organizations.providerInstallationId, String(installation.id)))
+    .limit(1);
+
+  const existing = existingOrg[0];
+  if (existing) {
+    console.log(
+      `[installation] Organization already exists for installation ${installation.id}: ${existing.slug}`
+    );
+    return { existing: true, id: existing.id, slug: existing.slug };
+  }
+
+  // Create organization when app is installed
+  const organizationId = crypto.randomUUID();
+  const baseSlug = account.login.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+  const slug = await generateUniqueSlug(db, baseSlug);
+
+  await db.insert(organizations).values({
+    id: organizationId,
+    name: account.login,
+    slug,
+    provider: "github",
+    providerAccountId: String(account.id),
+    providerAccountLogin: account.login,
+    providerAccountType:
+      account.type === "Organization" ? "organization" : "user",
+    providerInstallationId: String(installation.id),
+    providerAvatarUrl: account.avatar_url ?? null,
+  });
+
+  console.log(
+    `[installation] Created organization: ${slug} (${organizationId})`
+  );
+
+  // Create projects for initial repositories
+  if (repositories && repositories.length > 0) {
+    const projectValues = repositories.map((repo) => ({
+      id: crypto.randomUUID(),
+      organizationId,
+      providerRepoId: String(repo.id),
+      providerRepoName: repo.name,
+      providerRepoFullName: repo.full_name,
+      isPrivate: repo.private,
+    }));
+
+    await db.insert(projects).values(projectValues).onConflictDoNothing();
+
+    console.log(
+      `[installation] Created ${repositories.length} projects for organization ${slug}`
+    );
+  }
+
+  return { organizationId, slug };
+};
+
 // Handle installation events (GitHub App installed/uninstalled)
 const handleInstallationEvent = async (
   c: WebhookContext,
   payload: InstallationPayload
 ) => {
-  const { action, installation } = payload;
+  const { action, installation, repositories } = payload;
   const { account } = installation;
 
   console.log(
@@ -236,89 +366,40 @@ const handleInstallationEvent = async (
   try {
     switch (action) {
       case "created": {
-        // Idempotency check: if team already exists for this installation, return success
-        const existingTeam = await db
-          .select({ id: teams.id, slug: teams.slug })
-          .from(teams)
-          .where(eq(teams.providerInstallationId, String(installation.id)))
-          .limit(1);
+        const result = await handleInstallationCreated(
+          db,
+          installation,
+          repositories
+        );
 
-        const existing = existingTeam[0];
-        if (existing) {
-          console.log(
-            `[installation] Team already exists for installation ${installation.id}: ${existing.slug}`
-          );
+        if ("existing" in result) {
           return c.json({
             message: "installation already exists",
-            team_id: existing.id,
-            team_slug: existing.slug,
+            organization_id: result.id,
+            organization_slug: result.slug,
             account: account.login,
           });
         }
 
-        // Create team when app is installed
-        const teamId = crypto.randomUUID();
-        const baseSlug = account.login
-          .toLowerCase()
-          .replace(/[^a-z0-9-]/g, "-");
-
-        // Handle slug uniqueness - try base slug, then append suffix if needed
-        let slug = baseSlug;
-        let slugAttempt = 0;
-        const maxSlugAttempts = 10;
-
-        while (slugAttempt < maxSlugAttempts) {
-          const slugConflict = await db
-            .select({ id: teams.id })
-            .from(teams)
-            .where(eq(teams.slug, slug))
-            .limit(1);
-
-          if (slugConflict.length === 0) {
-            break;
-          }
-
-          slugAttempt++;
-          slug = `${baseSlug}-${slugAttempt}`;
-        }
-
-        if (slugAttempt >= maxSlugAttempts) {
-          // Fallback: append random suffix
-          slug = `${baseSlug}-${crypto.randomUUID().slice(0, 8)}`;
-        }
-
-        await db.insert(teams).values({
-          id: teamId,
-          name: account.login,
-          slug,
-          provider: "github",
-          providerAccountId: String(account.id),
-          providerAccountLogin: account.login,
-          providerAccountType:
-            account.type === "Organization" ? "organization" : "user",
-          providerInstallationId: String(installation.id),
-          providerAvatarUrl: account.avatar_url ?? null,
-        });
-
-        console.log(`[installation] Created team: ${slug} (${teamId})`);
-
         return c.json({
           message: "installation created",
-          team_id: teamId,
-          team_slug: slug,
+          organization_id: result.organizationId,
+          organization_slug: result.slug,
           account: account.login,
+          projects_created: repositories?.length ?? 0,
         });
       }
 
       case "deleted": {
-        // Soft-delete team when app is uninstalled
         await db
-          .update(teams)
+          .update(organizations)
           .set({ deletedAt: new Date(), updatedAt: new Date() })
-          .where(eq(teams.providerInstallationId, String(installation.id)));
+          .where(
+            eq(organizations.providerInstallationId, String(installation.id))
+          );
 
         console.log(
-          `[installation] Soft-deleted team for installation ${installation.id}`
+          `[installation] Soft-deleted organization for installation ${installation.id}`
         );
 
         return c.json({
@@ -328,11 +409,12 @@ const handleInstallationEvent = async (
       }
 
       case "suspend": {
-        // Suspend team
         await db
-          .update(teams)
+          .update(organizations)
           .set({ suspendedAt: new Date(), updatedAt: new Date() })
-          .where(eq(teams.providerInstallationId, String(installation.id)));
+          .where(
+            eq(organizations.providerInstallationId, String(installation.id))
+          );
 
         return c.json({
           message: "installation suspended",
@@ -341,11 +423,12 @@ const handleInstallationEvent = async (
       }
 
       case "unsuspend": {
-        // Unsuspend team
         await db
-          .update(teams)
+          .update(organizations)
           .set({ suspendedAt: null, updatedAt: new Date() })
-          .where(eq(teams.providerInstallationId, String(installation.id)));
+          .where(
+            eq(organizations.providerInstallationId, String(installation.id))
+          );
 
         return c.json({
           message: "installation unsuspended",
@@ -361,6 +444,91 @@ const handleInstallationEvent = async (
     return c.json(
       {
         message: "installation error",
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
+      500
+    );
+  } finally {
+    await client.end();
+  }
+};
+
+// Handle installation_repositories events (repos added/removed from installation)
+const handleInstallationRepositoriesEvent = async (
+  c: WebhookContext,
+  payload: InstallationRepositoriesPayload
+) => {
+  const { action, installation, repositories_added, repositories_removed } =
+    payload;
+
+  console.log(
+    `[installation_repositories] ${action}: installation ${installation.id}, added=${repositories_added.length}, removed=${repositories_removed.length}`
+  );
+
+  const { db, client } = await createDb(c.env);
+
+  try {
+    // Find organization by installation ID
+    const orgResult = await db
+      .select({ id: organizations.id, slug: organizations.slug })
+      .from(organizations)
+      .where(eq(organizations.providerInstallationId, String(installation.id)))
+      .limit(1);
+
+    const org = orgResult[0];
+    if (!org) {
+      console.log(
+        `[installation_repositories] Organization not found for installation ${installation.id}`
+      );
+      return c.json({
+        message: "organization not found",
+        installation_id: installation.id,
+      });
+    }
+
+    // Handle added repositories
+    if (repositories_added.length > 0) {
+      const projectValues = repositories_added.map((repo) => ({
+        id: crypto.randomUUID(),
+        organizationId: org.id,
+        providerRepoId: String(repo.id),
+        providerRepoName: repo.name,
+        providerRepoFullName: repo.full_name,
+        isPrivate: repo.private,
+      }));
+
+      await db.insert(projects).values(projectValues).onConflictDoNothing();
+
+      console.log(
+        `[installation_repositories] Created ${repositories_added.length} projects for organization ${org.slug}`
+      );
+    }
+
+    // Handle removed repositories (soft-delete) - batch update for performance
+    if (repositories_removed.length > 0) {
+      const repoIds = repositories_removed.map((repo) => String(repo.id));
+      await db
+        .update(projects)
+        .set({ removedAt: new Date(), updatedAt: new Date() })
+        .where(inArray(projects.providerRepoId, repoIds));
+
+      console.log(
+        `[installation_repositories] Soft-deleted ${repositories_removed.length} projects for organization ${org.slug}`
+      );
+    }
+
+    return c.json({
+      message: "installation_repositories processed",
+      organization_id: org.id,
+      organization_slug: org.slug,
+      projects_added: repositories_added.length,
+      projects_removed: repositories_removed.length,
+    });
+  } catch (error) {
+    console.error("[installation_repositories] Error processing:", error);
+    return c.json(
+      {
+        message: "installation_repositories error",
         error: error instanceof Error ? error.message : "Unknown error",
       },
       500

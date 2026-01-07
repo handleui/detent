@@ -11,7 +11,7 @@ const mockReturning = vi.fn();
 
 const mockDb = {
   query: {
-    teamMembers: {
+    organizationMembers: {
       findFirst: mockFindFirst,
     },
   },
@@ -140,8 +140,8 @@ describe("auth routes", () => {
         });
 
       mockReturning.mockResolvedValue([
-        { teamId: "team-1", providerUsername: "testuser" },
-        { teamId: "team-2", providerUsername: "testuser" },
+        { organizationId: "organization-1", providerUsername: "testuser" },
+        { organizationId: "organization-2", providerUsername: "testuser" },
       ]);
 
       const res = await makeRequest("POST", "/auth/sync-identity");
@@ -156,7 +156,7 @@ describe("auth routes", () => {
         github_synced: true,
         github_user_id: "12345",
         github_username: "testuser",
-        teams_updated: 2,
+        organizations_updated: 2,
       });
 
       // Verify database was updated
@@ -238,7 +238,7 @@ describe("auth routes", () => {
         });
 
       mockReturning.mockResolvedValue([
-        { teamId: "team-1", providerUsername: null },
+        { organizationId: "organization-1", providerUsername: null },
       ]);
 
       const res = await makeRequest("POST", "/auth/sync-identity");
@@ -249,7 +249,7 @@ describe("auth routes", () => {
         github_synced: true,
         github_user_id: "12345",
         github_username: null,
-        teams_updated: 1,
+        organizations_updated: 1,
       });
     });
 
@@ -312,7 +312,7 @@ describe("auth routes", () => {
 
       mockFindFirst.mockResolvedValue({
         id: "member-1",
-        teamId: "team-1",
+        organizationId: "organization-1",
         userId: "user-123",
         providerUserId: "12345",
         providerUsername: "testuser",
@@ -350,7 +350,7 @@ describe("auth routes", () => {
 
       mockFindFirst.mockResolvedValue({
         id: "member-1",
-        teamId: "team-1",
+        organizationId: "organization-1",
         userId: "user-123",
         providerUserId: null,
         providerUsername: null,
@@ -371,7 +371,7 @@ describe("auth routes", () => {
       });
     });
 
-    it("returns user info when not member of any team", async () => {
+    it("returns user info when not member of any organization", async () => {
       // First call: get user details from WorkOS
       mockFetch
         .mockResolvedValueOnce({

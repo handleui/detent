@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Team } from "../../lib/api.js";
 import type { ProjectConfig } from "../../lib/config.js";
 
 // Mock external dependencies
@@ -12,7 +11,7 @@ vi.mock("../../lib/auth.js", () => ({
 }));
 
 vi.mock("../../lib/api.js", () => ({
-  getTeams: vi.fn(),
+  getOrganizations: vi.fn(),
 }));
 
 vi.mock("../../lib/config.js", () => ({
@@ -22,14 +21,26 @@ vi.mock("../../lib/config.js", () => ({
 }));
 
 vi.mock("../../lib/ui.js", () => ({
-  findTeamByIdOrSlug: vi.fn(),
-  selectTeam: vi.fn(),
+  findOrganizationByIdOrSlug: vi.fn(),
+  selectOrganization: vi.fn(),
 }));
 
-const createMockTeam = (overrides: Partial<Team> = {}): Team => ({
-  team_id: "team-123",
-  team_name: "Test Team",
-  team_slug: "test-team",
+interface Organization {
+  organization_id: string;
+  organization_name: string;
+  organization_slug: string;
+  github_org: string;
+  role: string;
+  github_linked: boolean;
+  github_username: string | null;
+}
+
+const createMockOrganization = (
+  overrides: Partial<Organization> = {}
+): Organization => ({
+  organization_id: "org-123",
+  organization_name: "Test Organization",
+  organization_slug: "test-org",
   github_org: "test-org",
   role: "member",
   github_linked: false,
@@ -110,8 +121,8 @@ describe("link commands", () => {
       const { getProjectConfig } = await import("../../lib/config.js");
 
       const existingConfig: ProjectConfig = {
-        teamId: "team-123",
-        teamSlug: "test-team",
+        organizationId: "org-123",
+        organizationSlug: "test-org",
       };
 
       vi.mocked(findGitRoot).mockResolvedValue("/repo");
@@ -122,7 +133,7 @@ describe("link commands", () => {
       await linkCommand.run?.({ args: { force: false } });
 
       expect(consoleLogSpy).toHaveBeenCalledWith(
-        "\nThis repository is already linked to team: test-team"
+        "\nThis repository is already linked to organization: test-org"
       );
       expect(processExitSpy).not.toHaveBeenCalled();
     });
@@ -130,58 +141,66 @@ describe("link commands", () => {
     it("allows relinking with --force flag", async () => {
       const { findGitRoot } = await import("@detent/git");
       const { getAccessToken } = await import("../../lib/auth.js");
-      const { getTeams } = await import("../../lib/api.js");
+      const { getOrganizations } = await import("../../lib/api.js");
       const { getProjectConfig, saveProjectConfig } = await import(
         "../../lib/config.js"
       );
-      const { findTeamByIdOrSlug } = await import("../../lib/ui.js");
+      const { findOrganizationByIdOrSlug } = await import("../../lib/ui.js");
 
       const existingConfig: ProjectConfig = {
-        teamId: "team-old",
-        teamSlug: "old-team",
+        organizationId: "org-old",
+        organizationSlug: "old-org",
       };
 
-      const newTeam = createMockTeam({
-        team_id: "team-new",
-        team_slug: "new-team",
-        team_name: "New Team",
+      const newOrganization = createMockOrganization({
+        organization_id: "org-new",
+        organization_slug: "new-org",
+        organization_name: "New Organization",
       });
 
       vi.mocked(findGitRoot).mockResolvedValue("/repo");
       vi.mocked(getProjectConfig).mockReturnValue(existingConfig);
       vi.mocked(getAccessToken).mockResolvedValue("token-123");
-      vi.mocked(getTeams).mockResolvedValue({ teams: [newTeam] });
-      vi.mocked(findTeamByIdOrSlug).mockReturnValue(newTeam);
+      vi.mocked(getOrganizations).mockResolvedValue({
+        organizations: [newOrganization],
+      });
+      vi.mocked(findOrganizationByIdOrSlug).mockReturnValue(newOrganization);
 
       const { linkCommand } = await import("./index.js");
-      await linkCommand.run?.({ args: { force: true, team: "new-team" } });
+      await linkCommand.run?.({
+        args: { force: true, organization: "new-org" },
+      });
 
       expect(saveProjectConfig).toHaveBeenCalledWith("/repo", {
-        teamId: "team-new",
-        teamSlug: "new-team",
+        organizationId: "org-new",
+        organizationSlug: "new-org",
       });
     });
 
-    it("exits if team not found when --team provided", async () => {
+    it("exits if organization not found when --organization provided", async () => {
       const { findGitRoot } = await import("@detent/git");
       const { getAccessToken } = await import("../../lib/auth.js");
-      const { getTeams } = await import("../../lib/api.js");
+      const { getOrganizations } = await import("../../lib/api.js");
       const { getProjectConfig } = await import("../../lib/config.js");
-      const { findTeamByIdOrSlug } = await import("../../lib/ui.js");
+      const { findOrganizationByIdOrSlug } = await import("../../lib/ui.js");
 
       vi.mocked(findGitRoot).mockResolvedValue("/repo");
       vi.mocked(getProjectConfig).mockReturnValue(null);
       vi.mocked(getAccessToken).mockResolvedValue("token-123");
-      vi.mocked(getTeams).mockResolvedValue({ teams: [createMockTeam()] });
-      vi.mocked(findTeamByIdOrSlug).mockReturnValue(undefined);
+      vi.mocked(getOrganizations).mockResolvedValue({
+        organizations: [createMockOrganization()],
+      });
+      vi.mocked(findOrganizationByIdOrSlug).mockReturnValue(undefined);
 
       const { linkCommand } = await import("./index.js");
 
       await expect(
-        linkCommand.run?.({ args: { team: "nonexistent", force: false } })
+        linkCommand.run?.({
+          args: { organization: "nonexistent", force: false },
+        })
       ).rejects.toThrow(ExitError);
       expect(consoleErrorSpy).toHaveBeenCalledWith(
-        "Team not found: nonexistent"
+        "Organization not found: nonexistent"
       );
       expect(processExitSpy).toHaveBeenCalledWith(1);
     });
@@ -191,7 +210,7 @@ describe("link commands", () => {
 
       expect(linkCommand.meta?.name).toBe("link");
       expect(linkCommand.meta?.description).toBe(
-        "Link this repository to a Detent team"
+        "Link this repository to a Detent organization"
       );
     });
 
@@ -235,24 +254,24 @@ describe("link commands", () => {
       await statusCommand.run?.({ args: {} });
 
       expect(consoleLogSpy).toHaveBeenCalledWith(
-        "\nThis repository is not linked to any team."
+        "\nThis repository is not linked to any organization."
       );
     });
 
     it("shows link status when repo is linked", async () => {
       const { findGitRoot } = await import("@detent/git");
       const { getAccessToken } = await import("../../lib/auth.js");
-      const { getTeams } = await import("../../lib/api.js");
+      const { getOrganizations } = await import("../../lib/api.js");
       const { getProjectConfig } = await import("../../lib/config.js");
 
       const projectConfig: ProjectConfig = {
-        teamId: "team-123",
-        teamSlug: "test-team",
+        organizationId: "org-123",
+        organizationSlug: "test-org",
       };
 
-      const team = createMockTeam({
-        team_id: "team-123",
-        team_name: "Test Team",
+      const organization = createMockOrganization({
+        organization_id: "org-123",
+        organization_name: "Test Organization",
         github_linked: true,
         github_username: "testuser",
       });
@@ -260,39 +279,49 @@ describe("link commands", () => {
       vi.mocked(findGitRoot).mockResolvedValue("/repo");
       vi.mocked(getProjectConfig).mockReturnValue(projectConfig);
       vi.mocked(getAccessToken).mockResolvedValue("token-123");
-      vi.mocked(getTeams).mockResolvedValue({ teams: [team] });
+      vi.mocked(getOrganizations).mockResolvedValue({
+        organizations: [organization],
+      });
 
       const { statusCommand } = await import("./status.js");
       await statusCommand.run?.({ args: {} });
 
       expect(consoleLogSpy).toHaveBeenCalledWith("\nLink Status\n");
-      expect(consoleLogSpy).toHaveBeenCalledWith("Team ID:     team-123");
-      expect(consoleLogSpy).toHaveBeenCalledWith("Team Slug:   test-team");
+      expect(consoleLogSpy).toHaveBeenCalledWith(
+        "Organization ID:     org-123"
+      );
+      expect(consoleLogSpy).toHaveBeenCalledWith(
+        "Organization Slug:   test-org"
+      );
     });
 
-    it("shows warning if not member of linked team", async () => {
+    it("shows warning if not member of linked organization", async () => {
       const { findGitRoot } = await import("@detent/git");
       const { getAccessToken } = await import("../../lib/auth.js");
-      const { getTeams } = await import("../../lib/api.js");
+      const { getOrganizations } = await import("../../lib/api.js");
       const { getProjectConfig } = await import("../../lib/config.js");
 
       const projectConfig: ProjectConfig = {
-        teamId: "team-other",
-        teamSlug: "other-team",
+        organizationId: "org-other",
+        organizationSlug: "other-org",
       };
 
-      const team = createMockTeam({ team_id: "team-123" });
+      const organization = createMockOrganization({
+        organization_id: "org-123",
+      });
 
       vi.mocked(findGitRoot).mockResolvedValue("/repo");
       vi.mocked(getProjectConfig).mockReturnValue(projectConfig);
       vi.mocked(getAccessToken).mockResolvedValue("token-123");
-      vi.mocked(getTeams).mockResolvedValue({ teams: [team] });
+      vi.mocked(getOrganizations).mockResolvedValue({
+        organizations: [organization],
+      });
 
       const { statusCommand } = await import("./status.js");
       await statusCommand.run?.({ args: {} });
 
       expect(consoleLogSpy).toHaveBeenCalledWith(
-        "\nWarning: You are not a member of the linked team."
+        "\nWarning: You are not a member of the linked organization."
       );
     });
   });
@@ -322,7 +351,7 @@ describe("link commands", () => {
       await unlinkCommand.run?.({ args: { force: false } });
 
       expect(consoleLogSpy).toHaveBeenCalledWith(
-        "\nThis repository is not linked to any team."
+        "\nThis repository is not linked to any organization."
       );
     });
 
@@ -333,8 +362,8 @@ describe("link commands", () => {
       );
 
       const projectConfig: ProjectConfig = {
-        teamId: "team-123",
-        teamSlug: "test-team",
+        organizationId: "org-123",
+        organizationSlug: "test-org",
       };
 
       vi.mocked(findGitRoot).mockResolvedValue("/repo");
@@ -345,7 +374,7 @@ describe("link commands", () => {
 
       expect(removeProjectConfig).toHaveBeenCalledWith("/repo");
       expect(consoleLogSpy).toHaveBeenCalledWith(
-        "\nSuccessfully unlinked repository from team."
+        "\nSuccessfully unlinked repository from organization."
       );
     });
   });

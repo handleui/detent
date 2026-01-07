@@ -1,14 +1,14 @@
 /**
  * Auth routes
  *
- * Handles identity synchronization from WorkOS to update team members
+ * Handles identity synchronization from WorkOS to update organization members
  * with GitHub identity information obtained during authentication.
  */
 
 import { eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { createDb } from "../db/client";
-import { teamMembers } from "../db/schema";
+import { organizationMembers } from "../db/schema";
 import type { Env } from "../types/env";
 
 // WorkOS identity from /user_management/users/:id/identities
@@ -36,7 +36,7 @@ const app = new Hono<{ Bindings: Env }>();
 
 /**
  * POST /sync-identity
- * Sync GitHub identity from WorkOS to all team memberships for the authenticated user.
+ * Sync GitHub identity from WorkOS to all organization memberships for the authenticated user.
  * This is called after successful device code authentication to capture GitHub identity
  * if the user authenticated via GitHub OAuth through WorkOS.
  */
@@ -129,21 +129,21 @@ app.post("/sync-identity", async (c) => {
     console.error("Failed to fetch GitHub username for user:", githubUserId);
   }
 
-  // Update all team memberships for this user with GitHub identity
+  // Update all organization memberships for this user with GitHub identity
   const { db, client } = await createDb(c.env);
   try {
     const updatedMembers = await db
-      .update(teamMembers)
+      .update(organizationMembers)
       .set({
         providerUserId: githubUserId,
         providerUsername: githubUsername,
         providerLinkedAt: new Date(),
         updatedAt: new Date(),
       })
-      .where(eq(teamMembers.userId, auth.userId))
+      .where(eq(organizationMembers.userId, auth.userId))
       .returning({
-        teamId: teamMembers.teamId,
-        providerUsername: teamMembers.providerUsername,
+        organizationId: organizationMembers.organizationId,
+        providerUsername: organizationMembers.providerUsername,
       });
 
     return c.json({
@@ -154,7 +154,7 @@ app.post("/sync-identity", async (c) => {
       github_synced: true,
       github_user_id: githubUserId,
       github_username: githubUsername,
-      teams_updated: updatedMembers.length,
+      organizations_updated: updatedMembers.length,
     });
   } finally {
     await client.end();
@@ -177,8 +177,8 @@ app.get("/me", async (c) => {
           Authorization: `Bearer ${c.env.WORKOS_API_KEY}`,
         },
       }),
-      db.query.teamMembers.findFirst({
-        where: eq(teamMembers.userId, auth.userId),
+      db.query.organizationMembers.findFirst({
+        where: eq(organizationMembers.userId, auth.userId),
       }),
     ]);
 
@@ -191,8 +191,8 @@ app.get("/me", async (c) => {
 
     const user = (await userResponse.json()) as WorkOSUser;
 
-    // If no team membership found, also check WorkOS identities directly
-    // This handles the case where a user authenticated via GitHub but has no team yet
+    // If no organization membership found, also check WorkOS identities directly
+    // This handles the case where a user authenticated via GitHub but has no organization yet
     let githubUserId: string | null = membership?.providerUserId ?? null;
     const githubUsername: string | null = membership?.providerUsername ?? null;
     let githubLinked = Boolean(githubUserId);
@@ -231,6 +231,36 @@ app.get("/me", async (c) => {
       github_linked: githubLinked,
       github_user_id: githubUserId,
       github_username: githubUsername,
+    });
+  } finally {
+    await client.end();
+  }
+});
+
+/**
+ * GET /organizations
+ * List organizations the user is a member of
+ */
+app.get("/organizations", async (c) => {
+  const auth = c.get("auth");
+
+  const { db, client } = await createDb(c.env);
+  try {
+    const memberships = await db.query.organizationMembers.findMany({
+      where: eq(organizationMembers.userId, auth.userId),
+      with: { organization: true },
+    });
+
+    return c.json({
+      organizations: memberships.map((m) => ({
+        organization_id: m.organizationId,
+        organization_name: m.organization.name,
+        organization_slug: m.organization.slug,
+        github_org: m.organization.providerAccountLogin,
+        role: m.role,
+        github_linked: Boolean(m.providerUserId),
+        github_username: m.providerUsername,
+      })),
     });
   } finally {
     await client.end();

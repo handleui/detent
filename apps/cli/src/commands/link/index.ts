@@ -1,32 +1,35 @@
 /**
- * Link command - links a repository to a Detent team
+ * Link command - links a repository to a Detent organization
  *
  * Similar to Vercel's project linking, this binds the current repo
- * to a team for Detent operations.
+ * to an organization for Detent operations.
  */
 
 import { findGitRoot } from "@detent/git";
 import { defineCommand } from "citty";
-import type { Team } from "../../lib/api.js";
-import { getTeams } from "../../lib/api.js";
+import type { Organization } from "../../lib/api.js";
+import { getOrganizations } from "../../lib/api.js";
 import { getAccessToken } from "../../lib/auth.js";
 import { getProjectConfig, saveProjectConfig } from "../../lib/config.js";
-import { findTeamByIdOrSlug, selectTeam } from "../../lib/ui.js";
+import {
+  findOrganizationByIdOrSlug,
+  selectOrganization,
+} from "../../lib/ui.js";
 
 export const linkCommand = defineCommand({
   meta: {
     name: "link",
-    description: "Link this repository to a Detent team",
+    description: "Link this repository to a Detent organization",
   },
   subCommands: {
     status: () => import("./status.js").then((m) => m.statusCommand),
     unlink: () => import("./unlink.js").then((m) => m.unlinkCommand),
   },
   args: {
-    team: {
+    organization: {
       type: "string",
-      description: "Team ID or slug to link to",
-      alias: "t",
+      description: "Organization ID or slug to link to",
+      alias: "o",
     },
     force: {
       type: "boolean",
@@ -54,59 +57,70 @@ export const linkCommand = defineCommand({
     const existingConfig = getProjectConfig(repoRoot);
     if (existingConfig && !args.force) {
       console.log(
-        `\nThis repository is already linked to team: ${existingConfig.teamSlug}`
+        `\nThis repository is already linked to organization: ${existingConfig.organizationSlug}`
       );
-      console.log("Run `detent link --force` to link to a different team.");
+      console.log(
+        "Run `detent link --force` to link to a different organization."
+      );
       console.log("Run `detent link status` to see details.");
       return;
     }
 
-    // Get user's teams
-    console.log("Fetching your teams...");
-    const teamsResponse = await getTeams(accessToken).catch((error) => {
-      console.error(
-        "Failed to fetch teams:",
-        error instanceof Error ? error.message : error
-      );
-      process.exit(1);
-    });
+    // Get user's organizations
+    console.log("Fetching your organizations...");
+    const organizationsResponse = await getOrganizations(accessToken).catch(
+      (error) => {
+        console.error(
+          "Failed to fetch organizations:",
+          error instanceof Error ? error.message : error
+        );
+        process.exit(1);
+      }
+    );
 
-    if (teamsResponse.teams.length === 0) {
-      console.error("You are not a member of any teams.");
-      console.error("Ask a team admin to invite you.");
+    if (organizationsResponse.organizations.length === 0) {
+      console.error("You are not a member of any organizations.");
+      console.error("Ask an organization admin to invite you.");
       process.exit(1);
     }
 
-    // Select team
-    let selectedTeam: Team;
+    // Select organization
+    let selectedOrganization: Organization;
 
-    if (args.team) {
-      const found = findTeamByIdOrSlug(teamsResponse.teams, args.team);
+    if (args.organization) {
+      const found = findOrganizationByIdOrSlug(
+        organizationsResponse.organizations,
+        args.organization
+      );
       if (!found) {
-        console.error(`Team not found: ${args.team}`);
-        console.error("\nAvailable teams:");
-        for (const team of teamsResponse.teams) {
-          console.error(`  - ${team.team_slug} (${team.team_name})`);
+        console.error(`Organization not found: ${args.organization}`);
+        console.error("\nAvailable organizations:");
+        for (const organization of organizationsResponse.organizations) {
+          console.error(
+            `  - ${organization.organization_slug} (${organization.organization_name})`
+          );
         }
         process.exit(1);
       }
-      selectedTeam = found;
+      selectedOrganization = found;
     } else {
-      const selected = await selectTeam(teamsResponse.teams);
+      const selected = await selectOrganization(
+        organizationsResponse.organizations
+      );
       if (!selected) {
         process.exit(1);
       }
-      selectedTeam = selected;
+      selectedOrganization = selected;
     }
 
     // Save project config
     saveProjectConfig(repoRoot, {
-      teamId: selectedTeam.team_id,
-      teamSlug: selectedTeam.team_slug,
+      organizationId: selectedOrganization.organization_id,
+      organizationSlug: selectedOrganization.organization_slug,
     });
 
     console.log(
-      `\nLinked to team: ${selectedTeam.team_name} (${selectedTeam.team_slug})`
+      `\nLinked to organization: ${selectedOrganization.organization_name} (${selectedOrganization.organization_slug})`
     );
     console.log("\nRun `detent link status` to see details.");
   },

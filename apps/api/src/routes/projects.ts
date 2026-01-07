@@ -1,26 +1,26 @@
 /**
  * Projects API routes
  *
- * Manages project registration - linking repositories to teams.
+ * Manages project registration - linking repositories to organizations.
  * Projects are created when users run `detent link` in their repo.
  */
 
 import { and, eq, isNull } from "drizzle-orm";
 import { Hono } from "hono";
 import { createDb } from "../db/client";
-import { projects, teamMembers } from "../db/schema";
+import { organizationMembers, projects } from "../db/schema";
 import type { Env } from "../types/env";
 
 const app = new Hono<{ Bindings: Env }>();
 
 /**
  * POST /
- * Register a project (link a repository to a team)
+ * Register a project (link a repository to an organization)
  */
 app.post("/", async (c) => {
   const auth = c.get("auth");
   const body = await c.req.json<{
-    team_id: string;
+    organization_id: string;
     provider_repo_id: string;
     provider_repo_name: string;
     provider_repo_full_name: string;
@@ -29,7 +29,7 @@ app.post("/", async (c) => {
   }>();
 
   const {
-    team_id: teamId,
+    organization_id: organizationId,
     provider_repo_id: providerRepoId,
     provider_repo_name: providerRepoName,
     provider_repo_full_name: providerRepoFullName,
@@ -37,11 +37,18 @@ app.post("/", async (c) => {
     is_private: isPrivate,
   } = body;
 
-  if (!(teamId && providerRepoId && providerRepoName && providerRepoFullName)) {
+  if (
+    !(
+      organizationId &&
+      providerRepoId &&
+      providerRepoName &&
+      providerRepoFullName
+    )
+  ) {
     return c.json(
       {
         error:
-          "team_id, provider_repo_id, provider_repo_name, and provider_repo_full_name are required",
+          "organization_id, provider_repo_id, provider_repo_name, and provider_repo_full_name are required",
       },
       400
     );
@@ -49,32 +56,32 @@ app.post("/", async (c) => {
 
   const { db, client } = await createDb(c.env);
   try {
-    // Verify user is a member of this team
-    const member = await db.query.teamMembers.findFirst({
+    // Verify user is a member of this organization
+    const member = await db.query.organizationMembers.findFirst({
       where: and(
-        eq(teamMembers.userId, auth.userId),
-        eq(teamMembers.teamId, teamId)
+        eq(organizationMembers.userId, auth.userId),
+        eq(organizationMembers.organizationId, organizationId)
       ),
-      with: { team: true },
+      with: { organization: true },
     });
 
     if (!member) {
-      return c.json({ error: "Not a member of this team" }, 403);
+      return c.json({ error: "Not a member of this organization" }, 403);
     }
 
-    // Check if team is suspended or deleted
-    if (member.team.suspendedAt) {
-      return c.json({ error: "Team is suspended" }, 403);
+    // Check if organization is suspended or deleted
+    if (member.organization.suspendedAt) {
+      return c.json({ error: "Organization is suspended" }, 403);
     }
 
-    if (member.team.deletedAt) {
-      return c.json({ error: "Team has been deleted" }, 404);
+    if (member.organization.deletedAt) {
+      return c.json({ error: "Organization has been deleted" }, 404);
     }
 
-    // Check if project already exists for this repo in this team
+    // Check if project already exists for this repo in this organization
     const existingProject = await db.query.projects.findFirst({
       where: and(
-        eq(projects.teamId, teamId),
+        eq(projects.organizationId, organizationId),
         eq(projects.providerRepoId, providerRepoId),
         isNull(projects.removedAt)
       ),
@@ -84,7 +91,7 @@ app.post("/", async (c) => {
       // Project already exists, return it
       return c.json({
         project_id: existingProject.id,
-        team_id: existingProject.teamId,
+        organization_id: existingProject.organizationId,
         provider_repo_id: existingProject.providerRepoId,
         provider_repo_name: existingProject.providerRepoName,
         provider_repo_full_name: existingProject.providerRepoFullName,
@@ -99,7 +106,7 @@ app.post("/", async (c) => {
 
     await db.insert(projects).values({
       id: projectId,
-      teamId,
+      organizationId,
       providerRepoId,
       providerRepoName,
       providerRepoFullName,
@@ -110,7 +117,7 @@ app.post("/", async (c) => {
     return c.json(
       {
         project_id: projectId,
-        team_id: teamId,
+        organization_id: organizationId,
         provider_repo_id: providerRepoId,
         provider_repo_name: providerRepoName,
         provider_repo_full_name: providerRepoFullName,
@@ -127,39 +134,42 @@ app.post("/", async (c) => {
 
 /**
  * GET /
- * List projects for a team
+ * List projects for an organization
  */
 app.get("/", async (c) => {
   const auth = c.get("auth");
-  const teamId = c.req.query("team_id");
+  const organizationId = c.req.query("organization_id");
 
-  if (!teamId) {
-    return c.json({ error: "team_id is required" }, 400);
+  if (!organizationId) {
+    return c.json({ error: "organization_id is required" }, 400);
   }
 
   const { db, client } = await createDb(c.env);
   try {
-    // Verify user is a member of this team
-    const member = await db.query.teamMembers.findFirst({
+    // Verify user is a member of this organization
+    const member = await db.query.organizationMembers.findFirst({
       where: and(
-        eq(teamMembers.userId, auth.userId),
-        eq(teamMembers.teamId, teamId)
+        eq(organizationMembers.userId, auth.userId),
+        eq(organizationMembers.organizationId, organizationId)
       ),
     });
 
     if (!member) {
-      return c.json({ error: "Not a member of this team" }, 403);
+      return c.json({ error: "Not a member of this organization" }, 403);
     }
 
-    // Get all active projects for this team
-    const teamProjects = await db.query.projects.findMany({
-      where: and(eq(projects.teamId, teamId), isNull(projects.removedAt)),
+    // Get all active projects for this organization
+    const organizationProjects = await db.query.projects.findMany({
+      where: and(
+        eq(projects.organizationId, organizationId),
+        isNull(projects.removedAt)
+      ),
     });
 
     return c.json({
-      projects: teamProjects.map((p) => ({
+      projects: organizationProjects.map((p) => ({
         project_id: p.id,
-        team_id: p.teamId,
+        organization_id: p.organizationId,
         provider_repo_id: p.providerRepoId,
         provider_repo_name: p.providerRepoName,
         provider_repo_full_name: p.providerRepoFullName,
@@ -167,6 +177,63 @@ app.get("/", async (c) => {
         is_private: p.isPrivate,
         created_at: p.createdAt.toISOString(),
       })),
+    });
+  } finally {
+    await client.end();
+  }
+});
+
+/**
+ * GET /lookup
+ * Look up a project by repo full name
+ * IMPORTANT: This route must be defined BEFORE /:projectId to prevent /lookup being treated as a projectId
+ */
+app.get("/lookup", async (c) => {
+  const auth = c.get("auth");
+  const repoFullName = c.req.query("repo");
+
+  if (!repoFullName) {
+    return c.json({ error: "repo query parameter is required" }, 400);
+  }
+
+  const { db, client } = await createDb(c.env);
+  try {
+    // Find project by repo full name
+    const project = await db.query.projects.findFirst({
+      where: and(
+        eq(projects.providerRepoFullName, repoFullName),
+        isNull(projects.removedAt)
+      ),
+      with: { organization: true },
+    });
+
+    if (!project) {
+      return c.json({ error: "Project not found" }, 404);
+    }
+
+    // Verify user is a member of the project's organization
+    const member = await db.query.organizationMembers.findFirst({
+      where: and(
+        eq(organizationMembers.userId, auth.userId),
+        eq(organizationMembers.organizationId, project.organizationId)
+      ),
+    });
+
+    if (!member) {
+      return c.json({ error: "Not a member of this organization" }, 403);
+    }
+
+    return c.json({
+      project_id: project.id,
+      organization_id: project.organizationId,
+      organization_name: project.organization.name,
+      organization_slug: project.organization.slug,
+      provider_repo_id: project.providerRepoId,
+      provider_repo_name: project.providerRepoName,
+      provider_repo_full_name: project.providerRepoFullName,
+      provider_default_branch: project.providerDefaultBranch,
+      is_private: project.isPrivate,
+      created_at: project.createdAt.toISOString(),
     });
   } finally {
     await client.end();
@@ -186,86 +253,30 @@ app.get("/:projectId", async (c) => {
     // Get the project
     const project = await db.query.projects.findFirst({
       where: and(eq(projects.id, projectId), isNull(projects.removedAt)),
-      with: { team: true },
+      with: { organization: true },
     });
 
     if (!project) {
       return c.json({ error: "Project not found" }, 404);
     }
 
-    // Verify user is a member of the project's team
-    const member = await db.query.teamMembers.findFirst({
+    // Verify user is a member of the project's organization
+    const member = await db.query.organizationMembers.findFirst({
       where: and(
-        eq(teamMembers.userId, auth.userId),
-        eq(teamMembers.teamId, project.teamId)
+        eq(organizationMembers.userId, auth.userId),
+        eq(organizationMembers.organizationId, project.organizationId)
       ),
     });
 
     if (!member) {
-      return c.json({ error: "Not a member of this team" }, 403);
+      return c.json({ error: "Not a member of this organization" }, 403);
     }
 
     return c.json({
       project_id: project.id,
-      team_id: project.teamId,
-      team_name: project.team.name,
-      team_slug: project.team.slug,
-      provider_repo_id: project.providerRepoId,
-      provider_repo_name: project.providerRepoName,
-      provider_repo_full_name: project.providerRepoFullName,
-      provider_default_branch: project.providerDefaultBranch,
-      is_private: project.isPrivate,
-      created_at: project.createdAt.toISOString(),
-    });
-  } finally {
-    await client.end();
-  }
-});
-
-/**
- * GET /lookup
- * Look up a project by repo full name
- */
-app.get("/lookup", async (c) => {
-  const auth = c.get("auth");
-  const repoFullName = c.req.query("repo");
-
-  if (!repoFullName) {
-    return c.json({ error: "repo query parameter is required" }, 400);
-  }
-
-  const { db, client } = await createDb(c.env);
-  try {
-    // Find project by repo full name
-    const project = await db.query.projects.findFirst({
-      where: and(
-        eq(projects.providerRepoFullName, repoFullName),
-        isNull(projects.removedAt)
-      ),
-      with: { team: true },
-    });
-
-    if (!project) {
-      return c.json({ error: "Project not found" }, 404);
-    }
-
-    // Verify user is a member of the project's team
-    const member = await db.query.teamMembers.findFirst({
-      where: and(
-        eq(teamMembers.userId, auth.userId),
-        eq(teamMembers.teamId, project.teamId)
-      ),
-    });
-
-    if (!member) {
-      return c.json({ error: "Not a member of this team" }, 403);
-    }
-
-    return c.json({
-      project_id: project.id,
-      team_id: project.teamId,
-      team_name: project.team.name,
-      team_slug: project.team.slug,
+      organization_id: project.organizationId,
+      organization_name: project.organization.name,
+      organization_slug: project.organization.slug,
       provider_repo_id: project.providerRepoId,
       provider_repo_name: project.providerRepoName,
       provider_repo_full_name: project.providerRepoFullName,
@@ -297,21 +308,21 @@ app.delete("/:projectId", async (c) => {
       return c.json({ error: "Project not found" }, 404);
     }
 
-    // Verify user is a member of the project's team with admin or owner role
-    const member = await db.query.teamMembers.findFirst({
+    // Verify user is a member of the project's organization with admin or owner role
+    const member = await db.query.organizationMembers.findFirst({
       where: and(
-        eq(teamMembers.userId, auth.userId),
-        eq(teamMembers.teamId, project.teamId)
+        eq(organizationMembers.userId, auth.userId),
+        eq(organizationMembers.organizationId, project.organizationId)
       ),
     });
 
     if (!member) {
-      return c.json({ error: "Not a member of this team" }, 403);
+      return c.json({ error: "Not a member of this organization" }, 403);
     }
 
     if (member.role === "member") {
       return c.json(
-        { error: "Only team owners and admins can remove projects" },
+        { error: "Only organization owners and admins can remove projects" },
         403
       );
     }

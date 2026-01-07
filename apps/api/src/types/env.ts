@@ -24,4 +24,8 @@ export interface Env {
 
   // CORS configuration (optional)
   ALLOWED_ORIGINS?: string; // Comma-separated list of allowed CORS origins
+
+  // Encryption key for sensitive data (GitLab tokens, etc.)
+  // Generate with: openssl rand -base64 32
+  ENCRYPTION_KEY?: string;
 }

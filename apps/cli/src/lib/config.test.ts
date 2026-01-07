@@ -22,8 +22,8 @@ vi.mock("node:fs", () => ({
 const createValidProjectConfig = (
   overrides: Partial<ProjectConfig> = {}
 ): ProjectConfig => ({
-  teamId: "team-123",
-  teamSlug: "test-team",
+  organizationId: "org-123",
+  organizationSlug: "test-org",
   ...overrides,
 });
 
@@ -102,28 +102,32 @@ describe("project config", () => {
       expect(result.error).toContain("invalid JSON");
     });
 
-    it("returns error when missing teamId", () => {
+    it("returns error when missing organizationId", () => {
       vi.mocked(existsSync).mockReturnValue(true);
       vi.mocked(readFileSync).mockReturnValue(
-        JSON.stringify({ teamSlug: "test-team" })
+        JSON.stringify({ organizationSlug: "test-org" })
       );
 
       const result = getProjectConfigSafe("/repo");
 
       expect(result.config).toBeNull();
-      expect(result.error).toContain("missing teamId or teamSlug");
+      expect(result.error).toContain(
+        "missing organizationId or organizationSlug"
+      );
     });
 
-    it("returns error when missing teamSlug", () => {
+    it("returns error when missing organizationSlug", () => {
       vi.mocked(existsSync).mockReturnValue(true);
       vi.mocked(readFileSync).mockReturnValue(
-        JSON.stringify({ teamId: "team-123" })
+        JSON.stringify({ organizationId: "org-123" })
       );
 
       const result = getProjectConfigSafe("/repo");
 
       expect(result.config).toBeNull();
-      expect(result.error).toContain("missing teamId or teamSlug");
+      expect(result.error).toContain(
+        "missing organizationId or organizationSlug"
+      );
     });
 
     it("returns error for permission denied", () => {
@@ -213,7 +217,7 @@ describe("project config", () => {
 
       expect(writeFileSync).toHaveBeenCalledWith(
         "/repo/.detent/project.json",
-        expect.stringContaining('"teamId"'),
+        expect.stringContaining('"organizationId"'),
         { mode: 0o600 }
       );
     });
@@ -232,16 +236,16 @@ describe("project config", () => {
     it("preserves all config fields", () => {
       vi.mocked(existsSync).mockReturnValue(true);
       const config = createValidProjectConfig({
-        teamId: "custom-team-id",
-        teamSlug: "custom-slug",
+        organizationId: "custom-org-id",
+        organizationSlug: "custom-slug",
       });
 
       saveProjectConfig("/repo", config);
 
       const writtenData = vi.mocked(writeFileSync).mock.calls[0][1] as string;
       const parsed = JSON.parse(writtenData) as ProjectConfig;
-      expect(parsed.teamId).toBe("custom-team-id");
-      expect(parsed.teamSlug).toBe("custom-slug");
+      expect(parsed.organizationId).toBe("custom-org-id");
+      expect(parsed.organizationSlug).toBe("custom-slug");
     });
   });
 

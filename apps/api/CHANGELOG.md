@@ -1,13 +1,5 @@
 # @detent/api
 
-## 0.2.0
-
-### Minor Changes
-
-- dbc5371: Add GitHub App integration with webhook handlers for installation lifecycle events.
-  Includes PostgreSQL database schema (teams, projects, team_members) via Drizzle ORM,
-  JWT authentication middleware for WorkOS AuthKit, and webhook signature verification.
-
 ## 0.1.0
 
 ### Minor Changes

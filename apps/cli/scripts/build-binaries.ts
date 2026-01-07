@@ -87,6 +87,13 @@ const compileBinary = async (
 
   log(`Compiling for ${target.os}/${target.arch}...`);
 
+  const workosClientId = process.env.WORKOS_CLIENT_ID;
+  if (!workosClientId) {
+    fatal(
+      "WORKOS_CLIENT_ID environment variable is required for production builds"
+    );
+  }
+
   const proc = Bun.spawn({
     cmd: [
       "bun",
@@ -94,7 +101,9 @@ const compileBinary = async (
       "--compile",
       `--target=${target.bun}`,
       `--define=DETENT_VERSION=${JSON.stringify(version)}`,
+      "--define=DETENT_PRODUCTION=true",
       `--define=process.env.NODE_ENV="production"`,
+      `--define=process.env.WORKOS_CLIENT_ID=${JSON.stringify(workosClientId)}`,
       "--minify",
       "--external=@aws-sdk/client-s3",
       SRC_ENTRY,

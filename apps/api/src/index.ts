@@ -4,12 +4,12 @@ import { logger } from "hono/logger";
 import { secureHeaders } from "hono/secure-headers";
 import { authMiddleware } from "./middleware/auth";
 import authRoutes from "./routes/auth";
-import githubLinkRoutes from "./routes/github-link";
 import healRoutes from "./routes/heal";
 import healthRoutes from "./routes/health";
+import organizationMembersRoutes from "./routes/organization-members";
+import organizationsRoutes from "./routes/organizations";
 import parseRoutes from "./routes/parse";
 import projectsRoutes from "./routes/projects";
-import teamMembersRoutes from "./routes/team-members";
 import webhookRoutes from "./routes/webhooks";
 import type { Env } from "./types/env";
 
@@ -79,9 +79,9 @@ api.use("*", authMiddleware);
 api.route("/auth", authRoutes);
 api.route("/parse", parseRoutes);
 api.route("/heal", healRoutes);
-api.route("/github", githubLinkRoutes);
 api.route("/projects", projectsRoutes);
-api.route("/team-members", teamMembersRoutes);
+api.route("/organization-members", organizationMembersRoutes);
+api.route("/organizations", organizationsRoutes);
 
 app.route("/v1", api);
 
