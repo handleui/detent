@@ -1,0 +1,230 @@
+---
+title: Docker Compose
+description: Deploy Detent with Docker Compose
+---
+
+Docker Compose is the simplest way to self-host Detent for small teams or development environments.
+
+## Prerequisites
+
+- Docker 24+
+- Docker Compose v2
+- 4 GB RAM minimum
+- Domain with SSL (for production)
+
+## Quick Start
+
+### 1. Clone the Repository
+
+```bash
+git clone https://github.com/handleui/detent
+cd detent
+```
+
+### 2. Create Environment File
+
+```bash
+cp apps/api/.env.example apps/api/.env
+```
+
+Edit `apps/api/.env` with your configuration:
+
+```bash apps/api/.env
+# Database
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/detent
+
+# GitHub App (create at github.com/settings/apps)
+GITHUB_APP_ID=123456
+GITHUB_CLIENT_ID=Iv1.xxxxx
+GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----"
+GITHUB_WEBHOOK_SECRET=your-webhook-secret
+
+# WorkOS (create at workos.com)
+WORKOS_CLIENT_ID=client_xxxxx
+WORKOS_API_KEY=sk_xxxxx
+
+# Rate Limiting (upstash.com)
+UPSTASH_REDIS_REST_URL=https://xxxxx.upstash.io
+UPSTASH_REDIS_REST_TOKEN=xxxxx
+
+# Security
+ENCRYPTION_KEY=your-32-byte-base64-key
+ALLOWED_ORIGINS=https://your-domain.com
+```
+
+### 3. Start Services
+
+```bash
+cd apps/api
+docker compose up -d
+```
+
+### 4. Apply Migrations
+
+```bash
+bun run db:migrate
+```
+
+### 5. Verify
+
+```bash
+curl http://localhost:3000/health
+# {"status":"ok"}
+```
+
+## Full Docker Compose Setup
+
+For a production-ready setup with all services:
+
+```yaml docker-compose.yml
+services:
+  postgres:
+    image: postgres:17
+    container_name: detent-postgres
+    environment:
+      POSTGRES_USER: detent
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: detent
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U detent"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    container_name: detent-api
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgres://detent:${POSTGRES_PASSWORD}@postgres:5432/detent
+      GITHUB_APP_ID: ${GITHUB_APP_ID}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID}
+      GITHUB_APP_PRIVATE_KEY: ${GITHUB_APP_PRIVATE_KEY}
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET}
+      WORKOS_CLIENT_ID: ${WORKOS_CLIENT_ID}
+      WORKOS_API_KEY: ${WORKOS_API_KEY}
+      UPSTASH_REDIS_REST_URL: ${UPSTASH_REDIS_REST_URL}
+      UPSTASH_REDIS_REST_TOKEN: ${UPSTASH_REDIS_REST_TOKEN}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+```
+
+## Reverse Proxy Setup
+
+For production, use a reverse proxy with SSL:
+
+<Tabs>
+  <Tab title="Caddy">
+    ```
+    detent-api.example.com {
+      reverse_proxy api:3000
+    }
+    ```
+  </Tab>
+  <Tab title="Nginx">
+    ```nginx
+    server {
+        listen 443 ssl http2;
+        server_name detent-api.example.com;
+
+        ssl_certificate /etc/ssl/certs/detent.crt;
+        ssl_certificate_key /etc/ssl/private/detent.key;
+
+        location / {
+            proxy_pass http://api:3000;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Database Backups
+
+Set up automated backups:
+
+```bash
+# Create backup script
+cat > backup.sh << 'EOF'
+#!/bin/bash
+BACKUP_DIR=/backups
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+docker exec detent-postgres pg_dump -U detent detent > $BACKUP_DIR/detent_$TIMESTAMP.sql
+# Keep last 7 days
+find $BACKUP_DIR -name "detent_*.sql" -mtime +7 -delete
+EOF
+
+chmod +x backup.sh
+
+# Add to cron (daily at 2 AM)
+echo "0 2 * * * /path/to/backup.sh" | crontab -
+```
+
+## Upgrading
+
+```bash
+# Pull latest changes
+git pull origin main
+
+# Rebuild and restart
+docker compose down
+docker compose build
+docker compose up -d
+
+# Apply any new migrations
+bun run db:migrate
+```
+
+## Troubleshooting
+
+### Database Connection Issues
+
+```bash
+# Check if PostgreSQL is running
+docker compose ps
+
+# View PostgreSQL logs
+docker compose logs postgres
+
+# Test connection
+docker exec -it detent-postgres psql -U detent -d detent -c "SELECT 1"
+```
+
+### API Not Starting
+
+```bash
+# View API logs
+docker compose logs api
+
+# Check environment variables
+docker compose exec api env | grep -E "(DATABASE|GITHUB|WORKOS)"
+```
+
+### Migration Errors
+
+```bash
+# View current migration status
+cd apps/api
+bun run db:studio
+
+# Reset database (development only!)
+docker compose down -v
+docker compose up -d
+bun run db:migrate
+```

@@ -1,0 +1,101 @@
+---
+title: Key Features
+description: What makes Detent powerful
+---
+
+## Local CI Execution
+
+Run your CI pipelines locally without waiting for remote runners. Detent parses your CI configuration and executes workflows on your machine.
+
+<Tabs>
+  <Tab title="GitHub Actions">
+    Detent reads `.github/workflows/*.yml` and runs jobs locally.
+
+    ```yaml .github/workflows/ci.yml
+    name: CI
+    on: [push, pull_request]
+    jobs:
+      lint:
+        runs-on: ubuntu-latest
+        steps:
+          - uses: actions/checkout@v4
+          - run: npm ci
+          - run: npm run lint
+    ```
+  </Tab>
+  <Tab title="GitLab CI">
+    Detent parses `.gitlab-ci.yml` and executes stages.
+
+    ```yaml .gitlab-ci.yml
+    lint:
+      script:
+        - npm ci
+        - npm run lint
+    ```
+  </Tab>
+</Tabs>
+
+## AI-Powered Healing
+
+When checks fail, Detent's AI analyzes the error output and automatically applies fixes.
+
+### Supported Fix Types
+
+| Category | Examples |
+|----------|----------|
+| **Linting** | ESLint, Biome, Prettier formatting |
+| **Type Errors** | TypeScript, Flow type mismatches |
+| **Test Failures** | Jest, Vitest, pytest assertion fixes |
+| **Build Errors** | Missing imports, syntax errors |
+
+### How Healing Works
+
+1. **Error Parsing** - Extracts structured error information from CLI output
+2. **Context Gathering** - Reads relevant source files and dependencies
+3. **AI Analysis** - LLM determines the appropriate fix
+4. **Code Application** - Applies changes to your codebase
+5. **Verification** - Re-runs the failing check to confirm
+
+## Git-Aware Checking
+
+Detent only checks files that changed in your current branch, making checks fast and focused.
+
+```bash
+# Only checks files changed since main
+detent check
+
+# Force check all files
+detent check --force
+```
+
+## Budget Controls
+
+Control AI usage with token budgets to manage costs:
+
+```bash
+# Set a healing budget
+detent heal --budget 10000
+
+# Check remaining budget
+detent budget
+```
+
+## Trust Levels
+
+Configure which tools Detent can use for healing:
+
+```bash
+# View trust settings
+detent trust
+
+# Allow specific tools
+detent trust add eslint
+```
+
+## Multi-Provider Support
+
+Detent works with multiple CI providers:
+
+- **GitHub Actions** - Full support via GitHub App integration
+- **GitLab CI** - Support via group access tokens
+- **Local-only** - Run checks without any cloud connection

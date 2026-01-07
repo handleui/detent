@@ -1,0 +1,311 @@
+---
+title: Kubernetes Deployment
+description: Deploy Detent to Kubernetes for production
+---
+
+Kubernetes deployment is recommended for production environments requiring high availability and scalability.
+
+## Prerequisites
+
+- Kubernetes 1.28+
+- kubectl configured
+- Helm 3 (optional)
+- PostgreSQL (managed or self-hosted)
+- Redis/Upstash for rate limiting
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     Kubernetes Cluster                       │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐         │
+│  │   Ingress   │──│   Service   │──│  Deployment │         │
+│  │  (nginx)    │  │  (detent)   │  │  (replicas) │         │
+│  └─────────────┘  └─────────────┘  └─────────────┘         │
+│                                           │                  │
+│                                           ▼                  │
+│                                    ┌─────────────┐          │
+│                                    │   Secret    │          │
+│                                    │  (env vars) │          │
+│                                    └─────────────┘          │
+└─────────────────────────────────────────────────────────────┘
+                          │
+          ┌───────────────┼───────────────┐
+          ▼               ▼               ▼
+   ┌─────────────┐ ┌─────────────┐ ┌─────────────┐
+   │ PostgreSQL  │ │   Upstash   │ │   WorkOS    │
+   │  (managed)  │ │   (Redis)   │ │   (Auth)    │
+   └─────────────┘ └─────────────┘ └─────────────┘
+```
+
+## Manifests
+
+### Namespace
+
+```yaml namespace.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: detent
+```
+
+### Secret
+
+```yaml secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: detent-secrets
+  namespace: detent
+type: Opaque
+stringData:
+  DATABASE_URL: "postgres://user:pass@host:5432/detent"
+  GITHUB_APP_ID: "123456"
+  GITHUB_CLIENT_ID: "Iv1.xxxxx"
+  GITHUB_APP_PRIVATE_KEY: |
+    -----BEGIN RSA PRIVATE KEY-----
+    ...
+    -----END RSA PRIVATE KEY-----
+  GITHUB_WEBHOOK_SECRET: "your-webhook-secret"
+  WORKOS_CLIENT_ID: "client_xxxxx"
+  WORKOS_API_KEY: "sk_xxxxx"
+  UPSTASH_REDIS_REST_URL: "https://xxxxx.upstash.io"
+  UPSTASH_REDIS_REST_TOKEN: "xxxxx"
+  ENCRYPTION_KEY: "your-32-byte-base64-key"
+  ALLOWED_ORIGINS: "https://your-domain.com"
+```
+
+### Deployment
+
+```yaml deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: detent-api
+  namespace: detent
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: detent-api
+  template:
+    metadata:
+      labels:
+        app: detent-api
+    spec:
+      containers:
+        - name: api
+          image: ghcr.io/handleui/detent-api:latest
+          ports:
+            - containerPort: 3000
+          envFrom:
+            - secretRef:
+                name: detent-secrets
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+```
+
+### Service
+
+```yaml service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: detent-api
+  namespace: detent
+spec:
+  selector:
+    app: detent-api
+  ports:
+    - port: 80
+      targetPort: 3000
+  type: ClusterIP
+```
+
+### Ingress
+
+```yaml ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: detent-api
+  namespace: detent
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - api.detent.example.com
+      secretName: detent-api-tls
+  rules:
+    - host: api.detent.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: detent-api
+                port:
+                  number: 80
+```
+
+## Deployment Steps
+
+### 1. Apply Manifests
+
+```bash
+kubectl apply -f namespace.yaml
+kubectl apply -f secret.yaml
+kubectl apply -f deployment.yaml
+kubectl apply -f service.yaml
+kubectl apply -f ingress.yaml
+```
+
+### 2. Verify Deployment
+
+```bash
+# Check pods
+kubectl get pods -n detent
+
+# Check logs
+kubectl logs -n detent -l app=detent-api
+
+# Test health endpoint
+kubectl port-forward -n detent svc/detent-api 3000:80
+curl http://localhost:3000/health
+```
+
+### 3. Run Migrations
+
+```bash
+# Create a migration job
+kubectl apply -f - <<EOF
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: detent-migrate
+  namespace: detent
+spec:
+  template:
+    spec:
+      containers:
+        - name: migrate
+          image: ghcr.io/handleui/detent-api:latest
+          command: ["bun", "run", "db:migrate"]
+          envFrom:
+            - secretRef:
+                name: detent-secrets
+      restartPolicy: Never
+  backoffLimit: 3
+EOF
+
+# Check migration status
+kubectl get jobs -n detent
+kubectl logs -n detent job/detent-migrate
+```
+
+## Horizontal Pod Autoscaler
+
+```yaml hpa.yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: detent-api
+  namespace: detent
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: detent-api
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+```
+
+## Pod Disruption Budget
+
+```yaml pdb.yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: detent-api
+  namespace: detent
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: detent-api
+```
+
+## Monitoring
+
+### Prometheus ServiceMonitor
+
+```yaml servicemonitor.yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: detent-api
+  namespace: detent
+spec:
+  selector:
+    matchLabels:
+      app: detent-api
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+```
+
+## Upgrading
+
+```bash
+# Update image tag
+kubectl set image deployment/detent-api -n detent \
+  api=ghcr.io/handleui/detent-api:v1.2.0
+
+# Or rolling update with manifest
+kubectl apply -f deployment.yaml
+
+# Watch rollout
+kubectl rollout status deployment/detent-api -n detent
+```
+
+## Rollback
+
+```bash
+# View rollout history
+kubectl rollout history deployment/detent-api -n detent
+
+# Rollback to previous version
+kubectl rollout undo deployment/detent-api -n detent
+
+# Rollback to specific revision
+kubectl rollout undo deployment/detent-api -n detent --to-revision=2
+```

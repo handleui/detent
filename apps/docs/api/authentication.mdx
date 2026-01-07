@@ -1,0 +1,190 @@
+---
+title: Authentication
+description: Authenticate with the Detent API
+---
+
+Detent uses WorkOS for authentication, providing secure JWT-based access to the API.
+
+## Authentication Flow
+
+```
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│   Client    │────▶│   WorkOS    │────▶│ Detent API  │
+│   (CLI)     │     │   (Auth)    │     │             │
+└─────────────┘     └─────────────┘     └─────────────┘
+       │                   │                   │
+       │  1. Redirect to   │                   │
+       │     WorkOS login  │                   │
+       │──────────────────▶│                   │
+       │                   │                   │
+       │  2. User logs in  │                   │
+       │     (OAuth/SSO)   │                   │
+       │                   │                   │
+       │  3. Redirect with │                   │
+       │     auth code     │                   │
+       │◀──────────────────│                   │
+       │                   │                   │
+       │  4. Exchange code │                   │
+       │     for JWT       │                   │
+       │──────────────────▶│                   │
+       │                   │                   │
+       │  5. Use JWT for   │                   │
+       │     API requests  │                   │
+       │───────────────────────────────────────▶│
+```
+
+## Obtaining a Token
+
+### Via CLI (Recommended)
+
+The CLI handles authentication automatically:
+
+```bash
+detent login
+```
+
+This opens a browser for authentication and stores the token securely.
+
+### Manual Flow
+
+For custom integrations:
+
+<Steps>
+  <Step title="Initiate Login">
+    Redirect users to the WorkOS authorization URL:
+
+    ```
+    https://authkit.detent.sh/authorize?
+      client_id=YOUR_WORKOS_CLIENT_ID&
+      redirect_uri=YOUR_CALLBACK_URL&
+      response_type=code&
+      state=RANDOM_STATE
+    ```
+  </Step>
+
+  <Step title="Handle Callback">
+    After login, WorkOS redirects to your callback URL with an authorization code:
+
+    ```
+    https://your-app.com/callback?code=AUTH_CODE&state=RANDOM_STATE
+    ```
+  </Step>
+
+  <Step title="Exchange Code">
+    Exchange the authorization code for tokens:
+
+    ```bash
+    curl -X POST https://api.workos.com/user_management/authenticate \
+      -H "Content-Type: application/json" \
+      -d '{
+        "client_id": "YOUR_WORKOS_CLIENT_ID",
+        "client_secret": "YOUR_WORKOS_API_KEY",
+        "code": "AUTH_CODE",
+        "grant_type": "authorization_code"
+      }'
+    ```
+  </Step>
+</Steps>
+
+## Using Tokens
+
+Include the JWT in the `Authorization` header:
+
+```bash
+curl https://api.detent.sh/v1/projects \
+  -H "Authorization: Bearer eyJhbGciOiJSUzI1NiIs..."
+```
+
+## Token Structure
+
+The JWT contains:
+
+```json
+{
+  "sub": "user_01ABC123",
+  "email": "user@example.com",
+  "iat": 1704067200,
+  "exp": 1704068100
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `sub` | WorkOS user ID |
+| `email` | User's email address |
+| `iat` | Issued at timestamp |
+| `exp` | Expiration timestamp |
+
+## Token Expiration
+
+Tokens expire after 15 minutes. The CLI automatically refreshes tokens when needed.
+
+For custom integrations, implement token refresh:
+
+```typescript
+const isExpired = (token: string): boolean => {
+  const payload = JSON.parse(atob(token.split('.')[1]));
+  return Date.now() >= payload.exp * 1000;
+};
+
+const getValidToken = async (): Promise<string> => {
+  if (isExpired(currentToken)) {
+    currentToken = await refreshToken();
+  }
+  return currentToken;
+};
+```
+
+## Linking Provider Accounts
+
+Users can link their GitHub/GitLab accounts to enable provider-specific features:
+
+```bash
+# Check linked accounts
+curl https://api.detent.sh/v1/auth/whoami \
+  -H "Authorization: Bearer YOUR_JWT_TOKEN"
+```
+
+Response:
+
+```json
+{
+  "user_id": "user_01ABC123",
+  "email": "user@example.com",
+  "github_username": "octocat",
+  "gitlab_username": null
+}
+```
+
+## Error Responses
+
+### Invalid Token
+
+```json
+{
+  "error": "Invalid or expired token"
+}
+```
+
+Status: `401 Unauthorized`
+
+### Missing Token
+
+```json
+{
+  "error": "Authorization header required"
+}
+```
+
+Status: `401 Unauthorized`
+
+## Security Best Practices
+
+<Warning>
+Never expose JWT tokens in client-side code, URLs, or logs.
+</Warning>
+
+- Store tokens securely (system keychain, encrypted storage)
+- Use HTTPS for all API requests
+- Implement token refresh before expiration
+- Revoke tokens when users log out

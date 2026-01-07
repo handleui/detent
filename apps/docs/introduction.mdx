@@ -1,0 +1,49 @@
+---
+title: Introduction
+description: Run CI locally and fix errors with AI
+---
+
+Detent is an AI-powered CI tool that helps you catch and fix errors before pushing to remote. Run your CI pipelines locally, get instant feedback, and let AI automatically heal failing checks.
+
+## What is Detent?
+
+Detent bridges the gap between local development and CI/CD pipelines. Instead of waiting for remote CI to fail, Detent runs your workflows locally and uses AI to fix issues automatically.
+
+<CardGroup cols={2}>
+  <Card title="Fast Feedback" icon="bolt">
+    Run CI checks locally in seconds, not minutes
+  </Card>
+  <Card title="AI Healing" icon="wand-magic-sparkles">
+    Automatically fix linting, type errors, and test failures
+  </Card>
+  <Card title="Git-Aware" icon="code-branch">
+    Only checks files that changed in your current branch
+  </Card>
+  <Card title="Self-Hostable" icon="server">
+    Deploy on your own infrastructure for full control
+  </Card>
+</CardGroup>
+
+## How It Works
+
+1. **Parse** - Detent reads your CI configuration (GitHub Actions, GitLab CI)
+2. **Check** - Runs workflows locally against your changed files
+3. **Heal** - AI analyzes failures and applies fixes automatically
+4. **Verify** - Re-runs checks to confirm the fix worked
+
+## Get Started
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Get up and running in 5 minutes
+  </Card>
+  <Card title="CLI Reference" icon="terminal" href="/cli/installation">
+    Install and configure the CLI
+  </Card>
+  <Card title="Self-Hosting" icon="server" href="/self-hosting/overview">
+    Deploy Detent on your infrastructure
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/introduction">
+    Integrate with the Detent API
+  </Card>
+</CardGroup>

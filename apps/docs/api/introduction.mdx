@@ -1,0 +1,130 @@
+---
+title: API Introduction
+description: Integrate with the Detent API
+---
+
+The Detent API enables programmatic access to CI management, healing, and organization features.
+
+## Base URL
+
+<CodeGroup>
+```bash Cloud
+https://api.detent.sh/v1
+```
+
+```bash Self-Hosted
+https://your-domain.com/v1
+```
+</CodeGroup>
+
+## Authentication
+
+All API requests require authentication via JWT bearer token from WorkOS.
+
+```bash
+curl https://api.detent.sh/v1/projects \
+  -H "Authorization: Bearer YOUR_JWT_TOKEN"
+```
+
+See [Authentication](/api/authentication) for details on obtaining tokens.
+
+## Response Format
+
+All responses are JSON. Successful responses return the requested data:
+
+```json
+{
+  "project_id": "550e8400-e29b-41d4-a716-446655440000",
+  "organization_id": "660e8400-e29b-41d4-a716-446655440001",
+  "handle": "api",
+  "provider_repo_full_name": "handleui/detent"
+}
+```
+
+Error responses include an `error` field:
+
+```json
+{
+  "error": "Not a member of this organization"
+}
+```
+
+## HTTP Status Codes
+
+| Code | Description |
+|------|-------------|
+| `200` | Success |
+| `201` | Created |
+| `400` | Bad Request - Invalid parameters |
+| `401` | Unauthorized - Invalid or missing token |
+| `403` | Forbidden - Insufficient permissions |
+| `404` | Not Found - Resource doesn't exist |
+| `429` | Too Many Requests - Rate limited |
+| `500` | Internal Server Error |
+
+## Rate Limiting
+
+API requests are rate limited per user:
+
+| Endpoint | Limit |
+|----------|-------|
+| `/v1/*` | 100 requests/minute |
+| `/webhooks/*` | 1000 requests/minute |
+
+Rate limit headers are included in responses:
+
+```
+X-RateLimit-Limit: 100
+X-RateLimit-Remaining: 95
+X-RateLimit-Reset: 1704067200
+```
+
+## API Endpoints
+
+<CardGroup cols={2}>
+  <Card title="Authentication" icon="key" href="/api/authentication">
+    OAuth and token management
+  </Card>
+  <Card title="Webhooks" icon="webhook" href="/api/webhooks">
+    GitHub and GitLab webhooks
+  </Card>
+  <Card title="Projects" icon="folder" href="/api/repositories">
+    Project and repository management
+  </Card>
+  <Card title="Checks" icon="circle-check" href="/api/checks">
+    CI check execution and healing
+  </Card>
+</CardGroup>
+
+## SDKs
+
+Currently, the recommended way to interact with the API is via the CLI or direct HTTP requests. Official SDKs are planned for:
+
+- TypeScript/JavaScript
+- Python
+- Go
+
+## Example: List Projects
+
+```bash
+curl https://api.detent.sh/v1/projects?organization_id=YOUR_ORG_ID \
+  -H "Authorization: Bearer YOUR_JWT_TOKEN"
+```
+
+Response:
+
+```json
+{
+  "projects": [
+    {
+      "project_id": "550e8400-e29b-41d4-a716-446655440000",
+      "organization_id": "660e8400-e29b-41d4-a716-446655440001",
+      "handle": "api",
+      "provider_repo_name": "detent",
+      "provider_repo_full_name": "handleui/detent",
+      "is_private": false,
+      "created_at": "2024-01-15T10:30:00Z"
+    }
+  ]
+}
+```

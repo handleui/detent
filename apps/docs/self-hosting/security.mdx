@@ -1,0 +1,264 @@
+---
+title: Security
+description: Security best practices for self-hosted Detent
+---
+
+This guide covers security considerations and best practices for self-hosting Detent.
+
+## Authentication & Authorization
+
+### JWT Token Security
+
+Detent uses WorkOS for authentication, which provides:
+
+- Short-lived JWT tokens (15 minutes default)
+- Secure token refresh flow
+- No password storage in Detent
+
+<Warning>
+Never expose WorkOS API keys in client-side code or logs.
+</Warning>
+
+### Organization Access Control
+
+Access to resources is controlled by organization membership:
+
+| Role | Permissions |
+|------|-------------|
+| **Owner** | Full access, billing, delete org |
+| **Admin** | Manage members, projects, settings |
+| **Member** | View projects, run checks |
+
+### API Rate Limiting
+
+Built-in rate limiting protects against abuse:
+
+| Endpoint | Limit |
+|----------|-------|
+| `/v1/*` (authenticated) | 100 req/min per user |
+| `/webhooks/*` | 1000 req/min per org |
+| `/health` | Unlimited |
+
+## Data Protection
+
+### Encryption at Rest
+
+Sensitive data is encrypted before storage:
+
+| Data | Encryption |
+|------|-----------|
+| GitLab access tokens | AES-256-GCM |
+| Webhook secrets | AES-256-GCM |
+
+Generate a secure encryption key:
+
+```bash
+openssl rand -base64 32
+```
+
+### Encryption in Transit
+
+All connections should use TLS:
+
+- API endpoints: HTTPS required
+- Database: TLS connection
+- Redis: TLS connection (Upstash default)
+
+### Secrets Management
+
+Recommended approaches:
+
+<Tabs>
+  <Tab title="Kubernetes">
+    Use Kubernetes Secrets with encryption at rest:
+
+    ```yaml
+    apiVersion: v1
+    kind: Secret
+    metadata:
+      name: detent-secrets
+    type: Opaque
+    stringData:
+      ENCRYPTION_KEY: "..."
+    ```
+
+    Enable [encryption at rest](https://kubernetes.io/docs/tasks/administer-cluster/encrypt-data/) for etcd.
+  </Tab>
+  <Tab title="Docker">
+    Use Docker secrets or a secrets manager:
+
+    ```yaml
+    services:
+      api:
+        secrets:
+          - encryption_key
+    secrets:
+      encryption_key:
+        external: true
+    ```
+  </Tab>
+  <Tab title="Vault">
+    Integrate with HashiCorp Vault:
+
+    ```bash
+    vault kv put secret/detent \
+      encryption_key="..." \
+      github_webhook_secret="..."
+    ```
+  </Tab>
+</Tabs>
+
+## Webhook Security
+
+### GitHub Webhook Verification
+
+All GitHub webhooks are verified using HMAC-SHA256:
+
+```typescript
+// Simplified verification logic
+const signature = request.headers.get("X-Hub-Signature-256");
+const payload = await request.text();
+const expected = `sha256=${hmac(webhookSecret, payload)}`;
+
+if (!timingSafeEqual(signature, expected)) {
+  throw new Error("Invalid signature");
+}
+```
+
+### GitLab Webhook Verification
+
+GitLab webhooks use a secret token header:
+
+```typescript
+const token = request.headers.get("X-Gitlab-Token");
+if (token !== organization.providerWebhookSecret) {
+  throw new Error("Invalid token");
+}
+```
+
+## Network Security
+
+### Firewall Rules
+
+Recommended inbound rules:
+
+| Port | Service | Source |
+|------|---------|--------|
+| 443 | API (HTTPS) | `0.0.0.0/0` |
+| 5432 | PostgreSQL | API servers only |
+
+### IP Allowlisting
+
+For webhook endpoints, allowlist GitHub/GitLab IPs:
+
+- [GitHub IP ranges](https://api.github.com/meta)
+- [GitLab IP ranges](https://docs.gitlab.com/ee/user/gitlab_com/#ip-range)
+
+### CORS Configuration
+
+Restrict CORS to your domains:
+
+```bash
+ALLOWED_ORIGINS=https://app.detent.sh,https://admin.detent.sh
+```
+
+## Security Headers
+
+The API sets secure headers automatically:
+
+| Header | Value |
+|--------|-------|
+| `Content-Security-Policy` | `default-src 'self'` |
+| `X-Content-Type-Options` | `nosniff` |
+| `X-Frame-Options` | `DENY` |
+| `Referrer-Policy` | `strict-origin-when-cross-origin` |
+
+## Audit Logging
+
+Track security-relevant events:
+
+| Event | Logged Data |
+|-------|-------------|
+| Authentication | User ID, IP, timestamp |
+| Organization changes | Actor, action, target |
+| Webhook received | Provider, event type, org |
+
+<Note>
+Audit logging is stored in the database. Consider shipping logs to a SIEM for production.
+</Note>
+
+## Vulnerability Management
+
+### Dependency Updates
+
+Keep dependencies updated:
+
+```bash
+# Check for vulnerabilities
+bun audit
+
+# Update dependencies
+bun update
+```
+
+### Security Scanning
+
+Recommended tools:
+
+| Tool | Purpose |
+|------|---------|
+| Trivy | Container image scanning |
+| Snyk | Dependency vulnerabilities |
+| CodeQL | Static analysis |
+
+## Incident Response
+
+### Compromised Credentials
+
+If credentials are compromised:
+
+1. **GitHub App**: Regenerate private key in GitHub settings
+2. **WorkOS**: Rotate API key in WorkOS dashboard
+3. **Encryption Key**: Rotate key and re-encrypt all tokens
+4. **Database**: Change password, update connection strings
+
+### Rotating Encryption Keys
+
+```bash
+# Generate new key
+NEW_KEY=$(openssl rand -base64 32)
+
+# Update environment
+export ENCRYPTION_KEY=$NEW_KEY
+
+# Re-encrypt existing tokens (requires custom migration)
+bun run scripts/rotate-encryption-key.ts
+```
+
+## Compliance Considerations
+
+### SOC 2
+
+Detent self-hosted can support SOC 2 compliance:
+
+- Access controls via WorkOS
+- Encryption at rest and in transit
+- Audit logging
+- Rate limiting
+
+### GDPR
+
+For GDPR compliance:
+
+- User data stored in your infrastructure
+- Data deletion capabilities
+- No data transferred to third parties (except auth providers)
+
+### HIPAA
+
+For HIPAA environments:
+
+- Deploy in isolated network
+- Enable audit logging
+- Use encrypted database (RDS with encryption)
+- Sign BAA with WorkOS if handling PHI

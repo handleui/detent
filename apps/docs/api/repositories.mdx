@@ -1,0 +1,241 @@
+---
+title: Projects API
+description: Manage projects and repositories
+---
+
+Projects link repositories to organizations in Detent. This API allows you to register, list, and manage projects.
+
+## Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/v1/projects` | Register a project |
+| `GET` | `/v1/projects` | List projects |
+| `GET` | `/v1/projects/lookup` | Look up by repo name |
+| `GET` | `/v1/projects/by-handle` | Look up by handle |
+| `GET` | `/v1/projects/:id` | Get project details |
+| `DELETE` | `/v1/projects/:id` | Remove project |
+
+## Register Project
+
+Create a new project linking a repository to an organization.
+
+```bash
+POST /v1/projects
+```
+
+### Request Body
+
+```json
+{
+  "organization_id": "660e8400-e29b-41d4-a716-446655440001",
+  "provider_repo_id": "111222333",
+  "provider_repo_name": "detent",
+  "provider_repo_full_name": "handleui/detent",
+  "provider_default_branch": "main",
+  "is_private": false,
+  "handle": "api"
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `organization_id` | Yes | Organization UUID |
+| `provider_repo_id` | Yes | GitHub/GitLab repo ID |
+| `provider_repo_name` | Yes | Repository name |
+| `provider_repo_full_name` | Yes | Full repo path (owner/name) |
+| `provider_default_branch` | No | Default branch name |
+| `is_private` | No | Repository visibility |
+| `handle` | No | Custom URL handle (defaults to repo name) |
+
+### Response
+
+```json
+{
+  "project_id": "550e8400-e29b-41d4-a716-446655440000",
+  "organization_id": "660e8400-e29b-41d4-a716-446655440001",
+  "handle": "api",
+  "provider_repo_id": "111222333",
+  "provider_repo_name": "detent",
+  "provider_repo_full_name": "handleui/detent",
+  "provider_default_branch": "main",
+  "is_private": false,
+  "created": true
+}
+```
+
+If the project already exists, `created` will be `false`.
+
+## List Projects
+
+Get all projects for an organization.
+
+```bash
+GET /v1/projects?organization_id=660e8400-e29b-41d4-a716-446655440001
+```
+
+### Query Parameters
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `organization_id` | Yes | Organization UUID |
+
+### Response
+
+```json
+{
+  "projects": [
+    {
+      "project_id": "550e8400-e29b-41d4-a716-446655440000",
+      "organization_id": "660e8400-e29b-41d4-a716-446655440001",
+      "handle": "api",
+      "provider_repo_id": "111222333",
+      "provider_repo_name": "detent",
+      "provider_repo_full_name": "handleui/detent",
+      "provider_default_branch": "main",
+      "is_private": false,
+      "created_at": "2024-01-15T10:30:00Z"
+    }
+  ]
+}
+```
+
+## Look Up by Repository
+
+Find a project by its full repository name.
+
+```bash
+GET /v1/projects/lookup?repo=handleui/detent
+```
+
+### Query Parameters
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `repo` | Yes | Full repo name (owner/name) |
+
+### Response
+
+```json
+{
+  "project_id": "550e8400-e29b-41d4-a716-446655440000",
+  "organization_id": "660e8400-e29b-41d4-a716-446655440001",
+  "organization_name": "handleui",
+  "organization_slug": "gh/handleui",
+  "handle": "api",
+  "provider_repo_full_name": "handleui/detent",
+  "created_at": "2024-01-15T10:30:00Z"
+}
+```
+
+## Look Up by Handle
+
+Find a project using the `@org/handle` style routing.
+
+```bash
+GET /v1/projects/by-handle?org=gh/handleui&handle=api
+```
+
+### Query Parameters
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `org` | Yes | Organization slug (e.g., `gh/handleui`) |
+| `handle` | Yes | Project handle |
+
+### Response
+
+Same as lookup endpoint.
+
+## Get Project
+
+Get details for a specific project.
+
+```bash
+GET /v1/projects/550e8400-e29b-41d4-a716-446655440000
+```
+
+### Response
+
+```json
+{
+  "project_id": "550e8400-e29b-41d4-a716-446655440000",
+  "organization_id": "660e8400-e29b-41d4-a716-446655440001",
+  "organization_name": "handleui",
+  "organization_slug": "gh/handleui",
+  "handle": "api",
+  "provider_repo_id": "111222333",
+  "provider_repo_name": "detent",
+  "provider_repo_full_name": "handleui/detent",
+  "provider_default_branch": "main",
+  "is_private": false,
+  "created_at": "2024-01-15T10:30:00Z"
+}
+```
+
+## Remove Project
+
+Soft-delete a project. Requires admin or owner role.
+
+```bash
+DELETE /v1/projects/550e8400-e29b-41d4-a716-446655440000
+```
+
+### Response
+
+```json
+{
+  "success": true
+}
+```
+
+## Error Responses
+
+### Not a Member
+
+```json
+{
+  "error": "Not a member of this organization"
+}
+```
+Status: `403 Forbidden`
+
+### Project Not Found
+
+```json
+{
+  "error": "Project not found"
+}
+```
+Status: `404 Not Found`
+
+### Invalid UUID
+
+```json
+{
+  "error": "organization_id must be a valid UUID"
+}
+```
+Status: `400 Bad Request`
+
+### Insufficient Permissions
+
+```json
+{
+  "error": "Only organization owners and admins can remove projects"
+}
+```
+Status: `403 Forbidden`
+
+## Handle Format
+
+Project handles follow these rules:
+
+- Lowercase alphanumeric characters
+- Hyphens allowed (not at start/end)
+- 1-255 characters
+- Must be unique within organization
+
+Examples:
+- ✅ `api`, `web-app`, `detent-cli`
+- ❌ `-api`, `web_app`, `API`

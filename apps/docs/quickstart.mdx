@@ -1,0 +1,90 @@
+---
+title: Quickstart
+description: Get up and running in 5 minutes
+---
+
+## Installation
+
+Install Detent CLI globally:
+
+<CodeGroup>
+```bash curl
+curl -fsSL https://detent.sh/install.sh | bash
+```
+
+```bash npm
+npm install -g detent
+```
+
+```bash homebrew
+brew install handleui/tap/detent
+```
+</CodeGroup>
+
+## Basic Usage
+
+### 1. Run a Check
+
+Navigate to your repository and run:
+
+```bash
+detent check
+```
+
+This parses your CI configuration and runs the relevant workflows against your changed files.
+
+### 2. Heal Failures
+
+If checks fail, let AI fix them:
+
+```bash
+detent heal
+```
+
+Detent will analyze the failures and apply fixes automatically.
+
+### 3. Verify
+
+After healing, run check again to verify:
+
+```bash
+detent check
+```
+
+## Example Workflow
+
+```bash
+# Make some changes
+git checkout -b feature/my-changes
+# ... edit files ...
+
+# Run CI locally
+detent check
+
+# If failures, heal them
+detent heal
+
+# Verify fixes worked
+detent check
+
+# Commit and push with confidence
+git add . && git commit -m "feat: my changes"
+git push
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/cli/installation">
+    Detailed installation options
+  </Card>
+  <Card title="Core Concepts" icon="lightbulb" href="/cli/concepts">
+    Understand how Detent works
+  </Card>
+  <Card title="Configuration" icon="gear" href="/cli/settings">
+    Customize Detent for your project
+  </Card>
+  <Card title="Self-Hosting" icon="server" href="/self-hosting/overview">
+    Deploy your own Detent instance
+  </Card>
+</CardGroup>

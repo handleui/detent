@@ -1,0 +1,91 @@
+---
+title: Overview
+description: Deploy Detent on your own infrastructure
+---
+
+Self-hosting Detent gives you full control over your data, security, and infrastructure. This guide covers the architecture, deployment options, and configuration required to run Detent in your environment.
+
+## Why Self-Host?
+
+<CardGroup cols={2}>
+  <Card title="Data Privacy" icon="shield">
+    Keep your code and CI logs within your network
+  </Card>
+  <Card title="Compliance" icon="file-certificate">
+    Meet regulatory requirements (SOC 2, HIPAA, etc.)
+  </Card>
+  <Card title="Customization" icon="sliders">
+    Configure rate limits, storage, and integrations
+  </Card>
+  <Card title="Air-Gapped" icon="lock">
+    Run in environments without internet access
+  </Card>
+</CardGroup>
+
+## Deployment Options
+
+| Option | Best For | Complexity |
+|--------|----------|------------|
+| [Docker Compose](/self-hosting/docker-compose) | Small teams, development | Low |
+| [Kubernetes](/self-hosting/kubernetes) | Production, scalability | Medium |
+| Cloudflare Workers | Edge deployment, global scale | Low |
+
+## Requirements
+
+### Minimum Hardware
+
+- **CPU**: 2 cores
+- **RAM**: 4 GB
+- **Storage**: 20 GB SSD
+
+### Software Dependencies
+
+- PostgreSQL 15+ (or compatible like Neon, Supabase)
+- Redis (or Upstash for serverless)
+- Node.js 20+ (for CLI)
+- Docker (for containerized deployment)
+
+### External Services
+
+| Service | Purpose | Self-Hosted Alternative |
+|---------|---------|------------------------|
+| WorkOS | User authentication | - |
+| GitHub App | GitHub integration | GitHub Enterprise Server |
+| GitLab | GitLab integration | GitLab Self-Managed |
+
+## Quick Start
+
+For a quick local setup:
+
+```bash
+# Clone the repository
+git clone https://github.com/handleui/detent
+cd detent
+
+# Start PostgreSQL
+cd apps/api
+docker compose up -d
+
+# Apply migrations
+bun run db:migrate
+
+# Start the API (development)
+bun run dev
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Architecture" icon="sitemap" href="/self-hosting/architecture">
+    Understand the system components
+  </Card>
+  <Card title="Docker Compose" icon="docker" href="/self-hosting/docker-compose">
+    Deploy with Docker Compose
+  </Card>
+  <Card title="Kubernetes" icon="dharmachakra" href="/self-hosting/kubernetes">
+    Deploy to Kubernetes
+  </Card>
+  <Card title="Configuration" icon="gear" href="/self-hosting/configuration">
+    Configure environment variables
+  </Card>
+</CardGroup>
