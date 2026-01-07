@@ -15,6 +15,13 @@
       "when": 1767811660144,
       "tag": "0001_lame_red_hulk",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1767813401064,
+      "tag": "0002_pale_albert_cleary",
+      "breakpoints": true
     }
   ]
 }

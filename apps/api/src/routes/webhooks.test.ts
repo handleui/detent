@@ -1,7 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock the webhook signature middleware to bypass signature verification in tests
-// Must be before import of app
+// vi.mock must be defined before dynamic import
 vi.mock("../middleware/webhook-signature", () => ({
   webhookSignatureMiddleware: vi.fn(
     async (
@@ -18,10 +18,15 @@ vi.mock("../middleware/webhook-signature", () => ({
   ),
 }));
 
-// Import app after mock is defined
-import app from "./webhooks";
+// Dynamic import required for bun test to properly apply mocks
+let app: Awaited<typeof import("./webhooks")>["default"];
 
-// Mock the database client
+beforeAll(async () => {
+  const module = await import("./webhooks");
+  app = module.default;
+});
+
+// Mock the database client - defined before vi.mock to ensure proper closure capture
 const mockSelect = vi.fn();
 const mockFrom = vi.fn();
 const mockWhere = vi.fn();
@@ -31,19 +36,21 @@ const mockValues = vi.fn();
 const mockOnConflictDoNothing = vi.fn();
 const mockUpdate = vi.fn();
 const mockSet = vi.fn();
-
-const mockDb = {
-  select: mockSelect,
-  insert: mockInsert,
-  update: mockUpdate,
-};
-
-const mockClient = {
-  end: vi.fn(),
-};
+const mockClientEnd = vi.fn();
 
 vi.mock("../db/client", () => ({
-  createDb: vi.fn(() => Promise.resolve({ db: mockDb, client: mockClient })),
+  createDb: vi.fn(() =>
+    Promise.resolve({
+      db: {
+        select: mockSelect,
+        insert: mockInsert,
+        update: mockUpdate,
+      },
+      client: {
+        end: mockClientEnd,
+      },
+    })
+  ),
 }));
 
 // Mock crypto.randomUUID for deterministic organization IDs
@@ -126,15 +133,23 @@ describe("webhooks - installation events", () => {
     vi.clearAllMocks();
 
     // Setup mock chain for select queries
-    // The where() can be called with either limit() (for single record) or directly resolved (for arrays)
+    // Queries can either:
+    // 1. Chain with .limit() for single record lookup (installation check)
+    // 2. Be awaited directly for array results (slug lookup with inArray)
     mockSelect.mockReturnValue({ from: mockFrom });
     mockFrom.mockReturnValue({ where: mockWhere });
-    // Default: where returns array (for slug lookup) or has limit (for id lookup)
-    mockWhere.mockImplementation(() => ({
-      limit: mockLimit,
-      // For direct resolution (no limit), return empty array
-      then: (resolve: (value: unknown[]) => void) => resolve([]),
-    }));
+
+    // Create a thenable object that also has a limit method
+    // This handles both query patterns used in the code
+    const createQueryResult = (result: unknown[] = []) => {
+      const queryResult = Promise.resolve(result) as Promise<unknown[]> & {
+        limit: ReturnType<typeof vi.fn>;
+      };
+      queryResult.limit = mockLimit;
+      return queryResult;
+    };
+
+    mockWhere.mockImplementation(() => createQueryResult([]));
     mockLimit.mockResolvedValue([]);
 
     // Setup mock chain for insert
@@ -257,14 +272,24 @@ describe("webhooks - installation events", () => {
   });
 
   describe("slug collision handling", () => {
+    // Slug collision tests are complex because the optimized generateUniqueSlug
+    // uses a single batch query. The basic flow tests above cover the primary path.
+    // These tests verify the slug suffix logic works correctly.
+
     it("appends suffix when slug already exists", async () => {
       // First query: no existing organization with this installation
       mockLimit.mockResolvedValueOnce([]);
-      // Mock the batch query for slug collision check - returns that gh/test-org exists
-      mockSelect.mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue([{ slug: "gh/test-org" }]),
-        }),
+
+      // Create a mock for the optimized slug query that returns one conflict
+      let queryCount = 0;
+      mockWhere.mockImplementation(() => {
+        queryCount++;
+        if (queryCount === 1) {
+          // First call: check for existing installation (no conflict)
+          return { limit: mockLimit };
+        }
+        // Second call: slug lookup returns one existing slug
+        return Promise.resolve([{ slug: "gh/test-org" }]);
       });
 
       const payload = createInstallationPayload("created", {
@@ -281,17 +306,19 @@ describe("webhooks - installation events", () => {
     it("increments suffix for multiple collisions", async () => {
       // First query: no existing organization with this installation
       mockLimit.mockResolvedValueOnce([]);
-      // Mock the batch query for slug collision check - returns multiple existing slugs
-      mockSelect.mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi
-            .fn()
-            .mockResolvedValue([
-              { slug: "gh/popular-name" },
-              { slug: "gh/popular-name-1" },
-              { slug: "gh/popular-name-2" },
-            ]),
-        }),
+
+      let queryCount = 0;
+      mockWhere.mockImplementation(() => {
+        queryCount++;
+        if (queryCount === 1) {
+          return { limit: mockLimit };
+        }
+        // Return multiple existing slugs
+        return Promise.resolve([
+          { slug: "gh/popular-name" },
+          { slug: "gh/popular-name-1" },
+          { slug: "gh/popular-name-2" },
+        ]);
       });
 
       const payload = createInstallationPayload("created", {
@@ -308,25 +335,27 @@ describe("webhooks - installation events", () => {
     it("falls back to UUID suffix after max attempts", async () => {
       // First query: no existing organization with this installation
       mockLimit.mockResolvedValueOnce([]);
-      // Mock the batch query - all 11 potential slugs are taken
-      mockSelect.mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi
-            .fn()
-            .mockResolvedValue([
-              { slug: "gh/super-popular" },
-              { slug: "gh/super-popular-1" },
-              { slug: "gh/super-popular-2" },
-              { slug: "gh/super-popular-3" },
-              { slug: "gh/super-popular-4" },
-              { slug: "gh/super-popular-5" },
-              { slug: "gh/super-popular-6" },
-              { slug: "gh/super-popular-7" },
-              { slug: "gh/super-popular-8" },
-              { slug: "gh/super-popular-9" },
-              { slug: "gh/super-popular-10" },
-            ]),
-        }),
+
+      let queryCount = 0;
+      mockWhere.mockImplementation(() => {
+        queryCount++;
+        if (queryCount === 1) {
+          return { limit: mockLimit };
+        }
+        // All 11 potential slugs are taken
+        return Promise.resolve([
+          { slug: "gh/super-popular" },
+          { slug: "gh/super-popular-1" },
+          { slug: "gh/super-popular-2" },
+          { slug: "gh/super-popular-3" },
+          { slug: "gh/super-popular-4" },
+          { slug: "gh/super-popular-5" },
+          { slug: "gh/super-popular-6" },
+          { slug: "gh/super-popular-7" },
+          { slug: "gh/super-popular-8" },
+          { slug: "gh/super-popular-9" },
+          { slug: "gh/super-popular-10" },
+        ]);
       });
 
       const payload = createInstallationPayload("created", {
@@ -443,7 +472,7 @@ describe("webhooks - installation events", () => {
 
       await makeWebhookRequest("installation", payload);
 
-      expect(mockClient.end).toHaveBeenCalled();
+      expect(mockClientEnd).toHaveBeenCalled();
     });
 
     it("closes database connection on error", async () => {
@@ -453,7 +482,7 @@ describe("webhooks - installation events", () => {
 
       await makeWebhookRequest("installation", payload);
 
-      expect(mockClient.end).toHaveBeenCalled();
+      expect(mockClientEnd).toHaveBeenCalled();
     });
   });
 
@@ -494,8 +523,6 @@ describe("webhooks - ping event", () => {
     };
 
     const res = await makeWebhookRequest("ping", payload);
-    console.log("Response status:", res.status);
-    console.log("Response text:", await res.clone().text());
     const json = await res.json();
 
     expect(res.status).toBe(200);
@@ -510,14 +537,24 @@ describe("webhooks - repository events", () => {
   beforeEach(() => {
     vi.clearAllMocks();
 
-    // Setup mock chain for select queries
+    // Reset all mock implementations first
+    mockSelect.mockReset();
+    mockFrom.mockReset();
+    mockWhere.mockReset();
+    mockLimit.mockReset();
+    mockUpdate.mockReset();
+    mockSet.mockReset();
+
+    // Setup mock chain for select queries - simpler version for these tests
     mockSelect.mockReturnValue({ from: mockFrom });
     mockFrom.mockReturnValue({ where: mockWhere });
     mockWhere.mockReturnValue({ limit: mockLimit });
+    // Default: no project found
+    mockLimit.mockResolvedValue([]);
 
     // Setup mock chain for update
     mockUpdate.mockReturnValue({ set: mockSet });
-    mockSet.mockReturnValue({ where: mockWhere });
+    mockSet.mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
   });
 
   const createRepositoryPayload = (
@@ -553,7 +590,6 @@ describe("webhooks - repository events", () => {
         isPrivate: false,
       },
     ]);
-    mockWhere.mockResolvedValueOnce(undefined);
 
     const payload = createRepositoryPayload("renamed", {
       repoName: "new-name",
@@ -590,7 +626,6 @@ describe("webhooks - repository events", () => {
         isPrivate: false,
       },
     ]);
-    mockWhere.mockResolvedValueOnce(undefined);
 
     const payload = createRepositoryPayload("privatized", { isPrivate: true });
 
@@ -621,7 +656,6 @@ describe("webhooks - repository events", () => {
         isPrivate: true,
       },
     ]);
-    mockWhere.mockResolvedValueOnce(undefined);
 
     const payload = createRepositoryPayload("publicized", { isPrivate: false });
 
@@ -723,5 +757,716 @@ describe("webhooks - new_permissions_accepted", () => {
         updatedAt: expect.any(Date),
       })
     );
+  });
+});
+
+describe("webhooks - installation.created with repositories", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+
+    mockSelect.mockReturnValue({ from: mockFrom });
+    mockFrom.mockReturnValue({ where: mockWhere });
+
+    const createQueryResult = (result: unknown[] = []) => {
+      const queryResult = Promise.resolve(result) as Promise<unknown[]> & {
+        limit: ReturnType<typeof vi.fn>;
+      };
+      queryResult.limit = mockLimit;
+      return queryResult;
+    };
+
+    mockWhere.mockImplementation(() => createQueryResult([]));
+    mockLimit.mockResolvedValue([]);
+
+    mockInsert.mockReturnValue({ values: mockValues });
+    mockValues.mockReturnValue({
+      onConflictDoNothing: mockOnConflictDoNothing,
+    });
+    mockOnConflictDoNothing.mockResolvedValue(undefined);
+  });
+
+  it("creates organization with provider-prefixed slug (gh/login)", async () => {
+    const payload = {
+      action: "created",
+      installation: {
+        id: 12_345_678,
+        account: {
+          id: 98_765_432,
+          login: "MyOrganization",
+          type: "Organization" as const,
+          avatar_url: "https://avatars.example.com/u/123",
+        },
+      },
+      repositories: [],
+    };
+
+    const res = await makeWebhookRequest("installation", payload);
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.organization_slug).toBe("gh/myorganization");
+    expect(mockValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        slug: "gh/myorganization",
+        provider: "github",
+      })
+    );
+  });
+
+  it("creates projects for all repositories in payload", async () => {
+    const payload = {
+      action: "created",
+      installation: {
+        id: 12_345_678,
+        account: {
+          id: 98_765_432,
+          login: "test-org",
+          type: "Organization" as const,
+        },
+      },
+      repositories: [
+        {
+          id: 1001,
+          name: "repo-one",
+          full_name: "test-org/repo-one",
+          private: false,
+        },
+        {
+          id: 1002,
+          name: "Repo-Two",
+          full_name: "test-org/Repo-Two",
+          private: true,
+        },
+        {
+          id: 1003,
+          name: "REPO-THREE",
+          full_name: "test-org/REPO-THREE",
+          private: false,
+        },
+      ],
+    };
+
+    const res = await makeWebhookRequest("installation", payload);
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.projects_created).toBe(3);
+
+    // Verify projects are created with correct values
+    expect(mockInsert).toHaveBeenCalledTimes(2); // Once for org, once for projects
+    expect(mockValues).toHaveBeenCalledWith([
+      expect.objectContaining({
+        handle: "repo-one", // lowercase
+        providerRepoId: "1001",
+        providerRepoName: "repo-one",
+        providerRepoFullName: "test-org/repo-one",
+        isPrivate: false,
+      }),
+      expect.objectContaining({
+        handle: "repo-two", // lowercase
+        providerRepoId: "1002",
+        providerRepoName: "Repo-Two", // preserves original case in repo name
+        providerRepoFullName: "test-org/Repo-Two",
+        isPrivate: true,
+      }),
+      expect.objectContaining({
+        handle: "repo-three", // lowercase
+        providerRepoId: "1003",
+        providerRepoName: "REPO-THREE",
+        providerRepoFullName: "test-org/REPO-THREE",
+        isPrivate: false,
+      }),
+    ]);
+  });
+
+  it("creates project handles as lowercase repo names", async () => {
+    const payload = {
+      action: "created",
+      installation: {
+        id: 12_345_678,
+        account: {
+          id: 98_765_432,
+          login: "test-org",
+          type: "Organization" as const,
+        },
+      },
+      repositories: [
+        {
+          id: 1001,
+          name: "My-Mixed-Case-Repo",
+          full_name: "test-org/My-Mixed-Case-Repo",
+          private: false,
+        },
+      ],
+    };
+
+    const res = await makeWebhookRequest("installation", payload);
+
+    expect(res.status).toBe(200);
+    expect(mockValues).toHaveBeenCalledWith([
+      expect.objectContaining({
+        handle: "my-mixed-case-repo",
+        providerRepoName: "My-Mixed-Case-Repo",
+      }),
+    ]);
+  });
+});
+
+describe("webhooks - installation.deleted data integrity", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+
+    mockSelect.mockReturnValue({ from: mockFrom });
+    mockFrom.mockReturnValue({ where: mockWhere });
+    mockWhere.mockReturnValue({ limit: mockLimit });
+    mockLimit.mockResolvedValue([]);
+
+    mockUpdate.mockReturnValue({ set: mockSet });
+    mockSet.mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+  });
+
+  it("soft-deletes organization (sets deletedAt, does not hard delete)", async () => {
+    const payload = {
+      action: "deleted",
+      installation: {
+        id: 12_345_678,
+        account: {
+          id: 98_765_432,
+          login: "test-org",
+          type: "Organization" as const,
+        },
+      },
+    };
+
+    const res = await makeWebhookRequest("installation", payload);
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.message).toBe("installation deleted");
+
+    // Verify update (soft-delete) was called, not delete
+    expect(mockUpdate).toHaveBeenCalled();
+    expect(mockSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        deletedAt: expect.any(Date),
+        updatedAt: expect.any(Date),
+      })
+    );
+  });
+});
+
+describe("webhooks - repository renamed (critical)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+
+    mockSelect.mockReturnValue({ from: mockFrom });
+    mockFrom.mockReturnValue({ where: mockWhere });
+    mockWhere.mockReturnValue({ limit: mockLimit });
+
+    mockUpdate.mockReturnValue({ set: mockSet });
+    mockSet.mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+  });
+
+  it("updates providerRepoName and providerRepoFullName on rename", async () => {
+    mockLimit.mockResolvedValueOnce([
+      {
+        id: "project-uuid-123",
+        handle: "original-handle",
+        providerRepoName: "old-repo-name",
+        providerRepoFullName: "test-org/old-repo-name",
+        isPrivate: false,
+      },
+    ]);
+
+    const payload = {
+      action: "renamed",
+      repository: {
+        id: 999_888,
+        name: "new-repo-name",
+        full_name: "test-org/new-repo-name",
+        private: false,
+      },
+      installation: { id: 12_345_678 },
+    };
+
+    const res = await makeWebhookRequest("repository", payload);
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json).toEqual({
+      message: "repository renamed",
+      project_id: "project-uuid-123",
+      old_name: "test-org/old-repo-name",
+      new_name: "test-org/new-repo-name",
+    });
+
+    expect(mockSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerRepoName: "new-repo-name",
+        providerRepoFullName: "test-org/new-repo-name",
+        updatedAt: expect.any(Date),
+      })
+    );
+  });
+
+  it("preserves project handle when repository is renamed (critical)", async () => {
+    // User may have customized their project handle - renaming repo should NOT change it
+    mockLimit.mockResolvedValueOnce([
+      {
+        id: "project-uuid-456",
+        handle: "my-custom-handle", // Custom handle that differs from repo name
+        providerRepoName: "old-name",
+        providerRepoFullName: "test-org/old-name",
+        isPrivate: false,
+      },
+    ]);
+
+    const payload = {
+      action: "renamed",
+      repository: {
+        id: 123_456,
+        name: "new-name",
+        full_name: "test-org/new-name",
+        private: false,
+      },
+      installation: { id: 12_345_678 },
+    };
+
+    const res = await makeWebhookRequest("repository", payload);
+
+    expect(res.status).toBe(200);
+
+    // The update should NOT include handle - handle must be preserved
+    expect(mockSet).toHaveBeenCalledWith({
+      providerRepoName: "new-name",
+      providerRepoFullName: "test-org/new-name",
+      updatedAt: expect.any(Date),
+    });
+
+    // Verify handle is NOT in the update call
+    const setCallArgs = mockSet.mock.calls[0][0];
+    expect(setCallArgs).not.toHaveProperty("handle");
+  });
+
+  it("preserves project ID on rename (no data loss)", async () => {
+    const existingProjectId = "project-uuid-preserved";
+
+    mockLimit.mockResolvedValueOnce([
+      {
+        id: existingProjectId,
+        handle: "my-project",
+        providerRepoName: "old-name",
+        providerRepoFullName: "test-org/old-name",
+        isPrivate: false,
+      },
+    ]);
+
+    const payload = {
+      action: "renamed",
+      repository: {
+        id: 777_888,
+        name: "completely-new-name",
+        full_name: "test-org/completely-new-name",
+        private: false,
+      },
+      installation: { id: 12_345_678 },
+    };
+
+    const res = await makeWebhookRequest("repository", payload);
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    // Response confirms same project ID was updated
+    expect(json.project_id).toBe(existingProjectId);
+
+    // Update was called (not insert - which would create new record)
+    expect(mockUpdate).toHaveBeenCalled();
+    expect(mockInsert).not.toHaveBeenCalled();
+  });
+});
+
+describe("webhooks - repository transferred", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+
+    mockSelect.mockReturnValue({ from: mockFrom });
+    mockFrom.mockReturnValue({ where: mockWhere });
+    mockWhere.mockReturnValue({ limit: mockLimit });
+
+    mockUpdate.mockReturnValue({ set: mockSet });
+    mockSet.mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+  });
+
+  it("updates providerRepoFullName on transfer", async () => {
+    mockLimit.mockResolvedValueOnce([
+      {
+        id: "project-uuid-transfer",
+        handle: "my-project",
+        providerRepoName: "my-repo",
+        providerRepoFullName: "old-org/my-repo",
+        isPrivate: false,
+      },
+    ]);
+
+    const payload = {
+      action: "transferred",
+      repository: {
+        id: 555_666,
+        name: "my-repo",
+        full_name: "new-org/my-repo", // Transferred to new org
+        private: false,
+      },
+      installation: { id: 12_345_678 },
+    };
+
+    const res = await makeWebhookRequest("repository", payload);
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json).toEqual({
+      message: "repository transferred",
+      project_id: "project-uuid-transfer",
+      new_full_name: "new-org/my-repo",
+    });
+
+    expect(mockSet).toHaveBeenCalledWith({
+      providerRepoFullName: "new-org/my-repo",
+      updatedAt: expect.any(Date),
+    });
+  });
+
+  it("keeps project linked to original organization after transfer", async () => {
+    const originalProjectId = "project-stays-with-org";
+
+    mockLimit.mockResolvedValueOnce([
+      {
+        id: originalProjectId,
+        handle: "transferred-project",
+        providerRepoName: "repo",
+        providerRepoFullName: "original-org/repo",
+        isPrivate: false,
+      },
+    ]);
+
+    const payload = {
+      action: "transferred",
+      repository: {
+        id: 111_222,
+        name: "repo",
+        full_name: "different-org/repo",
+        private: false,
+      },
+      installation: { id: 12_345_678 },
+    };
+
+    const res = await makeWebhookRequest("repository", payload);
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.project_id).toBe(originalProjectId);
+
+    // Only providerRepoFullName updated, not organizationId
+    const setCallArgs = mockSet.mock.calls[0][0];
+    expect(setCallArgs).not.toHaveProperty("organizationId");
+  });
+});
+
+describe("webhooks - repository visibility changed", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+
+    mockSelect.mockReturnValue({ from: mockFrom });
+    mockFrom.mockReturnValue({ where: mockWhere });
+    mockWhere.mockReturnValue({ limit: mockLimit });
+
+    mockUpdate.mockReturnValue({ set: mockSet });
+    mockSet.mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+  });
+
+  it("updates isPrivate to true when privatized", async () => {
+    mockLimit.mockResolvedValueOnce([
+      {
+        id: "project-visibility",
+        handle: "public-repo",
+        providerRepoName: "public-repo",
+        providerRepoFullName: "test-org/public-repo",
+        isPrivate: false,
+      },
+    ]);
+
+    const payload = {
+      action: "privatized",
+      repository: {
+        id: 333_444,
+        name: "public-repo",
+        full_name: "test-org/public-repo",
+        private: true,
+      },
+      installation: { id: 12_345_678 },
+    };
+
+    const res = await makeWebhookRequest("repository", payload);
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json).toEqual({
+      message: "repository privatized",
+      project_id: "project-visibility",
+      is_private: true,
+    });
+
+    expect(mockSet).toHaveBeenCalledWith({
+      isPrivate: true,
+      updatedAt: expect.any(Date),
+    });
+  });
+
+  it("updates isPrivate to false when publicized", async () => {
+    mockLimit.mockResolvedValueOnce([
+      {
+        id: "project-visibility-2",
+        handle: "private-repo",
+        providerRepoName: "private-repo",
+        providerRepoFullName: "test-org/private-repo",
+        isPrivate: true,
+      },
+    ]);
+
+    const payload = {
+      action: "publicized",
+      repository: {
+        id: 444_555,
+        name: "private-repo",
+        full_name: "test-org/private-repo",
+        private: false,
+      },
+      installation: { id: 12_345_678 },
+    };
+
+    const res = await makeWebhookRequest("repository", payload);
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json).toEqual({
+      message: "repository publicized",
+      project_id: "project-visibility-2",
+      is_private: false,
+    });
+
+    expect(mockSet).toHaveBeenCalledWith({
+      isPrivate: false,
+      updatedAt: expect.any(Date),
+    });
+  });
+});
+
+describe("webhooks - installation_repositories (add/remove)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+
+    mockSelect.mockReturnValue({ from: mockFrom });
+    mockFrom.mockReturnValue({ where: mockWhere });
+    mockWhere.mockReturnValue({ limit: mockLimit });
+
+    mockInsert.mockReturnValue({ values: mockValues });
+    mockValues.mockReturnValue({
+      onConflictDoNothing: mockOnConflictDoNothing,
+    });
+    mockOnConflictDoNothing.mockResolvedValue(undefined);
+
+    mockUpdate.mockReturnValue({ set: mockSet });
+    mockSet.mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+  });
+
+  it("creates new projects when repositories are added", async () => {
+    // Mock finding the organization
+    mockLimit.mockResolvedValueOnce([
+      { id: "org-uuid-123", slug: "gh/test-org" },
+    ]);
+
+    const payload = {
+      action: "added",
+      installation: {
+        id: 12_345_678,
+        account: {
+          id: 98_765_432,
+          login: "test-org",
+          type: "Organization" as const,
+        },
+      },
+      repositories_added: [
+        {
+          id: 2001,
+          name: "new-repo",
+          full_name: "test-org/new-repo",
+          private: false,
+        },
+        {
+          id: 2002,
+          name: "Another-Repo",
+          full_name: "test-org/Another-Repo",
+          private: true,
+        },
+      ],
+      repositories_removed: [],
+    };
+
+    const res = await makeWebhookRequest("installation_repositories", payload);
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json).toEqual({
+      message: "installation_repositories processed",
+      organization_id: "org-uuid-123",
+      organization_slug: "gh/test-org",
+      projects_added: 2,
+      projects_removed: 0,
+    });
+
+    expect(mockValues).toHaveBeenCalledWith([
+      expect.objectContaining({
+        organizationId: "org-uuid-123",
+        handle: "new-repo",
+        providerRepoId: "2001",
+        providerRepoName: "new-repo",
+        isPrivate: false,
+      }),
+      expect.objectContaining({
+        organizationId: "org-uuid-123",
+        handle: "another-repo", // lowercase
+        providerRepoId: "2002",
+        providerRepoName: "Another-Repo",
+        isPrivate: true,
+      }),
+    ]);
+  });
+
+  it("soft-deletes projects when repositories are removed (sets removedAt)", async () => {
+    mockLimit.mockResolvedValueOnce([
+      { id: "org-uuid-456", slug: "gh/test-org" },
+    ]);
+
+    const payload = {
+      action: "removed",
+      installation: {
+        id: 12_345_678,
+        account: {
+          id: 98_765_432,
+          login: "test-org",
+          type: "Organization" as const,
+        },
+      },
+      repositories_added: [],
+      repositories_removed: [
+        {
+          id: 3001,
+          name: "removed-repo",
+          full_name: "test-org/removed-repo",
+          private: false,
+        },
+        {
+          id: 3002,
+          name: "also-removed",
+          full_name: "test-org/also-removed",
+          private: true,
+        },
+      ],
+    };
+
+    const res = await makeWebhookRequest("installation_repositories", payload);
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.projects_removed).toBe(2);
+
+    // Verify soft-delete (update with removedAt) not hard delete
+    expect(mockUpdate).toHaveBeenCalled();
+    expect(mockSet).toHaveBeenCalledWith({
+      removedAt: expect.any(Date),
+      updatedAt: expect.any(Date),
+    });
+  });
+
+  it("handles both added and removed in same event", async () => {
+    mockLimit.mockResolvedValueOnce([
+      { id: "org-uuid-789", slug: "gh/test-org" },
+    ]);
+
+    const payload = {
+      action: "added",
+      installation: {
+        id: 12_345_678,
+        account: {
+          id: 98_765_432,
+          login: "test-org",
+          type: "Organization" as const,
+        },
+      },
+      repositories_added: [
+        {
+          id: 4001,
+          name: "added-repo",
+          full_name: "test-org/added-repo",
+          private: false,
+        },
+      ],
+      repositories_removed: [
+        {
+          id: 4002,
+          name: "removed-repo",
+          full_name: "test-org/removed-repo",
+          private: false,
+        },
+      ],
+    };
+
+    const res = await makeWebhookRequest("installation_repositories", payload);
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.projects_added).toBe(1);
+    expect(json.projects_removed).toBe(1);
+
+    // Both insert (for added) and update (for removed) should be called
+    expect(mockInsert).toHaveBeenCalled();
+    expect(mockUpdate).toHaveBeenCalled();
+  });
+
+  it("returns organization not found when installation has no org", async () => {
+    mockLimit.mockResolvedValueOnce([]); // No org found
+
+    const payload = {
+      action: "added",
+      installation: {
+        id: 99_999_999, // Unknown installation
+        account: {
+          id: 11_111_111,
+          login: "unknown-org",
+          type: "Organization" as const,
+        },
+      },
+      repositories_added: [
+        {
+          id: 5001,
+          name: "repo",
+          full_name: "unknown-org/repo",
+          private: false,
+        },
+      ],
+      repositories_removed: [],
+    };
+
+    const res = await makeWebhookRequest("installation_repositories", payload);
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json).toEqual({
+      message: "organization not found",
+      installation_id: 99_999_999,
+    });
+
+    // No insert/update should happen
+    expect(mockInsert).not.toHaveBeenCalled();
+    expect(mockValues).not.toHaveBeenCalled();
   });
 });

@@ -32,4 +32,8 @@ export interface Env {
   // Upstash Redis for rate limiting
   UPSTASH_REDIS_REST_URL: string;
   UPSTASH_REDIS_REST_TOKEN: string;
+
+  // OpenStatus monitoring (optional)
+  // Your OpenStatus status page slug for public status checks
+  OPENSTATUS_SLUG?: string;
 }
