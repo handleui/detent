@@ -1,12 +1,12 @@
 {
   "hooks": {
-    "PostToolUse": [
+    "PreToolUse": [
       {
         "matcher": "Edit|Write",
         "hooks": [
           {
             "type": "command",
-            "command": "bun x ultracite fix"
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-migrations.py\""
           }
         ]
       }

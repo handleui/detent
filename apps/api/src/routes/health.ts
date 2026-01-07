@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import pkg from "../../package.json";
 import { createDb } from "../db/client";
 import type { Env } from "../types/env";
 
@@ -9,7 +10,7 @@ const app = new Hono<{ Bindings: Env }>();
 app.get("/", (c) =>
   c.json({
     status: "operational",
-    version: "0.1.0",
+    version: pkg.version,
     timestamp: new Date().toISOString(),
   })
 );
@@ -41,7 +42,7 @@ app.get("/deep", async (c) => {
   return c.json(
     {
       status: overallStatus,
-      version: "0.1.0",
+      version: pkg.version,
       timestamp: new Date().toISOString(),
       checks,
     },
