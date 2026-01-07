@@ -118,7 +118,7 @@ const makeWebhookRequest = async (
   return response;
 };
 
-// Response JSON type for installation events
+// Response JSON types for webhook events
 interface InstallationResponse {
   message: string;
   organization_id?: string;
@@ -126,6 +126,26 @@ interface InstallationResponse {
   account?: string;
   action?: string;
   error?: string;
+  projects_created?: number;
+}
+
+interface RepositoryResponse {
+  message: string;
+  project_id?: string;
+  old_name?: string;
+  new_name?: string;
+  new_full_name?: string;
+  is_private?: boolean;
+  repo_id?: number;
+}
+
+interface InstallationRepositoriesResponse {
+  message: string;
+  organization_id?: string;
+  organization_slug?: string;
+  projects_added?: number;
+  projects_removed?: number;
+  installation_id?: number;
 }
 
 describe("webhooks - installation events", () => {
@@ -801,7 +821,7 @@ describe("webhooks - installation.created with repositories", () => {
     };
 
     const res = await makeWebhookRequest("installation", payload);
-    const json = await res.json();
+    const json = (await res.json()) as InstallationResponse;
 
     expect(res.status).toBe(200);
     expect(json.organization_slug).toBe("gh/myorganization");
@@ -847,7 +867,7 @@ describe("webhooks - installation.created with repositories", () => {
     };
 
     const res = await makeWebhookRequest("installation", payload);
-    const json = await res.json();
+    const json = (await res.json()) as InstallationResponse;
 
     expect(res.status).toBe(200);
     expect(json.projects_created).toBe(3);
@@ -939,7 +959,7 @@ describe("webhooks - installation.deleted data integrity", () => {
     };
 
     const res = await makeWebhookRequest("installation", payload);
-    const json = await res.json();
+    const json = (await res.json()) as InstallationResponse;
 
     expect(res.status).toBe(200);
     expect(json.message).toBe("installation deleted");
@@ -1044,7 +1064,7 @@ describe("webhooks - repository renamed (critical)", () => {
     });
 
     // Verify handle is NOT in the update call
-    const setCallArgs = mockSet.mock.calls[0][0];
+    const setCallArgs = mockSet.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(setCallArgs).not.toHaveProperty("handle");
   });
 
@@ -1073,7 +1093,7 @@ describe("webhooks - repository renamed (critical)", () => {
     };
 
     const res = await makeWebhookRequest("repository", payload);
-    const json = await res.json();
+    const json = (await res.json()) as RepositoryResponse;
 
     expect(res.status).toBe(200);
     // Response confirms same project ID was updated
@@ -1160,13 +1180,13 @@ describe("webhooks - repository transferred", () => {
     };
 
     const res = await makeWebhookRequest("repository", payload);
-    const json = await res.json();
+    const json = (await res.json()) as RepositoryResponse;
 
     expect(res.status).toBe(200);
     expect(json.project_id).toBe(originalProjectId);
 
     // Only providerRepoFullName updated, not organizationId
-    const setCallArgs = mockSet.mock.calls[0][0];
+    const setCallArgs = mockSet.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(setCallArgs).not.toHaveProperty("organizationId");
   });
 });
@@ -1374,7 +1394,7 @@ describe("webhooks - installation_repositories (add/remove)", () => {
     };
 
     const res = await makeWebhookRequest("installation_repositories", payload);
-    const json = await res.json();
+    const json = (await res.json()) as InstallationRepositoriesResponse;
 
     expect(res.status).toBe(200);
     expect(json.projects_removed).toBe(2);
@@ -1421,7 +1441,7 @@ describe("webhooks - installation_repositories (add/remove)", () => {
     };
 
     const res = await makeWebhookRequest("installation_repositories", payload);
-    const json = await res.json();
+    const json = (await res.json()) as InstallationRepositoriesResponse;
 
     expect(res.status).toBe(200);
     expect(json.projects_added).toBe(1);
