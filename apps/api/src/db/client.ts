@@ -1,16 +1,16 @@
-import { drizzle } from "drizzle-orm/postgres-js";
-import postgres from "postgres";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { Client } from "pg";
 import type { Env } from "../types/env";
 // biome-ignore lint/performance/noNamespaceImport: Drizzle requires namespace import for relational queries
 import * as schema from "./schema";
 
-export const createDb = (env: Env) => {
-  const client = postgres(env.HYPERDRIVE.connectionString, {
-    prepare: false,
-    max: 5,
-    fetch_types: false,
+export const createDb = async (env: Env) => {
+  const client = new Client({
+    connectionString: env.HYPERDRIVE.connectionString,
   });
-  return drizzle({ client, schema });
+  await client.connect();
+  const db = drizzle({ client, schema });
+  return { db, client };
 };
 
-export type Database = ReturnType<typeof createDb>;
+export type Database = Awaited<ReturnType<typeof createDb>>["db"];

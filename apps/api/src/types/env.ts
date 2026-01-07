@@ -1,3 +1,5 @@
+import type { Hyperdrive } from "@cloudflare/workers-types";
+
 // Cloudflare Worker environment bindings
 // Set these via: npx wrangler secret put <NAME>
 

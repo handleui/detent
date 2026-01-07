@@ -74,7 +74,7 @@ export const teamMembers = pgTable(
     id: varchar("id", { length: 36 }).primaryKey(),
     teamId: varchar("team_id", { length: 36 })
       .notNull()
-      .references(() => teams.id),
+      .references(() => teams.id, { onDelete: "cascade" }),
     userId: varchar("user_id", { length: 255 }).notNull(), // WorkOS user_xxx ID
     role: teamRoleEnum("role").default("member").notNull(),
     createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -96,7 +96,7 @@ export const projects = pgTable(
     id: varchar("id", { length: 36 }).primaryKey(),
     teamId: varchar("team_id", { length: 36 })
       .notNull()
-      .references(() => teams.id),
+      .references(() => teams.id, { onDelete: "cascade" }),
 
     // CI Provider repo info (GitHub repo, GitLab project)
     providerRepoId: varchar("provider_repo_id", { length: 255 }).notNull(),

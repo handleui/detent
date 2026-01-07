@@ -21,11 +21,12 @@
     "drizzle-orm": "^0.45.1",
     "hono": "^4.11.3",
     "jose": "^6.0.10",
-    "postgres": "^3.4.8"
+    "pg": "^8.16.3"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250106.0",
     "@types/node": "^25.0.3",
+    "@types/pg": "^8.16.0",
     "dotenv": "^17.2.3",
     "drizzle-kit": "^0.31.8",
     "typescript": "5.9.2",
