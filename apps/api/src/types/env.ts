@@ -8,8 +8,10 @@ export interface Env {
   GITHUB_APP_PRIVATE_KEY: string;
   GITHUB_WEBHOOK_SECRET: string;
 
-  // TODO: Add PlanetScale connection
-  // DATABASE_URL: string;
+  // Database connection via Cloudflare Hyperdrive
+  HYPERDRIVE: Hyperdrive;
+  // Fallback for local dev / migrations
+  DATABASE_URL?: string;
 
   // WorkOS AuthKit credentials
   WORKOS_CLIENT_ID: string;
