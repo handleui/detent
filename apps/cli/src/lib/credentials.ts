@@ -1,7 +1,7 @@
 /**
  * Credentials management for WorkOS authentication
  *
- * Stores access and refresh tokens in .detent/credentials.json
+ * Stores access and refresh tokens in global ~/.detent/credentials.json
  * Follows the same security patterns as config.ts (0o600 permissions)
  */
 
@@ -12,8 +12,8 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
-import { getRepoDetentDir } from "./config.js";
 
 export interface Credentials {
   access_token: string;
@@ -21,10 +21,24 @@ export interface Credentials {
   expires_at: number;
 }
 
+const DETENT_DIR_NAME = ".detent";
 const CREDENTIALS_FILE = "credentials.json";
+const WINDOWS_DRIVE_PATTERN = /^[A-Za-z]:\\/;
 
-const getCredentialsPath = (repoRoot: string): string => {
-  return join(getRepoDetentDir(repoRoot), CREDENTIALS_FILE);
+const getGlobalDetentDir = (): string => {
+  const override = process.env.DETENT_HOME;
+  if (
+    override &&
+    !override.includes("..") &&
+    (override.startsWith("/") || WINDOWS_DRIVE_PATTERN.test(override))
+  ) {
+    return override;
+  }
+  return join(homedir(), DETENT_DIR_NAME);
+};
+
+const getCredentialsPath = (): string => {
+  return join(getGlobalDetentDir(), CREDENTIALS_FILE);
 };
 
 const isValidCredentials = (data: unknown): data is Credentials => {
@@ -39,8 +53,8 @@ const isValidCredentials = (data: unknown): data is Credentials => {
   );
 };
 
-export const loadCredentials = (repoRoot: string): Credentials | null => {
-  const path = getCredentialsPath(repoRoot);
+export const loadCredentials = (): Credentials | null => {
+  const path = getCredentialsPath();
 
   if (!existsSync(path)) {
     return null;
@@ -61,24 +75,21 @@ export const loadCredentials = (repoRoot: string): Credentials | null => {
   }
 };
 
-export const saveCredentials = (
-  credentials: Credentials,
-  repoRoot: string
-): void => {
-  const dir = getRepoDetentDir(repoRoot);
+export const saveCredentials = (credentials: Credentials): void => {
+  const dir = getGlobalDetentDir();
 
   if (!existsSync(dir)) {
     mkdirSync(dir, { mode: 0o700, recursive: true });
   }
 
-  const path = getCredentialsPath(repoRoot);
+  const path = getCredentialsPath();
   const data = `${JSON.stringify(credentials, null, 2)}\n`;
 
   writeFileSync(path, data, { mode: 0o600 });
 };
 
-export const clearCredentials = (repoRoot: string): boolean => {
-  const path = getCredentialsPath(repoRoot);
+export const clearCredentials = (): boolean => {
+  const path = getCredentialsPath();
 
   if (!existsSync(path)) {
     return false;
@@ -92,8 +103,8 @@ export const clearCredentials = (repoRoot: string): boolean => {
   }
 };
 
-export const isLoggedIn = (repoRoot: string): boolean => {
-  const creds = loadCredentials(repoRoot);
+export const isLoggedIn = (): boolean => {
+  const creds = loadCredentials();
   return creds !== null;
 };
 

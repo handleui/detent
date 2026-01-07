@@ -2,10 +2,12 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { authMiddleware } from "./middleware/auth";
+import authRoutes from "./routes/auth";
 import githubLinkRoutes from "./routes/github-link";
 import healRoutes from "./routes/heal";
 import healthRoutes from "./routes/health";
 import parseRoutes from "./routes/parse";
+import projectsRoutes from "./routes/projects";
 import webhookRoutes from "./routes/webhooks";
 import type { Env } from "./types/env";
 
@@ -25,9 +27,11 @@ app.route("/webhooks", webhookRoutes);
 // Protected routes (require JWT auth)
 const api = new Hono<{ Bindings: Env }>();
 api.use("*", authMiddleware);
+api.route("/auth", authRoutes);
 api.route("/parse", parseRoutes);
 api.route("/heal", healRoutes);
 api.route("/github", githubLinkRoutes);
+api.route("/projects", projectsRoutes);
 
 app.route("/v1", api);
 

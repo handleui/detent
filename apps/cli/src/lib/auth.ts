@@ -151,8 +151,8 @@ export const refreshAccessToken = async (
   return response.json() as Promise<TokenResponse>;
 };
 
-export const getAccessToken = async (repoRoot: string): Promise<string> => {
-  const credentials = loadCredentials(repoRoot);
+export const getAccessToken = async (): Promise<string> => {
+  const credentials = loadCredentials();
 
   if (!credentials) {
     throw new Error("Not logged in. Run `detent auth login` first.");
@@ -163,7 +163,6 @@ export const getAccessToken = async (repoRoot: string): Promise<string> => {
   }
 
   const tokens = await refreshAccessToken(credentials.refresh_token);
-  // Default to 1 hour if expires_in not provided
   const expiresInMs = (tokens.expires_in ?? 3600) * 1000;
   const newCredentials: Credentials = {
     access_token: tokens.access_token,
@@ -171,7 +170,7 @@ export const getAccessToken = async (repoRoot: string): Promise<string> => {
     expires_at: Date.now() + expiresInMs,
   };
 
-  saveCredentials(newCredentials, repoRoot);
+  saveCredentials(newCredentials);
   return newCredentials.access_token;
 };
 

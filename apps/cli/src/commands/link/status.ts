@@ -1,132 +1,81 @@
 /**
- * GitHub link status command
+ * Link status command
  *
- * Shows the GitHub link status for the user's team membership.
+ * Shows the current link status for the repository,
+ * including linked team info and GitHub App installation status.
  */
 
 import { findGitRoot } from "@detent/git";
 import { defineCommand } from "citty";
-import { getLinkStatus, getTeams, type Team } from "../../lib/api.js";
+import type { Team } from "../../lib/api.js";
+import { getTeams } from "../../lib/api.js";
 import { getAccessToken } from "../../lib/auth.js";
-import { findTeamByIdOrSlug, selectTeam } from "../../lib/ui.js";
-
-const displayAllTeams = (teams: Team[]): void => {
-  console.log("\nGitHub Link Status\n");
-  console.log("─".repeat(60));
-
-  for (const team of teams) {
-    console.log(`\nTeam: ${team.team_name}`);
-    console.log(`  Slug: ${team.team_slug}`);
-    console.log(`  GitHub Org: ${team.github_org}`);
-    console.log(`  Role: ${team.role}`);
-
-    if (team.github_linked) {
-      console.log(`  GitHub Account: @${team.github_username}`);
-      console.log("  Status: ✅ Linked");
-    } else {
-      console.log("  Status: ❌ Not linked");
-      console.log("  Run `detent link` to connect your GitHub account");
-    }
-  }
-
-  console.log(`\n${"─".repeat(60)}`);
-};
+import { getProjectConfig } from "../../lib/config.js";
 
 export const statusCommand = defineCommand({
   meta: {
     name: "status",
-    description: "Show GitHub link status for your team",
+    description: "Show link status for this repository",
   },
-  args: {
-    team: {
-      type: "string",
-      description: "Team ID or slug (optional - will prompt if not provided)",
-      alias: "t",
-    },
-    all: {
-      type: "boolean",
-      description: "Show status for all teams",
-      alias: "a",
-      default: false,
-    },
-  },
-  run: async ({ args }) => {
+  run: async () => {
     const repoRoot = await findGitRoot(process.cwd());
     if (!repoRoot) {
       console.error("Not in a git repository.");
       process.exit(1);
     }
 
-    let accessToken: string;
-    try {
-      accessToken = await getAccessToken(repoRoot);
-    } catch {
-      console.error("Not logged in. Run `detent auth login` first.");
-      process.exit(1);
-    }
-
-    // Get user's teams
-    const teamsResponse = await getTeams(accessToken).catch((error) => {
-      console.error(
-        "Failed to fetch teams:",
-        error instanceof Error ? error.message : error
-      );
-      process.exit(1);
-    });
-
-    // Show all teams
-    if (args.all) {
-      displayAllTeams(teamsResponse.teams);
+    // Check if repository is linked
+    const projectConfig = getProjectConfig(repoRoot);
+    if (!projectConfig) {
+      console.log("\nThis repository is not linked to any team.");
+      console.log("Run `detent link` to link it to a team.");
       return;
     }
 
-    // Select specific team
-    let selectedTeam: Team;
+    console.log("\nLink Status\n");
+    console.log("-".repeat(40));
+    console.log(`Team ID:     ${projectConfig.teamId}`);
+    console.log(`Team Slug:   ${projectConfig.teamSlug}`);
+    console.log("-".repeat(40));
 
-    if (args.team) {
-      const found = findTeamByIdOrSlug(teamsResponse.teams, args.team);
-      if (!found) {
-        console.error(`Team not found: ${args.team}`);
-        process.exit(1);
-      }
-      selectedTeam = found;
-    } else {
-      const selected = await selectTeam(teamsResponse.teams);
-      if (!selected) {
-        process.exit(1);
-      }
-      selectedTeam = selected;
+    let accessToken: string;
+    try {
+      accessToken = await getAccessToken();
+    } catch {
+      console.log(
+        "\nNote: Not logged in. Run `detent auth login` for more details."
+      );
+      return;
     }
 
-    // Get detailed status from API
-    const status = await getLinkStatus(accessToken, selectedTeam.team_id).catch(
-      (error) => {
-        console.error(
-          "Failed to get status:",
-          error instanceof Error ? error.message : error
-        );
-        process.exit(1);
-      }
+    const teamsResponse = await getTeams(accessToken).catch(() => null);
+    if (!teamsResponse) {
+      console.log("\nNote: Could not fetch team details from API.");
+      return;
+    }
+
+    const linkedTeam: Team | undefined = teamsResponse.teams.find(
+      (t) => t.team_id === projectConfig.teamId
     );
 
-    // Display status
-    console.log("\nGitHub Link Status\n");
-    console.log("─".repeat(40));
-    console.log(`Team:        ${status.team_name}`);
-    console.log(`Slug:        ${status.team_slug}`);
-    console.log(`GitHub Org:  ${status.github_org}`);
-    console.log("─".repeat(40));
+    if (!linkedTeam) {
+      console.log("\nWarning: You are not a member of the linked team.");
+      console.log("Run `detent link --force` to link to a different team.");
+      return;
+    }
 
-    if (status.github_linked) {
-      console.log(`GitHub:      @${status.github_username}`);
-      console.log(`User ID:     ${status.github_user_id}`);
-      console.log(
-        `Linked:      ${status.github_linked_at ? new Date(status.github_linked_at).toLocaleString() : "Unknown"}`
-      );
-      console.log("\nStatus: ✅ Linked");
+    console.log("\nTeam Details:\n");
+    console.log(`  Name:        ${linkedTeam.team_name}`);
+    console.log(`  GitHub Org:  ${linkedTeam.github_org}`);
+    console.log(`  Your Role:   ${linkedTeam.role}`);
+
+    if (linkedTeam.github_linked) {
+      console.log(`\nGitHub Account: @${linkedTeam.github_username} (linked)`);
     } else {
-      console.log("\nStatus: ❌ Not linked");
-      console.log("\nRun `detent link` to connect your GitHub account.");
+      console.log("\nGitHub Account: Not linked");
+      console.log(
+        "GitHub identity is synced automatically when you log in via GitHub."
+      );
     }
 
     console.log("");

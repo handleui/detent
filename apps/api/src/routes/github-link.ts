@@ -330,6 +330,50 @@ app.get("/teams", async (c) => {
 });
 
 /**
+ * GET /app-status
+ * Get GitHub App installation status for a team
+ */
+app.get("/app-status", async (c) => {
+  const auth = c.get("auth");
+  const teamId = c.req.query("team_id");
+
+  if (!teamId) {
+    return c.json({ error: "team_id is required" }, 400);
+  }
+
+  const { db, client } = await createDb(c.env);
+  try {
+    const member = await db.query.teamMembers.findFirst({
+      where: and(
+        eq(teamMembers.userId, auth.userId),
+        eq(teamMembers.teamId, teamId)
+      ),
+      with: { team: true },
+    });
+
+    if (!member) {
+      return c.json({ error: "Not a member of this team" }, 404);
+    }
+
+    const { team } = member;
+    const installed = Boolean(team.providerInstallationId);
+
+    return c.json({
+      team_id: team.id,
+      team_name: team.name,
+      team_slug: team.slug,
+      github_org: team.providerAccountLogin,
+      app_installed: installed,
+      installation_id: team.providerInstallationId ?? null,
+      installed_at: team.createdAt?.toISOString() ?? null,
+      suspended_at: team.suspendedAt?.toISOString() ?? null,
+    });
+  } finally {
+    await client.end();
+  }
+});
+
+/**
  * POST /unlink
  * Unlink GitHub account from team membership
  */
