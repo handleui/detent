@@ -18,7 +18,8 @@
     "lint-staged": "^16.2.7",
     "turbo": "^2.7.2",
     "typescript": "5.9.2",
-    "ultracite": "7.0.8"
+    "ultracite": "7.0.8",
+    "wrangler": "^4.54.0"
   },
   "engines": {
     "node": ">=18"

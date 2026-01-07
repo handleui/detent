@@ -147,6 +147,8 @@ const handleWorkflowRunEvent = async (
 
     // 4. Post summary comment on PR
     const commentBody = formatFailureComment(
+      repository.owner.login,
+      repository.name,
       workflow_run.name,
       workflow_run.id,
       logs
@@ -314,6 +316,8 @@ const parseDetentCommand = (body: string): DetentCommand => {
 
 // Format failure comment for PR
 const formatFailureComment = (
+  owner: string,
+  repo: string,
   workflowName: string,
   runId: number,
   _logs: string
@@ -321,7 +325,7 @@ const formatFailureComment = (
   // TODO: Actually parse and format errors from logs
   return `## ❌ CI Failed: ${workflowName}
 
-[View workflow run](https://github.com/actions/runs/${runId})
+[View workflow run](https://github.com/${owner}/${repo}/actions/runs/${runId})
 
 <details>
 <summary>🔍 Error Analysis</summary>
