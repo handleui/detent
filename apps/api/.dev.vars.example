@@ -12,3 +12,8 @@ GITHUB_WEBHOOK_SECRET=your_webhook_secret
 # WorkOS AuthKit credentials
 WORKOS_CLIENT_ID=your_workos_client_id
 WORKOS_SUBDOMAIN=your_workos_subdomain
+WORKOS_API_KEY=your_workos_api_key
+
+# Local Postgres for development (run: docker compose up -d)
+# For production migrations, override: DATABASE_URL="postgresql://..." bun run db:push
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/detent

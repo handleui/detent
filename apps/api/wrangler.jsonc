@@ -15,7 +15,7 @@
     {
       "binding": "HYPERDRIVE",
       "id": "d097d07d81dd449483d792aa860ec167",
-      "localConnectionString": "${DATABASE_URL}"
+      "localConnectionString": "postgresql://postgres:postgres@localhost:5432/detent"
     }
   ]
 }

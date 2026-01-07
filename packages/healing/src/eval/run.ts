@@ -55,7 +55,7 @@ const mockTask = (input: HealingTestCase): HealingEvalResult => {
   };
 };
 
-// TODO: Uncomment and implement when ready for live evals
+// Live task implementation for actual evals (uncomment when ready):
 // const liveTask = async (input: HealingTestCase): Promise<HealingEvalResult> => {
 //   const client = new Client();
 //   const registry = new ToolRegistry();

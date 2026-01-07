@@ -22,4 +22,7 @@ export interface Env {
 
   // OAuth configuration (optional)
   ALLOWED_REDIRECT_URIS?: string; // Comma-separated list of allowed redirect URIs
+
+  // CORS configuration (optional)
+  ALLOWED_ORIGINS?: string; // Comma-separated list of allowed CORS origins
 }

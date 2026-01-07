@@ -74,6 +74,35 @@ const decodeState = async (
 };
 
 /**
+ * Parse WorkOS token exchange error response.
+ * Returns a user-friendly error message.
+ */
+const parseWorkOSTokenError = async (response: Response): Promise<string> => {
+  try {
+    const errorText = await response.text();
+    const errorJson = JSON.parse(errorText) as {
+      error?: string;
+      error_description?: string;
+    };
+    // Log only the error type, not the full response which may contain tokens
+    console.error(
+      `WorkOS token exchange failed: ${response.status} ${errorJson.error ?? "unknown"}`
+    );
+    if (errorJson.error === "invalid_grant") {
+      return "Authorization code expired or already used";
+    }
+    if (errorJson.error_description) {
+      return errorJson.error_description;
+    }
+  } catch {
+    console.error(
+      `WorkOS token exchange failed: ${response.status} ${response.statusText}`
+    );
+  }
+  return "Failed to exchange authorization code";
+};
+
+/**
  * GET /authorize
  * Generate WorkOS authorization URL for GitHub OAuth with PKCE
  */
@@ -200,25 +229,7 @@ app.post("/callback", async (c) => {
   });
 
   if (!tokenResponse.ok) {
-    const errorText = await tokenResponse.text();
-    console.error("WorkOS token exchange failed:", errorText);
-
-    // Parse error for more specific messaging
-    let errorMessage = "Failed to exchange authorization code";
-    try {
-      const errorJson = JSON.parse(errorText) as {
-        error?: string;
-        error_description?: string;
-      };
-      if (errorJson.error === "invalid_grant") {
-        errorMessage = "Authorization code expired or already used";
-      } else if (errorJson.error_description) {
-        errorMessage = errorJson.error_description;
-      }
-    } catch {
-      // Keep default error message
-    }
-
+    const errorMessage = await parseWorkOSTokenError(tokenResponse);
     return c.json({ error: errorMessage }, 500);
   }
 

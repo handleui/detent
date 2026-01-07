@@ -1,13 +1,6 @@
+import { Hono } from "hono";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import app from "./auth";
-
-// Mock the auth middleware - bypass JWT verification
-vi.mock("../middleware/auth", () => ({
-  authMiddleware: vi.fn(async (c, next) => {
-    c.set("auth", { userId: "user-123" });
-    await next();
-  }),
-}));
+import type { Env } from "../types/env";
 
 // Mock the database client
 const mockFindFirst = vi.fn();
@@ -35,7 +28,6 @@ vi.mock("../db/client", () => ({
 
 // Mock fetch for WorkOS and GitHub API calls
 const mockFetch = vi.fn();
-global.fetch = mockFetch;
 
 // Mock environment
 const MOCK_ENV = {
@@ -47,12 +39,25 @@ const MOCK_ENV = {
   },
 };
 
-// Helper to create authenticated request
+// Helper to make request with a fresh app instance
 const makeRequest = async (
   method: "GET" | "POST",
   path: string,
   body?: unknown
 ): Promise<Response> => {
+  // Import the routes fresh each time
+  const authRoutes = (await import("./auth")).default;
+
+  const app = new Hono<{ Bindings: Env }>();
+
+  // Middleware to set auth context (simulating what authMiddleware does)
+  app.use("*", async (c, next) => {
+    c.set("auth" as never, { userId: "user-123" } as never);
+    await next();
+  });
+
+  app.route("/auth", authRoutes);
+
   const options: RequestInit = {
     method,
     headers: {
@@ -99,15 +104,19 @@ const createIdentitiesResponse = (
 describe("auth routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockFetch.mockReset();
 
     // Setup mock chain for update
     mockUpdate.mockReturnValue({ set: mockSet });
     mockSet.mockReturnValue({ where: mockWhere });
     mockWhere.mockReturnValue({ returning: mockReturning });
     mockReturning.mockResolvedValue([]);
+
+    // Replace global fetch with mock
+    global.fetch = mockFetch;
   });
 
-  describe("POST /sync-identity", () => {
+  describe("POST /auth/sync-identity", () => {
     it("syncs identity with GitHub linked", async () => {
       // Mock WorkOS user fetch
       mockFetch
@@ -136,7 +145,7 @@ describe("auth routes", () => {
         { teamId: "team-2", providerUsername: "testuser" },
       ]);
 
-      const res = await makeRequest("POST", "/sync-identity");
+      const res = await makeRequest("POST", "/auth/sync-identity");
       const json = await res.json();
 
       expect(res.status).toBe(200);
@@ -167,7 +176,7 @@ describe("auth routes", () => {
           json: () => Promise.resolve(createIdentitiesResponse([])),
         });
 
-      const res = await makeRequest("POST", "/sync-identity");
+      const res = await makeRequest("POST", "/auth/sync-identity");
       const json = await res.json();
 
       expect(res.status).toBe(200);
@@ -195,7 +204,7 @@ describe("auth routes", () => {
           text: () => Promise.resolve("Unauthorized"),
         });
 
-      const res = await makeRequest("POST", "/sync-identity");
+      const res = await makeRequest("POST", "/auth/sync-identity");
       const json = await res.json();
 
       expect(res.status).toBe(200);
@@ -233,7 +242,7 @@ describe("auth routes", () => {
         { teamId: "team-1", providerUsername: null },
       ]);
 
-      const res = await makeRequest("POST", "/sync-identity");
+      const res = await makeRequest("POST", "/auth/sync-identity");
       const json = await res.json();
 
       expect(res.status).toBe(200);
@@ -251,7 +260,7 @@ describe("auth routes", () => {
         text: () => Promise.resolve("Internal Server Error"),
       });
 
-      const res = await makeRequest("POST", "/sync-identity");
+      const res = await makeRequest("POST", "/auth/sync-identity");
       const json = await res.json();
 
       expect(res.status).toBe(500);
@@ -283,8 +292,11 @@ describe("auth routes", () => {
             ),
         });
 
-      const res = await makeRequest("POST", "/sync-identity");
-      const json = await res.json();
+      const res = await makeRequest("POST", "/auth/sync-identity");
+      const json = (await res.json()) as {
+        github_synced: boolean;
+        github_username: string | null;
+      };
 
       expect(res.status).toBe(200);
       expect(json.github_synced).toBe(false);
@@ -292,7 +304,7 @@ describe("auth routes", () => {
     });
   });
 
-  describe("GET /me", () => {
+  describe("GET /auth/me", () => {
     it("returns user info with GitHub linked", async () => {
       mockFetch.mockResolvedValueOnce({
         ok: true,
@@ -307,7 +319,7 @@ describe("auth routes", () => {
         providerUsername: "testuser",
       });
 
-      const res = await makeRequest("GET", "/me");
+      const res = await makeRequest("GET", "/auth/me");
       const json = await res.json();
 
       expect(res.status).toBe(200);
@@ -325,10 +337,17 @@ describe("auth routes", () => {
     });
 
     it("returns user info without GitHub linked", async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve(createWorkOSUser()),
-      });
+      // First call: get user details from WorkOS
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve(createWorkOSUser()),
+        })
+        // Second call: check WorkOS identities (since no GitHub linked in membership)
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve(createIdentitiesResponse([])),
+        });
 
       mockFindFirst.mockResolvedValue({
         id: "member-1",
@@ -338,7 +357,7 @@ describe("auth routes", () => {
         providerUsername: null,
       });
 
-      const res = await makeRequest("GET", "/me");
+      const res = await makeRequest("GET", "/auth/me");
       const json = await res.json();
 
       expect(res.status).toBe(200);
@@ -354,14 +373,21 @@ describe("auth routes", () => {
     });
 
     it("returns user info when not member of any team", async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve(createWorkOSUser()),
-      });
+      // First call: get user details from WorkOS
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve(createWorkOSUser()),
+        })
+        // Second call: check WorkOS identities (since no membership)
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve(createIdentitiesResponse([])),
+        });
 
       mockFindFirst.mockResolvedValue(undefined);
 
-      const res = await makeRequest("GET", "/me");
+      const res = await makeRequest("GET", "/auth/me");
       const json = await res.json();
 
       expect(res.status).toBe(200);
@@ -382,7 +408,7 @@ describe("auth routes", () => {
         text: () => Promise.resolve("Server Error"),
       });
 
-      const res = await makeRequest("GET", "/me");
+      const res = await makeRequest("GET", "/auth/me");
       const json = await res.json();
 
       expect(res.status).toBe(500);
@@ -390,19 +416,29 @@ describe("auth routes", () => {
     });
 
     it("handles user without first/last name", async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: () =>
-          Promise.resolve({
-            id: "user-123",
-            email: "test@example.com",
-          }),
-      });
+      // First call: get user details from WorkOS (no first/last name)
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              id: "user-123",
+              email: "test@example.com",
+            }),
+        })
+        // Second call: check WorkOS identities (since no membership)
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve(createIdentitiesResponse([])),
+        });
 
       mockFindFirst.mockResolvedValue(undefined);
 
-      const res = await makeRequest("GET", "/me");
-      const json = await res.json();
+      const res = await makeRequest("GET", "/auth/me");
+      const json = (await res.json()) as {
+        first_name?: string;
+        last_name?: string;
+      };
 
       expect(res.status).toBe(200);
       expect(json.first_name).toBeUndefined();

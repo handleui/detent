@@ -8,6 +8,8 @@ const JOB_END_PATTERN =
   /::detent::job-end::([a-zA-Z_][a-zA-Z0-9_-]*)::(success|failure|cancelled)/;
 const STEP_START_PATTERN =
   /::detent::step-start::([a-zA-Z_][a-zA-Z0-9_-]*)::(\d+)::(.+)/;
+// biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI codes require control characters
+const ANSI_ESCAPE_PATTERN = /\x1b\[[0-9;]*[a-zA-Z]/g;
 
 /**
  * Validates a single job object from the manifest
@@ -206,7 +208,6 @@ export class ActOutputParser {
    * Strip ANSI escape codes from string
    */
   private stripAnsi(str: string): string {
-    // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI codes require control characters
-    return str.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
+    return str.replace(ANSI_ESCAPE_PATTERN, "");
   }
 }

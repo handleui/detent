@@ -148,15 +148,27 @@ const handleWorkflowRunEvent = async (
     // 1. Get installation token
     const token = await github.getInstallationToken(installation.id);
 
-    // 2. Check if there's an associated PR
-    const prNumber =
-      workflow_run.pull_requests[0]?.number ??
-      (await github.getPullRequestForRun(
+    // 2. Check PR and fetch logs in parallel (both only need the token)
+    const prFromPayload = workflow_run.pull_requests[0]?.number;
+    const [prFromApi, logs] = await Promise.all([
+      // Only fetch PR from API if not in payload
+      prFromPayload
+        ? Promise.resolve(null)
+        : github.getPullRequestForRun(
+            token,
+            repository.owner.login,
+            repository.name,
+            workflow_run.id
+          ),
+      github.fetchWorkflowLogs(
         token,
         repository.owner.login,
         repository.name,
         workflow_run.id
-      ));
+      ),
+    ]);
+
+    const prNumber = prFromPayload ?? prFromApi;
 
     if (!prNumber) {
       console.log("[workflow_run] No associated PR found, skipping comment");
@@ -168,15 +180,7 @@ const handleWorkflowRunEvent = async (
       });
     }
 
-    // 3. Fetch workflow logs
-    const logs = await github.fetchWorkflowLogs(
-      token,
-      repository.owner.login,
-      repository.name,
-      workflow_run.id
-    );
-
-    // TODO: Parse errors with @detent/parser
+    // Future: Parse errors with @detent/parser and include them in the comment
     // const errors = parseWorkflowLogs(logs);
 
     // 4. Post summary comment on PR
@@ -414,10 +418,10 @@ const handleIssueCommentEvent = async (
           `🔧 **Detent** is analyzing the CI failures${command.dryRun ? " (dry run)" : ""}...`
         );
 
-        // TODO: Implement healing flow
+        // Healing flow will:
         // 1. Find latest failed workflow run
-        // 2. Fetch and parse logs
-        // 3. Run healing loop with Claude
+        // 2. Fetch and parse logs with @detent/parser
+        // 3. Run healing loop with Claude via @detent/healing
         // 4. Push fix (if not dry run)
         // 5. Post results
 
@@ -431,7 +435,7 @@ const handleIssueCommentEvent = async (
       }
 
       case "status": {
-        // TODO: Report current error status
+        // Future: Report current error status from stored analysis
         await github.postComment(
           token,
           repository.owner.login,
@@ -500,6 +504,7 @@ const parseDetentCommand = (body: string): DetentCommand => {
 };
 
 // Format failure comment for PR
+// Future: Use parsed errors from @detent/parser to provide detailed error analysis
 const formatFailureComment = (
   owner: string,
   repo: string,
@@ -507,7 +512,6 @@ const formatFailureComment = (
   runId: number,
   _logs: string
 ): string => {
-  // TODO: Actually parse and format errors from logs
   return `## ❌ CI Failed: ${workflowName}
 
 [View workflow run](https://github.com/${owner}/${repo}/actions/runs/${runId})

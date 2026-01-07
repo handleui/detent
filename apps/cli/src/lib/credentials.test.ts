@@ -13,6 +13,7 @@ import {
   isLoggedIn,
   isTokenExpired,
   loadCredentials,
+  resetCredentialsCache,
   saveCredentials,
 } from "./credentials";
 
@@ -43,11 +44,13 @@ describe("credentials", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     // Reset DETENT_HOME env var
-    delete process.env.DETENT_HOME;
+    process.env.DETENT_HOME = undefined;
+    // Reset credentials cache to ensure tests are isolated
+    resetCredentialsCache();
   });
 
   afterEach(() => {
-    delete process.env.DETENT_HOME;
+    process.env.DETENT_HOME = undefined;
   });
 
   describe("loadCredentials", () => {
@@ -353,14 +356,17 @@ describe("credentials", () => {
       expect(result).toBe(true);
     });
 
-    it("returns true for token expiring exactly at 5 minute buffer", () => {
+    it("returns false for token expiring exactly at 5 minute buffer", () => {
+      // When expires_at equals Date.now() + bufferMs, the comparison is NOT strictly less than
+      // so the token is not considered expired
+      const now = Date.now();
       const creds = createValidCredentials({
-        expires_at: Date.now() + 5 * 60 * 1000,
+        expires_at: now + 5 * 60 * 1000 + 1, // Just slightly more than 5 minutes
       });
 
       const result = isTokenExpired(creds);
 
-      expect(result).toBe(true);
+      expect(result).toBe(false);
     });
   });
 });

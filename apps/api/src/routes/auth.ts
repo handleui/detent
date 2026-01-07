@@ -43,40 +43,35 @@ const app = new Hono<{ Bindings: Env }>();
 app.post("/sync-identity", async (c) => {
   const auth = c.get("auth");
 
-  // Fetch user details from WorkOS
-  const userResponse = await fetch(
-    `https://api.workos.com/user_management/users/${auth.userId}`,
-    {
+  // Fetch user details and identities from WorkOS in parallel
+  const [userResponse, identitiesResponse] = await Promise.all([
+    fetch(`https://api.workos.com/user_management/users/${auth.userId}`, {
       headers: {
         Authorization: `Bearer ${c.env.WORKOS_API_KEY}`,
       },
-    }
-  );
+    }),
+    fetch(
+      `https://api.workos.com/user_management/users/${auth.userId}/identities`,
+      {
+        headers: {
+          Authorization: `Bearer ${c.env.WORKOS_API_KEY}`,
+        },
+      }
+    ),
+  ]);
 
   if (!userResponse.ok) {
     console.error(
-      "Failed to fetch user from WorkOS:",
-      await userResponse.text()
+      `Failed to fetch user from WorkOS: ${userResponse.status} ${userResponse.statusText}`
     );
     return c.json({ error: "Failed to fetch user details" }, 500);
   }
 
   const user = (await userResponse.json()) as WorkOSUser;
 
-  // Fetch user identities from WorkOS
-  const identitiesResponse = await fetch(
-    `https://api.workos.com/user_management/users/${auth.userId}/identities`,
-    {
-      headers: {
-        Authorization: `Bearer ${c.env.WORKOS_API_KEY}`,
-      },
-    }
-  );
-
   if (!identitiesResponse.ok) {
     console.error(
-      "Failed to fetch identities from WorkOS:",
-      await identitiesResponse.text()
+      `Failed to fetch identities from WorkOS: ${identitiesResponse.status} ${identitiesResponse.statusText}`
     );
     // Return user info without GitHub identity - this is not a fatal error
     return c.json({
@@ -173,32 +168,28 @@ app.post("/sync-identity", async (c) => {
 app.get("/me", async (c) => {
   const auth = c.get("auth");
 
-  // Fetch user details from WorkOS
-  const userResponse = await fetch(
-    `https://api.workos.com/user_management/users/${auth.userId}`,
-    {
-      headers: {
-        Authorization: `Bearer ${c.env.WORKOS_API_KEY}`,
-      },
-    }
-  );
-
-  if (!userResponse.ok) {
-    console.error(
-      "Failed to fetch user from WorkOS:",
-      await userResponse.text()
-    );
-    return c.json({ error: "Failed to fetch user details" }, 500);
-  }
-
-  const user = (await userResponse.json()) as WorkOSUser;
-
-  // Check if user has GitHub linked in any team membership
+  // Fetch user details from WorkOS and check DB membership in parallel
   const { db, client } = await createDb(c.env);
   try {
-    const membership = await db.query.teamMembers.findFirst({
-      where: eq(teamMembers.userId, auth.userId),
-    });
+    const [userResponse, membership] = await Promise.all([
+      fetch(`https://api.workos.com/user_management/users/${auth.userId}`, {
+        headers: {
+          Authorization: `Bearer ${c.env.WORKOS_API_KEY}`,
+        },
+      }),
+      db.query.teamMembers.findFirst({
+        where: eq(teamMembers.userId, auth.userId),
+      }),
+    ]);
+
+    if (!userResponse.ok) {
+      console.error(
+        `Failed to fetch user from WorkOS: ${userResponse.status} ${userResponse.statusText}`
+      );
+      return c.json({ error: "Failed to fetch user details" }, 500);
+    }
+
+    const user = (await userResponse.json()) as WorkOSUser;
 
     // If no team membership found, also check WorkOS identities directly
     // This handles the case where a user authenticated via GitHub but has no team yet

@@ -13,6 +13,32 @@ const PEM_END_PKCS8 = /-----END PRIVATE KEY-----/;
 const WHITESPACE = /\s/g;
 const BASE64_TRAILING_EQUALS = /=+$/;
 
+// Validation patterns for GitHub identifiers
+// Owner/repo names: alphanumeric, hyphen, underscore, period (not starting with period)
+const GITHUB_NAME_PATTERN = /^[a-zA-Z0-9][-a-zA-Z0-9._]*$/;
+// Branch names: more permissive but no path traversal
+const GITHUB_BRANCH_PATTERN = /^[a-zA-Z0-9][-a-zA-Z0-9._/]*$/;
+
+const isValidGitHubName = (name: string): boolean => {
+  return (
+    name.length > 0 &&
+    name.length <= 100 &&
+    GITHUB_NAME_PATTERN.test(name) &&
+    !name.includes("..")
+  );
+};
+
+const isValidBranchName = (branch: string): boolean => {
+  return (
+    branch.length > 0 &&
+    branch.length <= 255 &&
+    GITHUB_BRANCH_PATTERN.test(branch) &&
+    !branch.includes("..") &&
+    !branch.startsWith("/") &&
+    !branch.endsWith("/")
+  );
+};
+
 interface GitHubServiceConfig {
   appId: string;
   privateKey: string;
@@ -185,6 +211,11 @@ export const createGitHubService = (env: Env) => {
     repo: string,
     runId: number
   ): Promise<string> => {
+    // Validate inputs to prevent URL manipulation
+    if (!(isValidGitHubName(owner) && isValidGitHubName(repo))) {
+      throw new Error("Invalid owner or repo name");
+    }
+
     // GitHub returns a redirect to a zip file containing logs
     const response = await fetch(
       `${GITHUB_API}/repos/${owner}/${repo}/actions/runs/${runId}/logs`,
@@ -211,8 +242,8 @@ export const createGitHubService = (env: Env) => {
       `[github] Fetched logs for ${owner}/${repo} run ${runId} (${blob.size} bytes)`
     );
 
-    // TODO: Unzip and extract relevant job logs
-    // For MVP, we'll need to add a zip library or use a different approach
+    // Future: Unzip and extract relevant job logs
+    // Log extraction will require a zip library (e.g., pako or fflate)
     return `[Log archive: ${blob.size} bytes - extraction not yet implemented]`;
   };
 
@@ -223,6 +254,11 @@ export const createGitHubService = (env: Env) => {
     issueNumber: number,
     body: string
   ): Promise<void> => {
+    // Validate inputs to prevent URL manipulation
+    if (!(isValidGitHubName(owner) && isValidGitHubName(repo))) {
+      throw new Error("Invalid owner or repo name");
+    }
+
     const response = await fetch(
       `${GITHUB_API}/repos/${owner}/${repo}/issues/${issueNumber}/comments`,
       {
@@ -254,6 +290,14 @@ export const createGitHubService = (env: Env) => {
     message: string,
     files: Array<{ path: string; content: string }>
   ): Promise<string> => {
+    // Validate inputs to prevent URL manipulation
+    if (!(isValidGitHubName(owner) && isValidGitHubName(repo))) {
+      throw new Error("Invalid owner or repo name");
+    }
+    if (!isValidBranchName(branch)) {
+      throw new Error("Invalid branch name");
+    }
+
     const headers = {
       Authorization: `Bearer ${token}`,
       Accept: "application/vnd.github+json",
@@ -351,6 +395,11 @@ export const createGitHubService = (env: Env) => {
     repo: string,
     runId: number
   ): Promise<number | null> => {
+    // Validate inputs to prevent URL manipulation
+    if (!(isValidGitHubName(owner) && isValidGitHubName(repo))) {
+      throw new Error("Invalid owner or repo name");
+    }
+
     const response = await fetch(
       `${GITHUB_API}/repos/${owner}/${repo}/actions/runs/${runId}`,
       {
