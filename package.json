@@ -4,7 +4,7 @@
   "scripts": {
     "build": "turbo run build",
     "dev": "turbo run dev",
-    "dev:core": "turbo run dev --filter=@detent/api --filter=@detent/web",
+    "dev:core": "turbo run dev --filter=@detent/api --filter=@detent/web --filter=@detent/navigator",
     "lint": "ultracite check",
     "fix": "ultracite fix",
     "check-types": "turbo run check-types",
