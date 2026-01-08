@@ -97,7 +97,7 @@ export const GET = async (request: Request) => {
     console.error("[auth/callback] OAuth error:", error, errorDescription);
     return NextResponse.redirect(
       new URL(
-        `/login?error=${error}&message=${encodeURIComponent(errorDescription || "")}`,
+        `/login?error=${encodeURIComponent(error)}&message=${encodeURIComponent(errorDescription || "")}`,
         request.url
       )
     );
