@@ -1,20 +1,13 @@
-// TODO: Uncomment when wiring to @detent/healing
-// import { HealLoop, type HealConfig } from "@detent/healing";
+import type { ExtractedError } from "@detent/parser";
 
-// Stub types until we wire to @detent/healing
-interface ExtractedError {
-  errorId: string;
-  message: string;
-  filePath?: string;
-  line?: number;
-}
+export type { ExtractedError } from "@detent/parser";
 
 interface HealOptions {
   errors: ExtractedError[];
   repoUrl: string;
   branch: string;
-  // TODO: Add Claude API key from org context
-  // TODO: Add budget limits
+  // Future: Add Claude API key from org context
+  // Future: Add budget limits
 }
 
 interface HealEvent {
@@ -25,11 +18,12 @@ interface HealEvent {
 export const healerService = {
   // Run healing loop with streaming events
   async *heal(_options: HealOptions): AsyncGenerator<HealEvent> {
-    // TODO: Implement actual healing loop
-    // TODO: Clone repo to workspace
-    // TODO: Initialize HealLoop with tools
-    // TODO: Stream Claude responses
-    // TODO: Apply patches and verify fixes
+    // Stub implementation - healing will be wired up when the API is ready.
+    // The actual healing will:
+    // 1. Clone repo to workspace
+    // 2. Initialize HealLoop with tools from @detent/healing
+    // 3. Stream Claude responses
+    // 4. Apply patches and verify fixes
 
     // Placeholder await for stub (will be used when implementing)
     await Promise.resolve();

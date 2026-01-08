@@ -1,0 +1,177 @@
+---
+title: Configuration
+description: Environment variables and settings reference
+---
+
+Detent is configured through environment variables. This page documents all available options.
+
+## Required Variables
+
+These variables must be set for the API to function:
+
+### Database
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `DATABASE_URL` | PostgreSQL connection string | `postgres://user:pass@host:5432/detent` |
+
+<Note>
+For Cloudflare Workers, use `HYPERDRIVE` binding instead of `DATABASE_URL`.
+</Note>
+
+### GitHub App
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `GITHUB_APP_ID` | GitHub App ID | `123456` |
+| `GITHUB_CLIENT_ID` | GitHub App Client ID | `Iv1.abc123` |
+| `GITHUB_APP_PRIVATE_KEY` | RSA private key (with `\n` for newlines) | `-----BEGIN RSA...` |
+| `GITHUB_WEBHOOK_SECRET` | Webhook signature secret | `whsec_xxxxx` |
+
+### WorkOS Authentication
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `WORKOS_CLIENT_ID` | WorkOS Client ID | `client_xxxxx` |
+| `WORKOS_API_KEY` | WorkOS API Key | `sk_xxxxx` |
+
+### Rate Limiting
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `UPSTASH_REDIS_REST_URL` | Upstash Redis REST URL | `https://xxx.upstash.io` |
+| `UPSTASH_REDIS_REST_TOKEN` | Upstash Redis REST token | `AxxxYyyy` |
+
+## Optional Variables
+
+### Security
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `ENCRYPTION_KEY` | AES-256 key for encrypting tokens | - |
+| `ALLOWED_ORIGINS` | Comma-separated CORS origins | `*` |
+| `ALLOWED_REDIRECT_URIS` | Comma-separated OAuth redirect URIs | - |
+
+<Warning>
+Generate `ENCRYPTION_KEY` with: `openssl rand -base64 32`
+</Warning>
+
+### Feature Flags
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `ENABLE_GITLAB` | Enable GitLab integration | `true` |
+| `ENABLE_HEALING` | Enable AI healing features | `true` |
+
+## Creating a GitHub App
+
+1. Go to [GitHub Developer Settings](https://github.com/settings/apps)
+2. Click **New GitHub App**
+3. Configure:
+
+| Setting | Value |
+|---------|-------|
+| Name | `Detent (Your Org)` |
+| Homepage URL | `https://your-domain.com` |
+| Callback URL | `https://api.your-domain.com/auth/callback` |
+| Webhook URL | `https://api.your-domain.com/webhooks/github` |
+| Webhook Secret | Generate with `openssl rand -hex 32` |
+
+4. Permissions required:
+
+| Permission | Access |
+|------------|--------|
+| Contents | Read |
+| Metadata | Read |
+| Pull requests | Read & Write |
+| Checks | Read & Write |
+| Workflows | Read |
+
+5. Subscribe to events:
+   - `push`
+   - `pull_request`
+   - `check_run`
+   - `check_suite`
+   - `installation`
+   - `installation_repositories`
+
+6. Generate and download the private key
+
+## Configuring WorkOS
+
+1. Create account at [workos.com](https://workos.com)
+2. Create a new environment
+3. Configure authentication:
+
+| Setting | Value |
+|---------|-------|
+| Redirect URI | `https://your-domain.com/auth/callback` |
+| Logout URI | `https://your-domain.com` |
+
+4. Enable OAuth providers:
+   - GitHub (for linking accounts)
+   - GitLab (optional)
+
+5. Copy Client ID and API Key
+
+## Setting Up Upstash
+
+1. Create account at [upstash.com](https://upstash.com)
+2. Create a new Redis database
+3. Copy REST URL and token from the dashboard
+
+## GitLab Configuration
+
+For GitLab integration, create a group access token:
+
+1. Go to your GitLab group → Settings → Access Tokens
+2. Create token with scopes:
+   - `api`
+   - `read_repository`
+   - `write_repository`
+
+The token will be encrypted and stored in the database.
+
+## Example `.env` File
+
+```bash .env
+# Database
+DATABASE_URL=postgres://detent:password@localhost:5432/detent
+
+# GitHub App
+GITHUB_APP_ID=123456
+GITHUB_CLIENT_ID=Iv1.abc123def456
+GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\nMIIE...\n-----END RSA PRIVATE KEY-----"
+GITHUB_WEBHOOK_SECRET=whsec_abc123
+
+# WorkOS
+WORKOS_CLIENT_ID=client_01ABC
+WORKOS_API_KEY=sk_test_abc123
+
+# Rate Limiting
+UPSTASH_REDIS_REST_URL=https://global-abc.upstash.io
+UPSTASH_REDIS_REST_TOKEN=AaBbCc123
+
+# Security
+ENCRYPTION_KEY=base64encodedkey==
+ALLOWED_ORIGINS=https://app.detent.sh,https://localhost:3000
+ALLOWED_REDIRECT_URIS=https://app.detent.sh/auth/callback
+```
+
+## Validating Configuration
+
+Run the health check to verify configuration:
+
+```bash
+curl https://api.your-domain.com/health
+```
+
+Expected response:
+
+```json
+{
+  "status": "ok",
+  "database": "connected",
+  "redis": "connected"
+}
+```

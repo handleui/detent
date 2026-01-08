@@ -2,6 +2,9 @@
 # Install script tests - run with: bash install.sh.test
 # Requires: bash, curl, tar, shasum
 #
+# Options:
+#   --static-only  Skip integration tests (useful for PRs before deployment)
+#
 # These tests validate the install script logic WITHOUT actually installing.
 # Run in CI after any changes to install.sh
 
@@ -11,6 +14,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_SCRIPT="$SCRIPT_DIR/install.sh"
 TEST_DIR=$(mktemp -d)
 trap 'rm -rf "$TEST_DIR"' EXIT
+
+# Parse arguments
+STATIC_ONLY=false
+if [ "${1:-}" = "--static-only" ]; then
+  STATIC_ONLY=true
+fi
 
 PASS=0
 FAIL=0
@@ -177,11 +186,17 @@ test_https_urls
 test_temp_cleanup
 test_binary_permissions
 
-echo ""
-echo "--- Integration Tests ---"
-test_manifest_accessible
-test_install_script_served
-test_checksums_exist
+if [ "$STATIC_ONLY" = false ]; then
+  echo ""
+  echo "--- Integration Tests ---"
+  test_manifest_accessible
+  test_install_script_served
+  test_checksums_exist
+else
+  echo ""
+  echo "--- Integration Tests ---"
+  echo "(skipped: --static-only flag set)"
+fi
 
 echo ""
 echo "=== Results ==="

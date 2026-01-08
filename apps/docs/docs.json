@@ -30,24 +30,20 @@
         }
       ]
     },
-    "products": [
+    "groups": [
       {
-        "product": "Detent CLI",
-        "description": "Run CI locally and fix errors with AI",
-        "groups": [
-          {
-            "group": "Get Started",
-            "pages": [
-              "cli/welcome",
-              "cli/quickstart",
-              "cli/installation",
-              "cli/concepts"
-            ]
-          },
-          {
-            "group": "Core",
-            "pages": ["cli/check", "cli/heal"]
-          },
+        "group": "Getting Started",
+        "icon": "rocket",
+        "pages": ["introduction", "quickstart", "key-features"]
+      },
+      {
+        "group": "CLI",
+        "icon": "terminal",
+        "pages": [
+          "cli/installation",
+          "cli/concepts",
+          "cli/check",
+          "cli/heal",
           {
             "group": "Healing",
             "pages": ["cli/how-healing-works", "cli/budget", "cli/tools"]
@@ -56,6 +52,29 @@
             "group": "Configuration",
             "pages": ["cli/settings", "cli/workflows", "cli/trust"]
           }
+        ]
+      },
+      {
+        "group": "Self-Hosting",
+        "icon": "server",
+        "pages": [
+          "self-hosting/overview",
+          "self-hosting/architecture",
+          "self-hosting/docker-compose",
+          "self-hosting/kubernetes",
+          "self-hosting/configuration",
+          "self-hosting/security"
+        ]
+      },
+      {
+        "group": "API Reference",
+        "icon": "code",
+        "pages": [
+          "api/introduction",
+          "api/authentication",
+          "api/webhooks",
+          "api/repositories",
+          "api/checks"
         ]
       }
     ]
@@ -71,7 +90,7 @@
   },
   "background": {
     "color": {
-      "light": "#f8f8f8",
+      "light": "#ffffff",
       "dark": "#000000"
     }
   },

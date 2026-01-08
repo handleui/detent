@@ -1,0 +1,244 @@
+---
+title: Checks & Healing
+description: CI check execution and AI-powered healing
+---
+
+The Checks API allows you to parse CI configurations, execute checks, and trigger AI-powered healing.
+
+<Note>
+Most check operations are performed locally via the CLI. The API provides coordination and healing orchestration.
+</Note>
+
+## Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/v1/parse` | Parse CI configuration |
+| `POST` | `/v1/heal` | Request AI healing |
+
+## Parse CI Configuration
+
+Parse a CI configuration file and return structured workflow information.
+
+```bash
+POST /v1/parse
+```
+
+### Request Body
+
+```json
+{
+  "config_type": "github_actions",
+  "config_content": "name: CI\non: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: npm test"
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `config_type` | Yes | `github_actions` or `gitlab_ci` |
+| `config_content` | Yes | Raw YAML content |
+
+### Response
+
+```json
+{
+  "workflows": [
+    {
+      "name": "CI",
+      "jobs": [
+        {
+          "name": "test",
+          "steps": [
+            {
+              "type": "run",
+              "command": "npm test"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+## Request Healing
+
+Request AI-powered analysis and fixes for CI failures.
+
+```bash
+POST /v1/heal
+```
+
+### Request Body
+
+```json
+{
+  "project_id": "550e8400-e29b-41d4-a716-446655440000",
+  "error_output": "Error: Cannot find module 'lodash'\n    at Function.Module._resolveFilename...",
+  "error_type": "build",
+  "file_context": {
+    "package.json": "{\"dependencies\": {...}}",
+    "src/index.ts": "import _ from 'lodash';"
+  },
+  "dry_run": false
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `project_id` | Yes | Project UUID |
+| `error_output` | Yes | Raw error output from CI |
+| `error_type` | No | Hint: `lint`, `type`, `test`, `build` |
+| `file_context` | No | Relevant file contents |
+| `dry_run` | No | If true, returns suggestions without applying |
+
+### Response
+
+```json
+{
+  "status": "success",
+  "fixes": [
+    {
+      "file": "package.json",
+      "action": "edit",
+      "description": "Add missing lodash dependency",
+      "diff": "@@ -5,6 +5,7 @@\n   \"dependencies\": {\n+    \"lodash\": \"^4.17.21\",\n   }"
+    }
+  ],
+  "explanation": "The error indicates that the 'lodash' module is imported but not listed in package.json dependencies.",
+  "tokens_used": 1250
+}
+```
+
+## CLI Integration
+
+The CLI handles most check operations locally:
+
+### Running Checks
+
+```bash
+# Run all checks for changed files
+detent check
+
+# Run specific workflow
+detent check --workflow lint
+
+# Force check all files (ignore cache)
+detent check --force
+```
+
+### Healing Flow
+
+```bash
+# Automatically heal failures
+detent heal
+
+# Preview fixes without applying
+detent heal --dry-run
+
+# Set token budget
+detent heal --budget 5000
+```
+
+## Error Types
+
+The healing system recognizes these error categories:
+
+| Type | Description | Example |
+|------|-------------|---------|
+| `lint` | Code style violations | ESLint, Biome errors |
+| `type` | Type checking failures | TypeScript errors |
+| `test` | Test failures | Jest assertion errors |
+| `build` | Build/compilation errors | Missing imports, syntax |
+
+## Healing Process
+
+```
+1. Parse Error
+   └─▶ Extract structured error info from raw output
+
+2. Gather Context
+   └─▶ Read relevant source files
+   └─▶ Analyze dependencies
+
+3. AI Analysis
+   └─▶ Send to Claude/GPT with error context
+   └─▶ Receive fix suggestions
+
+4. Apply Fixes
+   └─▶ Edit files with suggested changes
+   └─▶ Track modifications
+
+5. Verify
+   └─▶ Re-run failing check
+   └─▶ Confirm fix worked
+```
+
+## Budget Management
+
+Control AI token usage with budgets:
+
+```bash
+# View current budget
+detent budget
+
+# Set per-heal budget
+detent heal --budget 10000
+
+# Set global budget in config
+detent config set healing.budget 50000
+```
+
+### Budget Response
+
+```json
+{
+  "status": "budget_exceeded",
+  "tokens_requested": 15000,
+  "tokens_available": 10000,
+  "message": "Healing would exceed budget. Use --budget to increase."
+}
+```
+
+## Trust Levels
+
+Configure which tools can be used for healing:
+
+```bash
+# View trusted tools
+detent trust
+
+# Add trusted tool
+detent trust add eslint
+
+# Remove trust
+detent trust remove eslint
+```
+
+Tools are organized by trust level:
+
+| Level | Description | Examples |
+|-------|-------------|----------|
+| `safe` | Read-only, no side effects | `eslint --fix`, `prettier` |
+| `modify` | Can modify files | `npm install` |
+| `execute` | Can run arbitrary code | Custom scripts |
+
+## Rate Limits
+
+Healing requests are rate limited:
+
+| Tier | Requests/hour | Tokens/hour |
+|------|---------------|-------------|
+| Free | 10 | 50,000 |
+| Pro | 100 | 500,000 |
+| Enterprise | Unlimited | Custom |
+
+## Webhooks
+
+Healing can also be triggered via GitHub webhooks:
+
+```
+@detent heal
+```
+
+Comment this on a PR with failing CI to trigger remote healing. See [Webhooks](/api/webhooks) for details.

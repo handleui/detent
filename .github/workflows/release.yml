@@ -15,6 +15,9 @@ jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.check-tag.outputs.tag }}
+      should-build: ${{ steps.check-tag.outputs.should-build }}
 
     steps:
       - name: Checkout
@@ -30,6 +33,18 @@ jobs:
       - name: Install dependencies
         run: bun install
 
+      - name: Get current version tag
+        id: pre-release
+        run: |
+          VERSION=$(node -p "require('./apps/cli/package.json').version")
+          TAG="v$VERSION"
+          if git ls-remote --tags origin | grep -q "refs/tags/${TAG}$"; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
       - name: Create Release PR or Publish
         uses: changesets/action@v1
         with:
@@ -39,3 +54,27 @@ jobs:
           title: "chore: release"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check if tag was created
+        id: check-tag
+        run: |
+          VERSION=$(node -p "require('./apps/cli/package.json').version")
+          TAG="v$VERSION"
+          # Only trigger build if tag didn't exist before but exists now
+          if [ "${{ steps.pre-release.outputs.exists }}" = "false" ] && git ls-remote --tags origin | grep -q "refs/tags/${TAG}$"; then
+            echo "Tag $TAG was just created, triggering build"
+            echo "tag=$TAG" >> $GITHUB_OUTPUT
+            echo "should-build=true" >> $GITHUB_OUTPUT
+          else
+            echo "No new tag created (tag=$TAG, pre-existed=${{ steps.pre-release.outputs.exists }})"
+            echo "should-build=false" >> $GITHUB_OUTPUT
+          fi
+
+  build:
+    name: Build
+    needs: release
+    if: needs.release.outputs.should-build == 'true'
+    uses: ./.github/workflows/build.yml
+    with:
+      ref: ${{ needs.release.outputs.tag }}
+    secrets: inherit

@@ -1,0 +1,544 @@
+/**
+ * Projects API routes
+ *
+ * Manages project registration - linking repositories to organizations.
+ * Projects are created when users run `detent link` in their repo.
+ */
+
+import { and, eq, isNull } from "drizzle-orm";
+import { Hono } from "hono";
+import { createDb } from "../db/client";
+import { organizations, projects } from "../db/schema";
+import { getVerifiedGitHubIdentity } from "../lib/github-identity";
+import { verifyGitHubMembership } from "../lib/github-membership";
+import { validateHandle, validateSlug, validateUUID } from "../lib/validation";
+import type { Env } from "../types/env";
+
+interface OrgForVerification {
+  id: string;
+  provider: string;
+  providerAccountLogin: string;
+  providerInstallationId: string | null;
+  providerAccountType: string;
+  providerAccountId: string;
+  installerGithubId: string | null;
+}
+
+interface OrgAccessResult {
+  allowed: boolean;
+  role?: "owner" | "admin" | "member";
+  error?: string;
+}
+
+/**
+ * Verify user has access to an organization via on-demand GitHub membership check.
+ * This replaces stale database lookups with real-time verification.
+ */
+const verifyOrgAccess = async (
+  userId: string,
+  org: OrgForVerification,
+  env: Env
+): Promise<OrgAccessResult> => {
+  // Only GitHub orgs supported
+  if (org.provider !== "github" || !org.providerInstallationId) {
+    return { allowed: false, error: "GitHub App not installed" };
+  }
+
+  // Get verified GitHub identity
+  const githubIdentity = await getVerifiedGitHubIdentity(
+    userId,
+    env.WORKOS_API_KEY
+  );
+  if (!githubIdentity) {
+    return { allowed: false, error: "GitHub account not linked" };
+  }
+
+  // For personal accounts, check if user is the owner
+  if (org.providerAccountType === "user") {
+    if (githubIdentity.userId === org.providerAccountId) {
+      return { allowed: true, role: "owner" };
+    }
+    return { allowed: false, error: "Not the owner of this account" };
+  }
+
+  // Verify GitHub org membership
+  const membership = await verifyGitHubMembership(
+    githubIdentity.username,
+    org.providerAccountLogin,
+    org.providerInstallationId,
+    env
+  );
+
+  if (!membership.isMember) {
+    return {
+      allowed: false,
+      error: "Not a member of this GitHub organization",
+    };
+  }
+
+  // Determine role
+  let role: "owner" | "admin" | "member" = "member";
+  if (org.installerGithubId === githubIdentity.userId) {
+    role = "owner";
+  } else if (membership.role === "admin") {
+    role = "admin";
+  }
+
+  return { allowed: true, role };
+};
+
+const app = new Hono<{ Bindings: Env }>();
+
+/**
+ * POST /
+ * Register a project (link a repository to an organization)
+ */
+app.post("/", async (c) => {
+  const auth = c.get("auth");
+  const body = await c.req.json<{
+    organization_id: string;
+    provider_repo_id: string;
+    provider_repo_name: string;
+    provider_repo_full_name: string;
+    provider_default_branch?: string;
+    is_private?: boolean;
+    handle?: string; // Optional custom handle, defaults to lowercase repo name
+  }>();
+
+  const {
+    organization_id: organizationId,
+    provider_repo_id: providerRepoId,
+    provider_repo_name: providerRepoName,
+    provider_repo_full_name: providerRepoFullName,
+    provider_default_branch: providerDefaultBranch,
+    is_private: isPrivate,
+    handle: customHandle,
+  } = body;
+
+  if (
+    !(
+      organizationId &&
+      providerRepoId &&
+      providerRepoName &&
+      providerRepoFullName
+    )
+  ) {
+    return c.json(
+      {
+        error:
+          "organization_id, provider_repo_id, provider_repo_name, and provider_repo_full_name are required",
+      },
+      400
+    );
+  }
+
+  // Validate organization_id format
+  const orgValidation = validateUUID(organizationId, "organization_id");
+  if (!orgValidation.valid) {
+    return c.json({ error: orgValidation.error }, 400);
+  }
+
+  // Validate custom handle if provided
+  if (customHandle) {
+    const handleValidation = validateHandle(customHandle, "handle");
+    if (!handleValidation.valid) {
+      return c.json({ error: handleValidation.error }, 400);
+    }
+  }
+
+  const { db, client } = await createDb(c.env);
+  try {
+    // Fetch the organization
+    const org = await db.query.organizations.findFirst({
+      where: eq(organizations.id, organizationId),
+    });
+
+    if (!org) {
+      return c.json({ error: "Organization not found" }, 404);
+    }
+
+    // Check if organization is suspended or deleted
+    if (org.suspendedAt) {
+      return c.json({ error: "Organization is suspended" }, 403);
+    }
+
+    if (org.deletedAt) {
+      return c.json({ error: "Organization has been deleted" }, 404);
+    }
+
+    // Verify user has access via on-demand GitHub membership check
+    const access = await verifyOrgAccess(auth.userId, org, c.env);
+    if (!access.allowed) {
+      return c.json({ error: access.error }, 403);
+    }
+
+    // Check if project already exists for this repo in this organization
+    const existingProject = await db.query.projects.findFirst({
+      where: and(
+        eq(projects.organizationId, organizationId),
+        eq(projects.providerRepoId, providerRepoId),
+        isNull(projects.removedAt)
+      ),
+    });
+
+    if (existingProject) {
+      // Project already exists, return it
+      return c.json({
+        project_id: existingProject.id,
+        organization_id: existingProject.organizationId,
+        handle: existingProject.handle,
+        provider_repo_id: existingProject.providerRepoId,
+        provider_repo_name: existingProject.providerRepoName,
+        provider_repo_full_name: existingProject.providerRepoFullName,
+        provider_default_branch: existingProject.providerDefaultBranch,
+        is_private: existingProject.isPrivate,
+        created: false,
+      });
+    }
+
+    // Create the project
+    const projectId = crypto.randomUUID();
+    // Handle defaults to lowercase repo name for URL-friendly routing
+    const handle =
+      customHandle?.toLowerCase() ?? providerRepoName.toLowerCase();
+
+    await db.insert(projects).values({
+      id: projectId,
+      organizationId,
+      handle,
+      providerRepoId,
+      providerRepoName,
+      providerRepoFullName,
+      providerDefaultBranch: providerDefaultBranch ?? null,
+      isPrivate: isPrivate ?? false,
+    });
+
+    return c.json(
+      {
+        project_id: projectId,
+        organization_id: organizationId,
+        handle,
+        provider_repo_id: providerRepoId,
+        provider_repo_name: providerRepoName,
+        provider_repo_full_name: providerRepoFullName,
+        provider_default_branch: providerDefaultBranch ?? null,
+        is_private: isPrivate ?? false,
+        created: true,
+      },
+      201
+    );
+  } finally {
+    await client.end();
+  }
+});
+
+/**
+ * GET /
+ * List projects for an organization
+ */
+app.get("/", async (c) => {
+  const auth = c.get("auth");
+  const organizationId = c.req.query("organization_id");
+
+  if (!organizationId) {
+    return c.json({ error: "organization_id is required" }, 400);
+  }
+
+  // Validate organization_id format
+  const orgValidation = validateUUID(organizationId, "organization_id");
+  if (!orgValidation.valid) {
+    return c.json({ error: orgValidation.error }, 400);
+  }
+
+  const { db, client } = await createDb(c.env);
+  try {
+    // Fetch the organization
+    const org = await db.query.organizations.findFirst({
+      where: eq(organizations.id, organizationId),
+    });
+
+    if (!org) {
+      return c.json({ error: "Organization not found" }, 404);
+    }
+
+    // Verify user has access via on-demand GitHub membership check
+    const access = await verifyOrgAccess(auth.userId, org, c.env);
+    if (!access.allowed) {
+      return c.json({ error: access.error }, 403);
+    }
+
+    // Get all active projects for this organization
+    const organizationProjects = await db.query.projects.findMany({
+      where: and(
+        eq(projects.organizationId, organizationId),
+        isNull(projects.removedAt)
+      ),
+    });
+
+    return c.json({
+      projects: organizationProjects.map((p) => ({
+        project_id: p.id,
+        organization_id: p.organizationId,
+        handle: p.handle,
+        provider_repo_id: p.providerRepoId,
+        provider_repo_name: p.providerRepoName,
+        provider_repo_full_name: p.providerRepoFullName,
+        provider_default_branch: p.providerDefaultBranch,
+        is_private: p.isPrivate,
+        created_at: p.createdAt.toISOString(),
+      })),
+    });
+  } finally {
+    await client.end();
+  }
+});
+
+/**
+ * GET /lookup
+ * Look up a project by repo full name
+ * IMPORTANT: This route must be defined BEFORE /:projectId to prevent /lookup being treated as a projectId
+ */
+app.get("/lookup", async (c) => {
+  const auth = c.get("auth");
+  const repoFullName = c.req.query("repo");
+
+  if (!repoFullName) {
+    return c.json({ error: "repo query parameter is required" }, 400);
+  }
+
+  const { db, client } = await createDb(c.env);
+  try {
+    // Find project by repo full name, including organization for verification
+    const project = await db.query.projects.findFirst({
+      where: and(
+        eq(projects.providerRepoFullName, repoFullName),
+        isNull(projects.removedAt)
+      ),
+      with: { organization: true },
+    });
+
+    if (!project) {
+      return c.json({ error: "Project not found" }, 404);
+    }
+
+    // Verify user has access via on-demand GitHub membership check
+    const access = await verifyOrgAccess(
+      auth.userId,
+      project.organization,
+      c.env
+    );
+    if (!access.allowed) {
+      return c.json({ error: access.error }, 403);
+    }
+
+    return c.json({
+      project_id: project.id,
+      organization_id: project.organizationId,
+      organization_name: project.organization.name,
+      organization_slug: project.organization.slug,
+      handle: project.handle,
+      provider_repo_id: project.providerRepoId,
+      provider_repo_name: project.providerRepoName,
+      provider_repo_full_name: project.providerRepoFullName,
+      provider_default_branch: project.providerDefaultBranch,
+      is_private: project.isPrivate,
+      created_at: project.createdAt.toISOString(),
+    });
+  } finally {
+    await client.end();
+  }
+});
+
+/**
+ * GET /by-handle
+ * Look up a project by organization slug and project handle
+ * Enables @-style routing: @gh/handleui/api -> org=gh/handleui&handle=api
+ */
+app.get("/by-handle", async (c) => {
+  const auth = c.get("auth");
+  const orgSlug = c.req.query("org");
+  const projectHandle = c.req.query("handle");
+
+  if (!(orgSlug && projectHandle)) {
+    return c.json(
+      { error: "org and handle query parameters are required" },
+      400
+    );
+  }
+
+  // Validate slug and handle format
+  const slugValidation = validateSlug(orgSlug, "org");
+  if (!slugValidation.valid) {
+    return c.json({ error: slugValidation.error }, 400);
+  }
+
+  const handleValidation = validateHandle(projectHandle, "handle");
+  if (!handleValidation.valid) {
+    return c.json({ error: handleValidation.error }, 400);
+  }
+
+  const { db, client } = await createDb(c.env);
+  try {
+    // Find org by slug
+    const org = await db.query.organizations.findFirst({
+      where: and(
+        eq(organizations.slug, orgSlug),
+        isNull(organizations.deletedAt)
+      ),
+    });
+
+    if (!org) {
+      return c.json({ error: "Organization not found" }, 404);
+    }
+
+    // Verify user has access via on-demand GitHub membership check
+    const access = await verifyOrgAccess(auth.userId, org, c.env);
+    if (!access.allowed) {
+      return c.json({ error: access.error }, 403);
+    }
+
+    // Find project by handle
+    const project = await db.query.projects.findFirst({
+      where: and(
+        eq(projects.organizationId, org.id),
+        eq(projects.handle, projectHandle.toLowerCase()),
+        isNull(projects.removedAt)
+      ),
+    });
+
+    if (!project) {
+      return c.json({ error: "Project not found" }, 404);
+    }
+
+    return c.json({
+      project_id: project.id,
+      organization_id: org.id,
+      organization_name: org.name,
+      organization_slug: org.slug,
+      handle: project.handle,
+      provider_repo_id: project.providerRepoId,
+      provider_repo_name: project.providerRepoName,
+      provider_repo_full_name: project.providerRepoFullName,
+      provider_default_branch: project.providerDefaultBranch,
+      is_private: project.isPrivate,
+      created_at: project.createdAt.toISOString(),
+    });
+  } finally {
+    await client.end();
+  }
+});
+
+/**
+ * GET /:projectId
+ * Get a specific project
+ */
+app.get("/:projectId", async (c) => {
+  const auth = c.get("auth");
+  const projectId = c.req.param("projectId");
+
+  // Validate projectId format
+  const validation = validateUUID(projectId, "projectId");
+  if (!validation.valid) {
+    return c.json({ error: validation.error }, 400);
+  }
+
+  const { db, client } = await createDb(c.env);
+  try {
+    // Get the project with organization for verification
+    const project = await db.query.projects.findFirst({
+      where: and(eq(projects.id, projectId), isNull(projects.removedAt)),
+      with: { organization: true },
+    });
+
+    if (!project) {
+      return c.json({ error: "Project not found" }, 404);
+    }
+
+    // Verify user has access via on-demand GitHub membership check
+    const access = await verifyOrgAccess(
+      auth.userId,
+      project.organization,
+      c.env
+    );
+    if (!access.allowed) {
+      return c.json({ error: access.error }, 403);
+    }
+
+    return c.json({
+      project_id: project.id,
+      organization_id: project.organizationId,
+      organization_name: project.organization.name,
+      organization_slug: project.organization.slug,
+      handle: project.handle,
+      provider_repo_id: project.providerRepoId,
+      provider_repo_name: project.providerRepoName,
+      provider_repo_full_name: project.providerRepoFullName,
+      provider_default_branch: project.providerDefaultBranch,
+      is_private: project.isPrivate,
+      created_at: project.createdAt.toISOString(),
+    });
+  } finally {
+    await client.end();
+  }
+});
+
+/**
+ * DELETE /:projectId
+ * Remove a project (soft delete)
+ */
+app.delete("/:projectId", async (c) => {
+  const auth = c.get("auth");
+  const projectId = c.req.param("projectId");
+
+  // Validate projectId format
+  const validation = validateUUID(projectId, "projectId");
+  if (!validation.valid) {
+    return c.json({ error: validation.error }, 400);
+  }
+
+  const { db, client } = await createDb(c.env);
+  try {
+    // Get the project with organization for verification
+    const project = await db.query.projects.findFirst({
+      where: and(eq(projects.id, projectId), isNull(projects.removedAt)),
+      with: { organization: true },
+    });
+
+    if (!project) {
+      return c.json({ error: "Project not found" }, 404);
+    }
+
+    // Verify user has access via on-demand GitHub membership check
+    const access = await verifyOrgAccess(
+      auth.userId,
+      project.organization,
+      c.env
+    );
+    if (!access.allowed) {
+      return c.json({ error: access.error }, 403);
+    }
+
+    // Only admins and owners can delete projects
+    if (access.role === "member") {
+      return c.json(
+        { error: "Only organization owners and admins can remove projects" },
+        403
+      );
+    }
+
+    // Soft delete the project
+    await db
+      .update(projects)
+      .set({
+        removedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(projects.id, projectId));
+
+    return c.json({ success: true });
+  } finally {
+    await client.end();
+  }
+});
+
+export default app;

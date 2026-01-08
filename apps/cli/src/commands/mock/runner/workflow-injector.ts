@@ -39,6 +39,14 @@ const VALID_JOB_ID_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_-]*$/;
 // Max length for run command display names
 const MAX_RUN_COMMAND_DISPLAY = 40;
 
+// Shell sanitization patterns (compiled once at module level)
+const NEWLINE_PATTERN = /\n/g;
+const CARRIAGE_RETURN_PATTERN = /\r/g;
+const TAB_PATTERN = /\t/g;
+// biome-ignore lint/suspicious/noControlCharactersInRegex: Null bytes must be stripped for shell safety
+const NULL_BYTE_PATTERN = /\x00/g;
+const SINGLE_QUOTE_PATTERN = /'/g;
+
 /**
  * Parses needs field which can be a string or array.
  */
@@ -303,12 +311,11 @@ const getStepDisplayName = (step: Record<string, unknown>): string => {
  */
 const sanitizeForShellEcho = (s: string): string => {
   let result = s;
-  result = result.replace(/\n/g, " ");
-  result = result.replace(/\r/g, " ");
-  result = result.replace(/\t/g, " ");
-  // biome-ignore lint/suspicious/noControlCharactersInRegex: Null bytes must be stripped for shell safety
-  result = result.replace(/\x00/g, "");
-  result = result.replace(/'/g, "'\\''");
+  result = result.replace(NEWLINE_PATTERN, " ");
+  result = result.replace(CARRIAGE_RETURN_PATTERN, " ");
+  result = result.replace(TAB_PATTERN, " ");
+  result = result.replace(NULL_BYTE_PATTERN, "");
+  result = result.replace(SINGLE_QUOTE_PATTERN, "'\\''");
   return result;
 };
 

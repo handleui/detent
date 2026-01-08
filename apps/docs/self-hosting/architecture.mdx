@@ -1,0 +1,173 @@
+---
+title: System Architecture
+description: How Detent components work together
+---
+
+Detent consists of several components that work together to provide local CI execution and AI-powered healing.
+
+## High-Level Overview
+
+```
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│   Detent CLI    │────▶│   Detent API    │────▶│   PostgreSQL    │
+│   (Local)       │     │   (Hono/CF)     │     │   (Database)    │
+└─────────────────┘     └─────────────────┘     └─────────────────┘
+        │                       │
+        │                       ▼
+        │               ┌─────────────────┐
+        │               │   Upstash       │
+        │               │   (Rate Limit)  │
+        │               └─────────────────┘
+        │                       │
+        ▼                       ▼
+┌─────────────────┐     ┌─────────────────┐
+│   GitHub/GitLab │◀───▶│   WorkOS        │
+│   (CI Provider) │     │   (Auth)        │
+└─────────────────┘     └─────────────────┘
+```
+
+## Components
+
+### Detent CLI
+
+The command-line tool that developers interact with directly. It:
+
+- Parses CI configuration files (GitHub Actions, GitLab CI)
+- Executes workflows locally using system tools
+- Communicates with the API for healing and sync
+- Caches results for faster subsequent runs
+
+**Tech Stack**: TypeScript, Commander.js, ink (React for CLI)
+
+### Detent API
+
+The backend service that handles:
+
+- Authentication via WorkOS JWT tokens
+- GitHub/GitLab webhook processing
+- Organization and project management
+- AI healing orchestration
+
+**Tech Stack**: Hono framework, Cloudflare Workers (or Node.js)
+
+### Database
+
+PostgreSQL stores:
+
+| Table | Purpose |
+|-------|---------|
+| `organizations` | GitHub orgs/GitLab groups linked to Detent |
+| `organization_members` | User memberships and roles |
+| `projects` | Repositories registered with Detent |
+| `enterprises` | Multi-org grouping (future) |
+
+**Supported**: PostgreSQL 15+, Neon, Supabase, Cloudflare Hyperdrive
+
+### Rate Limiting
+
+Upstash Redis provides distributed rate limiting:
+
+- Per-user request limits
+- Per-organization quotas
+- Sliding window algorithm
+
+### Authentication
+
+WorkOS handles:
+
+- User sign-up and sign-in
+- OAuth with GitHub/GitLab
+- JWT token generation and validation
+- Organization management
+
+## Data Flow
+
+### 1. CLI Check Flow
+
+```
+Developer runs `detent check`
+        │
+        ▼
+CLI parses .github/workflows/*.yml
+        │
+        ▼
+CLI identifies changed files (git diff)
+        │
+        ▼
+CLI runs relevant workflow steps locally
+        │
+        ▼
+Results displayed in terminal
+```
+
+### 2. Healing Flow
+
+```
+Developer runs `detent heal`
+        │
+        ▼
+CLI sends error context to API
+        │
+        ▼
+API validates auth & rate limits
+        │
+        ▼
+API calls AI provider (Anthropic/OpenAI)
+        │
+        ▼
+API returns fix suggestions
+        │
+        ▼
+CLI applies fixes locally
+        │
+        ▼
+CLI re-runs check to verify
+```
+
+### 3. Webhook Flow
+
+```
+Developer pushes to GitHub/GitLab
+        │
+        ▼
+Provider sends webhook to API
+        │
+        ▼
+API verifies webhook signature
+        │
+        ▼
+API updates project/org state
+        │
+        ▼
+(Future) Triggers background checks
+```
+
+## Security Model
+
+### API Authentication
+
+- All protected routes require JWT from WorkOS
+- Tokens validated on every request
+- Organization membership verified for resource access
+
+### Webhook Verification
+
+- GitHub: HMAC-SHA256 signature verification
+- GitLab: Secret token header validation
+
+### Data Encryption
+
+- GitLab access tokens encrypted at rest (AES-256-GCM)
+- Database connections use TLS
+- Secrets managed via environment variables
+
+## Scaling Considerations
+
+| Component | Scaling Strategy |
+|-----------|------------------|
+| API | Horizontal (stateless workers) |
+| Database | Vertical + read replicas |
+| Redis | Upstash auto-scaling |
+| CLI | Runs locally (no scaling needed) |
+
+For high-availability production deployments, see [Kubernetes deployment](/self-hosting/kubernetes).

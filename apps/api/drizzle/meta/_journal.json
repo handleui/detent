@@ -5,8 +5,43 @@
     {
       "idx": 0,
       "version": "7",
-      "when": 1767750905761,
-      "tag": "0000_purple_photon",
+      "when": 1767811015907,
+      "tag": "0000_hard_moon_knight",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1767811660144,
+      "tag": "0001_lame_red_hulk",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1767813401064,
+      "tag": "0002_pale_albert_cleary",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1767815779021,
+      "tag": "0003_dry_nightshade",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1767819452783,
+      "tag": "0004_amusing_cargill",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1767823224069,
+      "tag": "0005_peaceful_firedrake",
       "breakpoints": true
     }
   ]

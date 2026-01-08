@@ -1,6 +1,6 @@
 {
   "name": "@detent/api",
-  "version": "0.2.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -12,12 +12,15 @@
     "test:watch": "vitest",
     "cf-typegen": "wrangler types --env-interface CloudflareBindings",
     "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio"
   },
   "dependencies": {
     "@detent/healing": "*",
     "@detent/parser": "*",
+    "@upstash/ratelimit": "^2.0.7",
+    "@upstash/redis": "^1.36.0",
     "drizzle-orm": "^0.45.1",
     "hono": "^4.11.3",
     "jose": "^6.0.10",

@@ -13,6 +13,32 @@ const PEM_END_PKCS8 = /-----END PRIVATE KEY-----/;
 const WHITESPACE = /\s/g;
 const BASE64_TRAILING_EQUALS = /=+$/;
 
+// Validation patterns for GitHub identifiers
+// Owner/repo names: alphanumeric, hyphen, underscore, period (not starting with period)
+const GITHUB_NAME_PATTERN = /^[a-zA-Z0-9][-a-zA-Z0-9._]*$/;
+// Branch names: more permissive but no path traversal
+const GITHUB_BRANCH_PATTERN = /^[a-zA-Z0-9][-a-zA-Z0-9._/]*$/;
+
+const isValidGitHubName = (name: string): boolean => {
+  return (
+    name.length > 0 &&
+    name.length <= 100 &&
+    GITHUB_NAME_PATTERN.test(name) &&
+    !name.includes("..")
+  );
+};
+
+const isValidBranchName = (branch: string): boolean => {
+  return (
+    branch.length > 0 &&
+    branch.length <= 255 &&
+    GITHUB_BRANCH_PATTERN.test(branch) &&
+    !branch.includes("..") &&
+    !branch.startsWith("/") &&
+    !branch.endsWith("/")
+  );
+};
+
 interface GitHubServiceConfig {
   appId: string;
   privateKey: string;
@@ -122,14 +148,40 @@ interface RefResponse {
   object: { sha: string };
 }
 
-export const createGitHubService = (env: Env) => {
+interface InstallationInfo {
+  id: number;
+  account: {
+    id: number;
+    login: string;
+    type: "Organization" | "User";
+    avatar_url?: string;
+  };
+  suspended_at: string | null;
+}
+
+interface InstallationReposResponse {
+  total_count: number;
+  repositories: Array<{
+    id: number;
+    name: string;
+    full_name: string;
+    private: boolean;
+    default_branch: string;
+  }>;
+}
+
+// Module-level cache for installation tokens (survives across function calls within isolate)
+const tokenCache = new Map<number, { token: string; expiresAt: number }>();
+
+// Module-level singleton for GitHub service instance
+let cachedService: ReturnType<typeof createGitHubServiceInternal> | null = null;
+let cachedAppId: string | null = null;
+
+const createGitHubServiceInternal = (env: Env) => {
   const config: GitHubServiceConfig = {
     appId: env.GITHUB_APP_ID,
     privateKey: env.GITHUB_APP_PRIVATE_KEY,
   };
-
-  // Cache for installation tokens (they last 1 hour)
-  const tokenCache = new Map<number, { token: string; expiresAt: number }>();
 
   const getInstallationToken = async (
     installationId: number
@@ -137,6 +189,9 @@ export const createGitHubService = (env: Env) => {
     // Check cache first
     const cached = tokenCache.get(installationId);
     if (cached && cached.expiresAt > Date.now() + 60_000) {
+      console.log(
+        `[github] Token cache hit for installation ${installationId}`
+      );
       return cached.token;
     }
 
@@ -185,6 +240,11 @@ export const createGitHubService = (env: Env) => {
     repo: string,
     runId: number
   ): Promise<string> => {
+    // Validate inputs to prevent URL manipulation
+    if (!(isValidGitHubName(owner) && isValidGitHubName(repo))) {
+      throw new Error("Invalid owner or repo name");
+    }
+
     // GitHub returns a redirect to a zip file containing logs
     const response = await fetch(
       `${GITHUB_API}/repos/${owner}/${repo}/actions/runs/${runId}/logs`,
@@ -211,8 +271,8 @@ export const createGitHubService = (env: Env) => {
       `[github] Fetched logs for ${owner}/${repo} run ${runId} (${blob.size} bytes)`
     );
 
-    // TODO: Unzip and extract relevant job logs
-    // For MVP, we'll need to add a zip library or use a different approach
+    // Future: Unzip and extract relevant job logs
+    // Log extraction will require a zip library (e.g., pako or fflate)
     return `[Log archive: ${blob.size} bytes - extraction not yet implemented]`;
   };
 
@@ -223,6 +283,11 @@ export const createGitHubService = (env: Env) => {
     issueNumber: number,
     body: string
   ): Promise<void> => {
+    // Validate inputs to prevent URL manipulation
+    if (!(isValidGitHubName(owner) && isValidGitHubName(repo))) {
+      throw new Error("Invalid owner or repo name");
+    }
+
     const response = await fetch(
       `${GITHUB_API}/repos/${owner}/${repo}/issues/${issueNumber}/comments`,
       {
@@ -254,6 +319,14 @@ export const createGitHubService = (env: Env) => {
     message: string,
     files: Array<{ path: string; content: string }>
   ): Promise<string> => {
+    // Validate inputs to prevent URL manipulation
+    if (!(isValidGitHubName(owner) && isValidGitHubName(repo))) {
+      throw new Error("Invalid owner or repo name");
+    }
+    if (!isValidBranchName(branch)) {
+      throw new Error("Invalid branch name");
+    }
+
     const headers = {
       Authorization: `Bearer ${token}`,
       Accept: "application/vnd.github+json",
@@ -351,6 +424,11 @@ export const createGitHubService = (env: Env) => {
     repo: string,
     runId: number
   ): Promise<number | null> => {
+    // Validate inputs to prevent URL manipulation
+    if (!(isValidGitHubName(owner) && isValidGitHubName(repo))) {
+      throw new Error("Invalid owner or repo name");
+    }
+
     const response = await fetch(
       `${GITHUB_API}/repos/${owner}/${repo}/actions/runs/${runId}`,
       {
@@ -373,8 +451,85 @@ export const createGitHubService = (env: Env) => {
     return firstPR?.number ?? null;
   };
 
+  const getInstallationInfo = async (
+    installationId: number
+  ): Promise<InstallationInfo | null> => {
+    // Generate app JWT to call app-level endpoints
+    const jwt = await generateAppJwt(config);
+
+    const response = await fetch(
+      `${GITHUB_API}/app/installations/${installationId}`,
+      {
+        headers: {
+          Authorization: `Bearer ${jwt}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "User-Agent": "Detent-App",
+        },
+      }
+    );
+
+    if (response.status === 404) {
+      // Installation not found (uninstalled)
+      return null;
+    }
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(
+        `Failed to get installation info: ${response.status} ${error}`
+      );
+    }
+
+    return (await response.json()) as InstallationInfo;
+  };
+
+  const getInstallationRepos = async (
+    installationId: number
+  ): Promise<InstallationReposResponse["repositories"]> => {
+    const token = await getInstallationToken(installationId);
+    const allRepos: InstallationReposResponse["repositories"] = [];
+    let page = 1;
+    const perPage = 100;
+
+    // Paginate through all repos
+    while (true) {
+      const response = await fetch(
+        `${GITHUB_API}/installation/repositories?per_page=${perPage}&page=${page}`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "Detent-App",
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.text();
+        throw new Error(
+          `Failed to get installation repos: ${response.status} ${error}`
+        );
+      }
+
+      const data = (await response.json()) as InstallationReposResponse;
+      allRepos.push(...data.repositories);
+
+      // Check if we've fetched all repos
+      if (allRepos.length >= data.total_count) {
+        break;
+      }
+      page++;
+    }
+
+    return allRepos;
+  };
+
   return {
     getInstallationToken,
+    getInstallationInfo,
+    getInstallationRepos,
     fetchWorkflowLogs,
     postComment,
     pushCommit,
@@ -382,4 +537,19 @@ export const createGitHubService = (env: Env) => {
   };
 };
 
-export type GitHubService = ReturnType<typeof createGitHubService>;
+// Public factory that returns cached singleton (token cache survives across calls)
+export const createGitHubService = (env: Env): GitHubService => {
+  // Return cached service if app ID matches (same env)
+  if (cachedService && cachedAppId === env.GITHUB_APP_ID) {
+    return cachedService;
+  }
+
+  // Create new service and cache it
+  cachedService = createGitHubServiceInternal(env);
+  cachedAppId = env.GITHUB_APP_ID;
+  console.log("[github] Created new GitHubService instance (singleton)");
+
+  return cachedService;
+};
+
+export type GitHubService = ReturnType<typeof createGitHubServiceInternal>;

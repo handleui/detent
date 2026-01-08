@@ -101,7 +101,7 @@ export class ErrorProcessor {
   /**
    * Persists parsed errors to storage.
    *
-   * TODO: Future integration with API for remote persistence
+   * Future: Integration with API for remote persistence.
    * This will be implemented when the API layer is ready.
    * For now, this is a no-op to maintain the interface contract.
    *

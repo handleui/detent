@@ -8,6 +8,5 @@ export const authCommand = defineCommand({
   subCommands: {
     login: () => import("./login.js").then((m) => m.loginCommand),
     logout: () => import("./logout.js").then((m) => m.logoutCommand),
-    status: () => import("./status.js").then((m) => m.statusCommand),
   },
 });

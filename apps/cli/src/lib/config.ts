@@ -48,12 +48,27 @@ export interface ConfigLoadResult {
   error?: string;
 }
 
+/**
+ * Project config for linking a repo to an organization
+ * Stored in .detent/project.json
+ */
+export interface ProjectConfig {
+  organizationId: string;
+  organizationSlug: string;
+}
+
+export interface ProjectConfigLoadResult {
+  config: ProjectConfig | null;
+  error?: string;
+}
+
 // ============================================================================
 // Constants
 // ============================================================================
 
 const DETENT_DIR_NAME = ".detent";
 const REPO_CONFIG_FILE = "config.json";
+const PROJECT_CONFIG_FILE = "project.json";
 const GLOBAL_CONFIG_FILE = "detent.json";
 const SCHEMA_URL = "./schema.json";
 
@@ -504,3 +519,116 @@ export const validateTimeout = (value: number): ValidationResult => {
  * Gets the list of allowed models
  */
 export const getAllowedModels = (): readonly string[] => ALLOWED_MODELS;
+
+// ============================================================================
+// Project Config (repo-to-organization binding)
+// ============================================================================
+
+/**
+ * Gets the path to the project config file (<repo>/.detent/project.json)
+ */
+export const getProjectConfigPath = (repoRoot: string): string => {
+  return join(getRepoDetentDir(repoRoot), PROJECT_CONFIG_FILE);
+};
+
+/**
+ * Loads the project config from .detent/project.json
+ * Returns null if no project is linked, warns for corrupted files.
+ */
+export const getProjectConfig = (repoRoot: string): ProjectConfig | null => {
+  const result = getProjectConfigSafe(repoRoot);
+  if (result.error) {
+    console.error(`warning: ${result.error}`);
+  }
+  return result.config;
+};
+
+/**
+ * Loads project config with detailed error information.
+ */
+export const getProjectConfigSafe = (
+  repoRoot: string
+): ProjectConfigLoadResult => {
+  const configPath = getProjectConfigPath(repoRoot);
+
+  if (!existsSync(configPath)) {
+    return { config: null };
+  }
+
+  try {
+    const data = readFileSync(configPath, "utf-8");
+    if (!data.trim()) {
+      return { config: null };
+    }
+    const parsed = JSON.parse(data) as ProjectConfig;
+
+    if (!(parsed.organizationId && parsed.organizationSlug)) {
+      return {
+        config: null,
+        error:
+          "invalid project config: missing organizationId or organizationSlug",
+      };
+    }
+
+    return { config: parsed };
+  } catch (err) {
+    const error = err as NodeJS.ErrnoException;
+
+    if (error.code === "EACCES") {
+      return {
+        config: null,
+        error: `cannot read project config at ${configPath}: permission denied`,
+      };
+    }
+
+    if (error instanceof SyntaxError) {
+      return {
+        config: null,
+        error: `project config is corrupted: ${configPath} (invalid JSON)`,
+      };
+    }
+
+    return {
+      config: null,
+      error: `failed to load project config: ${error.message}`,
+    };
+  }
+};
+
+/**
+ * Saves project config to .detent/project.json
+ */
+export const saveProjectConfig = (
+  repoRoot: string,
+  config: ProjectConfig
+): void => {
+  const dir = getRepoDetentDir(repoRoot);
+
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { mode: 0o700, recursive: true });
+  }
+
+  const data = `${JSON.stringify(config, null, 2)}\n`;
+  const configPath = getProjectConfigPath(repoRoot);
+
+  writeFileSync(configPath, data, { mode: 0o600 });
+};
+
+/**
+ * Removes project config (unlinks repo from organization)
+ */
+export const removeProjectConfig = async (repoRoot: string): Promise<void> => {
+  const configPath = getProjectConfigPath(repoRoot);
+
+  if (existsSync(configPath)) {
+    const { unlinkSync } = await import("node:fs");
+    unlinkSync(configPath);
+  }
+};
+
+/**
+ * Checks if a repository is linked to an organization
+ */
+export const isRepoLinked = (repoRoot: string): boolean => {
+  return existsSync(getProjectConfigPath(repoRoot));
+};
