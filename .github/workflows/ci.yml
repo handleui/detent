@@ -64,4 +64,9 @@ jobs:
         run: |
           cd apps/web/public
           chmod +x install.sh.test
-          bash install.sh.test
+          # Only run static tests on PRs, full tests (including integration) on main
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            bash install.sh.test --static-only
+          else
+            bash install.sh.test
+          fi

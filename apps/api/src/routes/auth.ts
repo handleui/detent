@@ -5,10 +5,11 @@
  * with GitHub identity information obtained during authentication.
  */
 
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { Hono } from "hono";
 import { createDb } from "../db/client";
 import { organizationMembers, organizations } from "../db/schema";
+import { verifyGitHubMembership } from "../lib/github-membership";
 import type { Env } from "../types/env";
 
 // GitHub API types
@@ -55,6 +56,9 @@ interface WorkOSUser {
 }
 
 const app = new Hono<{ Bindings: Env }>();
+
+// Regex for validating numeric target_id parameter
+const NUMERIC_REGEX = /^\d+$/;
 
 /**
  * POST /sync-identity
@@ -176,28 +180,62 @@ app.post("/sync-identity", async (c) => {
       ),
     });
 
-    let autoLinkedCount = 0;
-    for (const org of installerOrgs) {
-      const existingMembership = await db.query.organizationMembers.findFirst({
-        where: and(
-          eq(organizationMembers.userId, auth.userId),
-          eq(organizationMembers.organizationId, org.id)
-        ),
-      });
+    // Batch fetch existing memberships for all installer orgs
+    const orgIds = installerOrgs.map((org) => org.id);
+    const existingMemberships =
+      orgIds.length > 0
+        ? await db.query.organizationMembers.findMany({
+            where: and(
+              eq(organizationMembers.userId, auth.userId),
+              inArray(organizationMembers.organizationId, orgIds)
+            ),
+          })
+        : [];
 
-      if (!existingMembership) {
-        await db.insert(organizationMembers).values({
+    const existingOrgIds = new Set(
+      existingMemberships.map((m) => m.organizationId)
+    );
+
+    // Filter to orgs that need new memberships
+    const orgsToLink = installerOrgs.filter(
+      (org) => !existingOrgIds.has(org.id)
+    );
+
+    // Verify current GitHub membership before granting owner access
+    const verifiedOrgs: typeof orgsToLink = [];
+    if (githubUsername) {
+      for (const org of orgsToLink) {
+        if (!(org.providerInstallationId && org.providerAccountLogin)) {
+          continue;
+        }
+        const membership = await verifyGitHubMembership(
+          githubUsername,
+          org.providerAccountLogin,
+          org.providerInstallationId,
+          c.env
+        );
+        if (membership.isMember) {
+          verifiedOrgs.push(org);
+        }
+      }
+    }
+
+    // Batch insert (if any)
+    if (verifiedOrgs.length > 0) {
+      await db.insert(organizationMembers).values(
+        verifiedOrgs.map((org) => ({
           id: crypto.randomUUID(),
           organizationId: org.id,
           userId: auth.userId,
-          role: "owner",
+          role: "owner" as const,
           providerUserId: githubUserId,
           providerUsername: githubUsername,
           providerLinkedAt: new Date(),
-        });
-        autoLinkedCount++;
-      }
+        }))
+      );
     }
+
+    const autoLinkedCount = verifiedOrgs.length;
 
     return c.json({
       user_id: auth.userId,
@@ -388,10 +426,11 @@ app.get("/github-orgs", async (c) => {
   try {
     const githubOrgIds = githubOrgs.map((org) => String(org.id));
     const installedOrgs = await db.query.organizations.findMany({
-      where: (orgs, { and, eq, inArray }) =>
+      where: (orgs, { and, eq, inArray, isNull }) =>
         and(
           eq(orgs.provider, "github"),
-          inArray(orgs.providerAccountId, githubOrgIds)
+          inArray(orgs.providerAccountId, githubOrgIds),
+          isNull(orgs.deletedAt)
         ),
     });
 
@@ -430,6 +469,10 @@ app.get("/install-url", (c) => {
 
   if (!targetId) {
     return c.json({ error: "target_id query parameter is required" }, 400);
+  }
+
+  if (!NUMERIC_REGEX.test(targetId)) {
+    return c.json({ error: "target_id must be a numeric value" }, 400);
   }
 
   const appName = "detent";

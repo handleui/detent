@@ -170,14 +170,18 @@ interface InstallationReposResponse {
   }>;
 }
 
-export const createGitHubService = (env: Env) => {
+// Module-level cache for installation tokens (survives across function calls within isolate)
+const tokenCache = new Map<number, { token: string; expiresAt: number }>();
+
+// Module-level singleton for GitHub service instance
+let cachedService: ReturnType<typeof createGitHubServiceInternal> | null = null;
+let cachedAppId: string | null = null;
+
+const createGitHubServiceInternal = (env: Env) => {
   const config: GitHubServiceConfig = {
     appId: env.GITHUB_APP_ID,
     privateKey: env.GITHUB_APP_PRIVATE_KEY,
   };
-
-  // Cache for installation tokens (they last 1 hour)
-  const tokenCache = new Map<number, { token: string; expiresAt: number }>();
 
   const getInstallationToken = async (
     installationId: number
@@ -185,6 +189,9 @@ export const createGitHubService = (env: Env) => {
     // Check cache first
     const cached = tokenCache.get(installationId);
     if (cached && cached.expiresAt > Date.now() + 60_000) {
+      console.log(
+        `[github] Token cache hit for installation ${installationId}`
+      );
       return cached.token;
     }
 
@@ -530,4 +537,19 @@ export const createGitHubService = (env: Env) => {
   };
 };
 
-export type GitHubService = ReturnType<typeof createGitHubService>;
+// Public factory that returns cached singleton (token cache survives across calls)
+export const createGitHubService = (env: Env): GitHubService => {
+  // Return cached service if app ID matches (same env)
+  if (cachedService && cachedAppId === env.GITHUB_APP_ID) {
+    return cachedService;
+  }
+
+  // Create new service and cache it
+  cachedService = createGitHubServiceInternal(env);
+  cachedAppId = env.GITHUB_APP_ID;
+  console.log("[github] Created new GitHubService instance (singleton)");
+
+  return cachedService;
+};
+
+export type GitHubService = ReturnType<typeof createGitHubServiceInternal>;

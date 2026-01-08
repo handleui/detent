@@ -2,44 +2,16 @@
  * Organization install command
  *
  * OAuth-first GitHub App installation flow.
- * Lists user's GitHub organizations and opens browser to install on selected org.
+ * Shows user's GitHub organizations status and opens browser to GitHub App install page.
  */
 
 import { defineCommand } from "citty";
-import { apiRequest } from "../../lib/api.js";
+import { type GitHubOrgWithStatus, getGitHubOrgs } from "../../lib/api.js";
 import { getAccessToken } from "../../lib/auth.js";
+import { handleGitHubOrgError } from "../../lib/errors.js";
 
-// Types for the github-orgs endpoint response
-interface GitHubOrgWithStatus {
-  id: number;
-  login: string;
-  avatar_url: string;
-  can_install: boolean;
-  already_installed: boolean;
-  detent_org_id?: string;
-}
-
-interface GitHubOrgsResponse {
-  orgs: GitHubOrgWithStatus[];
-}
-
-interface InstallUrlResponse {
-  url: string;
-}
-
-// Fetch GitHub organizations from API
-const getGitHubOrgs = (accessToken: string): Promise<GitHubOrgsResponse> =>
-  apiRequest<GitHubOrgsResponse>("/v1/auth/github-orgs", { accessToken });
-
-// Get installation URL for a specific organization
-const getInstallUrl = (
-  accessToken: string,
-  targetId: number
-): Promise<InstallUrlResponse> =>
-  apiRequest<InstallUrlResponse>(
-    `/v1/auth/install-url?target_id=${encodeURIComponent(String(targetId))}`,
-    { accessToken }
-  );
+const GITHUB_APP_INSTALL_URL =
+  "https://github.com/apps/detent/installations/new";
 
 // Open browser cross-platform
 const openBrowser = async (url: string): Promise<void> => {
@@ -62,90 +34,19 @@ const openBrowser = async (url: string): Promise<void> => {
   await execAsync(command);
 };
 
-// Format org display with status
-const formatOrgLine = (
-  org: GitHubOrgWithStatus,
-  index: number
-): { line: string; selectable: boolean } => {
-  if (org.already_installed) {
-    return {
-      line: `  ${index + 1}. ${org.login} ✓ (already installed)`,
-      selectable: false,
-    };
-  }
+// Display org status (info only, no selection)
+const displayOrgStatus = (orgs: GitHubOrgWithStatus[]): void => {
+  console.log("\nYour GitHub organizations:\n");
 
-  if (org.can_install) {
-    return {
-      line: `  ${index + 1}. ${org.login} → Can install`,
-      selectable: true,
-    };
-  }
-
-  return {
-    line: `  ${index + 1}. ${org.login} → Member only (ask admin)`,
-    selectable: false,
-  };
-};
-
-// Prompt user to select an organization
-const selectGitHubOrg = async (
-  orgs: GitHubOrgWithStatus[]
-): Promise<GitHubOrgWithStatus | null> => {
-  console.log("\nSelect a GitHub organization to install Detent:\n");
-
-  const selectableIndices: number[] = [];
-  for (const [i, org] of orgs.entries()) {
-    const { line, selectable } = formatOrgLine(org, i);
-    console.log(line);
-    if (selectable) {
-      selectableIndices.push(i);
+  for (const org of orgs) {
+    if (org.already_installed) {
+      console.log(`  ✓ ${org.login} (already installed)`);
+    } else if (org.can_install) {
+      console.log(`  ● ${org.login} (admin - can install)`);
+    } else {
+      console.log(`  ○ ${org.login} (member - ask admin to install)`);
     }
   }
-
-  if (selectableIndices.length === 0) {
-    console.log("\nNo organizations available for installation.");
-    console.log("You need admin access to install the Detent GitHub App.");
-    return null;
-  }
-
-  const readline = await import("node:readline");
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-
-  const answer = await new Promise<string>((resolve) => {
-    rl.question("\n> ", resolve);
-  });
-  rl.close();
-
-  const index = Number.parseInt(answer, 10) - 1;
-  if (Number.isNaN(index) || index < 0 || index >= orgs.length) {
-    console.error("\nInvalid selection");
-    return null;
-  }
-
-  const selectedOrg = orgs[index];
-  if (!selectedOrg) {
-    console.error("\nInvalid selection");
-    return null;
-  }
-
-  if (selectedOrg.already_installed) {
-    console.error(
-      `\n${selectedOrg.login} is already installed. Run 'detent org list' to see your organizations.`
-    );
-    return null;
-  }
-
-  if (!selectedOrg.can_install) {
-    console.error(
-      `\nYou don't have admin access to ${selectedOrg.login}. Ask an organization admin to install Detent.`
-    );
-    return null;
-  }
-
-  return selectedOrg;
 };
 
 // Find organization by name (for --org flag)
@@ -154,24 +55,6 @@ const findOrgByName = (
   name: string
 ): GitHubOrgWithStatus | undefined =>
   orgs.find((org) => org.login.toLowerCase() === name.toLowerCase());
-
-// Handle GitHub orgs API errors
-const handleGitHubOrgsError = (error: unknown): never => {
-  const message = error instanceof Error ? error.message : String(error);
-
-  if (message.includes("GitHub account not connected")) {
-    console.error("GitHub account not connected.");
-    console.error(
-      "Please authenticate with GitHub: run `detent auth login --force`"
-    );
-  } else if (message.includes("authorization expired")) {
-    console.error("GitHub authorization expired.");
-    console.error("Please re-authenticate: run `detent auth login --force`");
-  } else {
-    console.error("Failed to fetch GitHub organizations:", message);
-  }
-  process.exit(1);
-};
 
 // Validate organization from --org flag
 const validateOrgFromFlag = (
@@ -206,24 +89,28 @@ const validateOrgFromFlag = (
   return found;
 };
 
-// Open installation URL and print messages
-const openInstallationUrl = async (
-  installUrl: string,
-  orgLogin: string
+// Open browser with appropriate messaging
+const openInstallPage = async (
+  url: string,
+  orgLogin?: string
 ): Promise<void> => {
-  console.log(`\nOpening browser to install Detent on ${orgLogin}...`);
+  if (orgLogin) {
+    console.log(`\nOpening GitHub to install Detent on ${orgLogin}...`);
+  } else {
+    console.log("\nOpening GitHub to install Detent...");
+  }
   console.log(
     "After installing, run 'detent org list' to see your organizations.\n"
   );
 
   try {
-    await openBrowser(installUrl);
+    await openBrowser(url);
   } catch (error) {
     console.error(
       "Failed to open browser:",
       error instanceof Error ? error.message : error
     );
-    console.error(`\nPlease manually visit: ${installUrl}`);
+    console.error(`\nPlease manually visit: ${url}`);
   }
 };
 
@@ -236,7 +123,7 @@ export const installCommand = defineCommand({
     org: {
       type: "string",
       description:
-        "GitHub organization name to install on (skips interactive selection)",
+        "GitHub organization name (pre-selects org in GitHub install page)",
     },
   },
   run: async ({ args }) => {
@@ -248,44 +135,55 @@ export const installCommand = defineCommand({
       process.exit(1);
     }
 
-    // Fetch GitHub organizations
-    const orgsResponse = await getGitHubOrgs(accessToken).catch(
-      handleGitHubOrgsError
-    );
+    // Fetch GitHub organizations to show status
+    const orgsResponse =
+      await getGitHubOrgs(accessToken).catch(handleGitHubOrgError);
 
-    if (orgsResponse.orgs.length === 0) {
+    // If --org flag provided, validate and open with target_id
+    if (args.org) {
+      if (orgsResponse.orgs.length === 0) {
+        console.error(`GitHub organization not found: ${args.org}`);
+        process.exit(1);
+      }
+
+      const selectedOrg = validateOrgFromFlag(orgsResponse.orgs, args.org);
+      const installUrl = `${GITHUB_APP_INSTALL_URL}?target_id=${selectedOrg.id}`;
+      await openInstallPage(installUrl, selectedOrg.login);
+      return;
+    }
+
+    // Show org status (info only)
+    if (orgsResponse.orgs.length > 0) {
+      displayOrgStatus(orgsResponse.orgs);
+
+      // Check if all orgs are already installed
+      const allInstalled = orgsResponse.orgs.every(
+        (org) => org.already_installed
+      );
+      if (allInstalled) {
+        console.log("\nAll your organizations already have Detent installed.");
+        console.log("Run 'detent org list' to see your organizations.");
+        return;
+      }
+
+      // Check if user can install on any org
+      const canInstallAny = orgsResponse.orgs.some((org) => org.can_install);
+      if (!canInstallAny) {
+        console.log(
+          "\nYou need admin access to install the Detent GitHub App."
+        );
+        console.log(
+          "Ask an organization admin to install, or use a personal account."
+        );
+      }
+    } else {
       console.log("No GitHub organizations found.");
       console.log(
-        "\nYou need to be a member of a GitHub organization to install Detent."
+        "\nYou can still install Detent on your personal GitHub account."
       );
-      console.log(
-        "For personal accounts, install directly at: https://github.com/apps/detent"
-      );
-      process.exit(0);
     }
 
-    // Select organization (interactive or via --org flag)
-    const selectedOrg = args.org
-      ? validateOrgFromFlag(orgsResponse.orgs, args.org)
-      : await selectGitHubOrg(orgsResponse.orgs);
-
-    if (!selectedOrg) {
-      process.exit(1);
-    }
-
-    // Get installation URL
-    let installUrl: string;
-    try {
-      const response = await getInstallUrl(accessToken, selectedOrg.id);
-      installUrl = response.url;
-    } catch (error) {
-      console.error(
-        "Failed to get installation URL:",
-        error instanceof Error ? error.message : error
-      );
-      process.exit(1);
-    }
-
-    await openInstallationUrl(installUrl, selectedOrg.login);
+    // Open GitHub install page (user picks org there)
+    await openInstallPage(GITHUB_APP_INSTALL_URL);
   },
 });

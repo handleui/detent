@@ -161,6 +161,7 @@ export const organizationMembers = pgTable(
       table.userId
     ),
     index("organization_members_user_id_idx").on(table.userId),
+    index("organization_members_provider_user_id_idx").on(table.providerUserId),
   ]
 );
 

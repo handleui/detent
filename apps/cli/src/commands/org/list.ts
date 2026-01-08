@@ -15,6 +15,7 @@ import {
   type Project,
 } from "../../lib/api.js";
 import { getAccessToken } from "../../lib/auth.js";
+import { handleGitHubOrgError } from "../../lib/errors.js";
 
 const formatVisibility = (isPrivate: boolean): string =>
   isPrivate ? "private" : "public";
@@ -109,23 +110,6 @@ const displayAvailableOrgs = (orgs: GitHubOrgWithStatus[]): void => {
   console.log(
     "\nUse 'detent org install' to install Detent on an organization."
   );
-};
-
-const handleGitHubOrgError = (error: unknown): never => {
-  const message = error instanceof Error ? error.message : String(error);
-
-  if (message.includes("GitHub account not connected")) {
-    console.error("GitHub account not connected.");
-    console.error(
-      "Please authenticate with GitHub: run `detent auth login --force`"
-    );
-  } else if (message.includes("authorization expired")) {
-    console.error("GitHub authorization expired.");
-    console.error("Please re-authenticate: run `detent auth login --force`");
-  } else {
-    console.error("Failed to fetch GitHub organizations:", message);
-  }
-  process.exit(1);
 };
 
 const listAvailableOrgs = async (accessToken: string): Promise<void> => {

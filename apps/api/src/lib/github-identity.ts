@@ -1,3 +1,5 @@
+import { CACHE_TTL, getFromCache, setInCache } from "./cache";
+
 interface WorkOSIdentity {
   idp_id: string;
   type: "OAuth";
@@ -21,6 +23,15 @@ export const getVerifiedGitHubIdentity = async (
   workosUserId: string,
   workosApiKey: string
 ): Promise<VerifiedGitHubIdentity | null> => {
+  const cacheKey = `github-identity:${workosUserId}`;
+
+  // Check cache first
+  const cached = getFromCache<VerifiedGitHubIdentity>(cacheKey);
+  if (cached) {
+    console.log(`[github-identity] Cache hit for ${workosUserId}`);
+    return cached;
+  }
+
   const identitiesResponse = await fetch(
     `https://api.workos.com/user_management/users/${workosUserId}/identities`,
     {
@@ -63,8 +74,14 @@ export const getVerifiedGitHubIdentity = async (
 
   const githubUser = (await githubResponse.json()) as GitHubUser;
 
-  return {
+  const result: VerifiedGitHubIdentity = {
     userId: githubUserId,
     username: githubUser.login,
   };
+
+  // Cache the result
+  setInCache(cacheKey, result, CACHE_TTL.GITHUB_IDENTITY);
+  console.log(`[github-identity] Cached identity for ${workosUserId}`);
+
+  return result;
 };
