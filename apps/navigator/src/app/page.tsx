@@ -1,4 +1,5 @@
-import { getUser, signOut } from "@detent/lib/auth";
+import { getUser } from "@/lib/auth";
+import { signOut } from "@/lib/auth-actions";
 
 const DashboardPage = async () => {
   const { user } = await getUser();
