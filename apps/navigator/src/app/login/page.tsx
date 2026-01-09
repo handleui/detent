@@ -2,6 +2,14 @@ import { Button } from "@detent/ui/button";
 import { redirect } from "next/navigation";
 import { getUser } from "@/lib/auth";
 
+interface LoginPageProps {
+  searchParams: Promise<{
+    returnTo?: string;
+    error?: string;
+    message?: string;
+  }>;
+}
+
 const GitHubIcon = () => (
   <svg
     aria-hidden="true"
@@ -17,17 +25,24 @@ const GitHubIcon = () => (
   </svg>
 );
 
-const LoginPage = async () => {
+const LoginPage = async ({ searchParams }: LoginPageProps) => {
+  const params = await searchParams;
+  const { returnTo } = params;
   const { isAuthenticated } = await getUser();
 
   if (isAuthenticated) {
-    redirect("/");
+    redirect(returnTo ?? "/");
   }
+
+  // Build auth URL with returnTo if provided
+  const authUrl = returnTo
+    ? `/auth/login?returnTo=${encodeURIComponent(returnTo)}`
+    : "/auth/login";
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-white">
       <Button asChild>
-        <a href="/auth/login">
+        <a href={authUrl}>
           <GitHubIcon />
           Continue with GitHub
         </a>

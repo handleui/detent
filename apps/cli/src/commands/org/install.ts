@@ -8,31 +8,11 @@
 import { defineCommand } from "citty";
 import { type GitHubOrgWithStatus, getGitHubOrgs } from "../../lib/api.js";
 import { getAccessToken } from "../../lib/auth.js";
+import { openBrowser } from "../../lib/browser.js";
 import { handleGitHubOrgError } from "../../lib/errors.js";
 
 const GITHUB_APP_INSTALL_URL =
   "https://github.com/apps/detent/installations/new";
-
-// Open browser cross-platform
-const openBrowser = async (url: string): Promise<void> => {
-  const { platform } = process;
-  const { exec } = await import("node:child_process");
-  const { promisify } = await import("node:util");
-  const execAsync = promisify(exec);
-
-  const commands: Record<string, string> = {
-    darwin: `open "${url}"`,
-    win32: `start "" "${url}"`,
-    linux: `xdg-open "${url}"`,
-  };
-
-  const command = commands[platform];
-  if (!command) {
-    throw new Error(`Unsupported platform: ${platform}`);
-  }
-
-  await execAsync(command);
-};
 
 // Display org status (info only, no selection)
 const displayOrgStatus = (orgs: GitHubOrgWithStatus[]): void => {

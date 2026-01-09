@@ -85,6 +85,19 @@ const setPendingVerificationCookie = async (
   );
 };
 
+/**
+ * Get and clear the returnTo cookie
+ */
+const getAndClearReturnTo = async (): Promise<string | null> => {
+  const { cookies } = await import("next/headers");
+  const cookieStore = await cookies();
+  const returnTo = cookieStore.get(COOKIE_NAMES.returnTo)?.value;
+  if (returnTo) {
+    cookieStore.delete(COOKIE_NAMES.returnTo);
+  }
+  return returnTo ?? null;
+};
+
 export const GET = async (request: Request) => {
   const url = new URL(request.url);
   const code = url.searchParams.get("code");
@@ -139,7 +152,11 @@ export const GET = async (request: Request) => {
     );
     const { user } = authResponse;
 
-    const response = NextResponse.redirect(new URL("/", request.url));
+    // Get returnTo URL if set
+    const returnTo = await getAndClearReturnTo();
+    const redirectUrl = returnTo ?? "/";
+
+    const response = NextResponse.redirect(new URL(redirectUrl, request.url));
 
     // Store the custom session token for user data access
     const token = await createSession(user);

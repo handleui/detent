@@ -11,7 +11,10 @@ import { workos } from "@/lib/workos";
  * OAuth initiation endpoint - generates state, sets cookie, redirects to GitHub
  * Cookies can only be set in Route Handlers or Server Actions, not Server Components
  */
-export const GET = async () => {
+export const GET = async (request: Request) => {
+  const url = new URL(request.url);
+  const returnTo = url.searchParams.get("returnTo");
+
   // Generate cryptographically secure state for CSRF protection
   const state = generateOAuthState();
 
@@ -36,6 +39,17 @@ export const GET = async () => {
       maxAge: AUTH_DURATIONS.oauthStateMaxAgeSec,
     })
   );
+
+  // Store returnTo URL if provided
+  if (returnTo) {
+    response.cookies.set(
+      createSecureCookieOptions({
+        name: COOKIE_NAMES.returnTo,
+        value: returnTo,
+        maxAge: AUTH_DURATIONS.oauthStateMaxAgeSec,
+      })
+    );
+  }
 
   return response;
 };
