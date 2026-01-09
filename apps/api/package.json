@@ -11,6 +11,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "cf-typegen": "wrangler types --env-interface CloudflareBindings",
+    "db:setup": "./scripts/db-setup.sh",
+    "db:setup:clean": "./scripts/db-setup.sh --clean",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",
