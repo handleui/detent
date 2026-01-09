@@ -75,7 +75,7 @@ const showLoginSuccess = async (accessToken: string): Promise<void> => {
     if (identity.github_username) {
       console.log(`Logged in as ${email} (@${identity.github_username})`);
     } else {
-      console.log(`Welcome back ${email}`);
+      console.log(`Logged in as ${email}`);
     }
   } catch {
     console.log("Logged in successfully");

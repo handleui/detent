@@ -5,28 +5,17 @@ import type { Env } from "../types/env";
 
 const app = new Hono<{ Bindings: Env }>();
 
-// Simple health check - always returns 200 if the API is running
+// Health check - verifies API and database connectivity
 // OpenStatus monitors this endpoint for uptime
-app.get("/", (c) =>
-  c.json({
-    status: "operational",
-    version: pkg.version,
-    timestamp: new Date().toISOString(),
-  })
-);
-
-// Deep health check - verifies database connectivity
-// Use this for more thorough monitoring
-app.get("/deep", async (c) => {
+app.get("/", async (c) => {
   const checks: {
-    database: "operational" | "degraded" | "down";
+    database: "operational" | "down";
   } = {
     database: "down",
   };
 
-  let overallStatus: "operational" | "degraded" | "down" = "operational";
+  let status: "operational" | "down" = "operational";
 
-  // Check database connectivity
   try {
     const { client } = await createDb(c.env);
     await client.query("SELECT 1");
@@ -34,19 +23,17 @@ app.get("/deep", async (c) => {
     checks.database = "operational";
   } catch {
     checks.database = "down";
-    overallStatus = "down";
+    status = "down";
   }
-
-  const statusCode = overallStatus === "operational" ? 200 : 503;
 
   return c.json(
     {
-      status: overallStatus,
+      status,
       version: pkg.version,
       timestamp: new Date().toISOString(),
       checks,
     },
-    statusCode
+    status === "operational" ? 200 : 503
   );
 });
 

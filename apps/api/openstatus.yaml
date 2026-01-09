@@ -2,45 +2,22 @@
 # OpenStatus monitoring configuration for Detent API
 # Docs: https://docs.openstatus.dev/monitoring-as-code
 
-# Basic uptime monitor - lightweight check
 api-health:
   name: "Detent API"
-  description: "Main API health endpoint"
+  description: "API health with database connectivity check"
   frequency: "5m"
   active: true
   regions:
     - iad # US East (Virginia)
-    - sfo # US West (San Francisco)
+    - lax # US West (Los Angeles)
     - ams # Europe (Amsterdam)
+    - syd # Oceania (Sydney)
+    - sin # Asia (Singapore)
+    - gru # South America (Sao Paulo)
   retry: 3
   kind: http
   request:
     url: https://api.detent.sh/health
-    method: GET
-    headers:
-      User-Agent: OpenStatus
-  assertions:
-    - kind: statusCode
-      compare: eq
-      target: 200
-    - kind: textBody
-      compare: contains
-      target: '"status":"operational"'
-
-# Deep health check - includes database connectivity
-api-health-deep:
-  name: "Detent API (Deep)"
-  description: "API health with database connectivity check"
-  frequency: "10m"
-  active: true
-  regions:
-    - iad
-    - ams
-    - syd # Sydney for APAC coverage
-  retry: 3
-  kind: http
-  request:
-    url: https://api.detent.sh/health/deep
     method: GET
     headers:
       User-Agent: OpenStatus
