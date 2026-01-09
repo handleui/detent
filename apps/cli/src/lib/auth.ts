@@ -229,9 +229,7 @@ export const getExpiresAt = (accessToken: string): Date | null => {
  * Opens browser to Navigator app which handles WorkOS auth,
  * then receives callback on localhost with encrypted tokens.
  */
-export const authenticateViaNavigator = async (
-  onStatusChange?: (status: string) => void
-): Promise<TokenResponse> => {
+export const authenticateViaNavigator = async (): Promise<TokenResponse> => {
   const { openBrowser } = await import("./browser.js");
   const { generateState, startCallbackServer } = await import(
     "./localhost-server.js"
@@ -239,23 +237,17 @@ export const authenticateViaNavigator = async (
 
   const authBaseUrl = getAuthUrl();
   const state = generateState();
-
-  onStatusChange?.("Starting local server...");
   const server = await startCallbackServer(state);
-
   const authUrl = `${authBaseUrl}/cli/auth?port=${server.port}&state=${state}`;
 
-  onStatusChange?.("Opening browser...");
   try {
     await openBrowser(authUrl);
   } catch {
     console.log(`\nPlease open this URL in your browser:\n  ${authUrl}\n`);
   }
 
-  onStatusChange?.("Waiting for authentication...");
   const { code } = await server.waitForCallback();
 
-  onStatusChange?.("Exchanging code for tokens...");
   const response = await fetch(`${authBaseUrl}/api/cli/token`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

@@ -6,6 +6,19 @@ import { COOKIE_NAMES } from "@/lib/constants";
 import { workos } from "@/lib/workos";
 
 /**
+ * Check if sealed sessions are enabled (required for CLI auth)
+ * CLI auth needs refresh tokens which are only available with sealed sessions
+ */
+const isSealedSessionsEnabled = () => {
+  try {
+    getWorkOSCookiePassword();
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/**
  * Generate HTML response for success page that displays briefly before redirect
  */
 const generateSuccessHtml = (redirectUrl: string) => `
@@ -104,13 +117,26 @@ export const GET = async (request: Request) => {
     );
   }
 
-  // Get existing session
+  // CLI auth requires sealed sessions (for refresh tokens)
+  if (!isSealedSessionsEnabled()) {
+    return NextResponse.redirect(
+      new URL("/cli/auth?error=sealed_sessions_required", request.url)
+    );
+  }
+
+  const returnUrl = `/cli/auth?port=${encodeURIComponent(port)}&state=${encodeURIComponent(state)}`;
+
+  // Get existing session cookies
   const cookieStore = await cookies();
   const sealedSession = cookieStore.get(COOKIE_NAMES.workosSession)?.value;
+  const sessionCookie = cookieStore.get(COOKIE_NAMES.session)?.value;
 
   if (!sealedSession) {
-    // No session, redirect back to CLI auth page which will handle login redirect
-    const returnUrl = `/cli/auth?port=${encodeURIComponent(port)}&state=${encodeURIComponent(state)}`;
+    // No WorkOS session cookie - need to force re-authentication
+    // If user has old session cookie but no workosSession, clear it to avoid redirect loop
+    if (sessionCookie) {
+      cookieStore.delete(COOKIE_NAMES.session);
+    }
     return NextResponse.redirect(
       new URL(`/login?returnTo=${encodeURIComponent(returnUrl)}`, request.url)
     );
@@ -127,8 +153,9 @@ export const GET = async (request: Request) => {
     const refreshResult = await session.refresh({ cookiePassword });
 
     if (!(refreshResult.authenticated && refreshResult.session)) {
-      // Session expired, redirect to login
-      const returnUrl = `/cli/auth?port=${encodeURIComponent(port)}&state=${encodeURIComponent(state)}`;
+      // Session expired - clear both cookies to force full re-authentication
+      cookieStore.delete(COOKIE_NAMES.session);
+      cookieStore.delete(COOKIE_NAMES.workosSession);
       return NextResponse.redirect(
         new URL(`/login?returnTo=${encodeURIComponent(returnUrl)}`, request.url)
       );

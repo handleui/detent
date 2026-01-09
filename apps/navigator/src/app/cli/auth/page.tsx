@@ -40,6 +40,9 @@ const getErrorMessage = (error: string): string => {
   if (error === "no_code") {
     return "No authorization code received. Please try again.";
   }
+  if (error === "sealed_sessions_required") {
+    return "CLI authentication is not configured. Please contact your administrator.";
+  }
   return `An error occurred: ${error}`;
 };
 

@@ -4,6 +4,7 @@ import {
   type IncomingMessage,
   type ServerResponse,
 } from "node:http";
+import type { Socket } from "node:net";
 
 interface CallbackResult {
   code: string;
@@ -18,6 +19,7 @@ interface CallbackServer {
 
 /**
  * Start a temporary localhost server to receive OAuth callback
+ * Optimized for fast shutdown by tracking and destroying connections
  */
 export const startCallbackServer = (
   expectedState: string
@@ -31,6 +33,9 @@ export const startCallbackServer = (
       callbackPromiseReject = rej;
     });
 
+    // Track connections for fast shutdown
+    const connections = new Set<Socket>();
+
     const server = createServer((req: IncomingMessage, res: ServerResponse) => {
       const url = new URL(req.url ?? "/", "http://localhost");
 
@@ -38,20 +43,12 @@ export const startCallbackServer = (
         const code = url.searchParams.get("code");
         const state = url.searchParams.get("state");
 
-        // Send success page to browser
+        // Minimal response - Navigator already showed success page
+        // Try to close the browser tab automatically
         res.writeHead(200, { "Content-Type": "text/html" });
-        res.end(`
-          <!DOCTYPE html>
-          <html>
-            <head><title>Detent CLI</title></head>
-            <body style="font-family: system-ui; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0;">
-              <div style="text-align: center;">
-                <h1>Authentication successful!</h1>
-                <p>You can close this window and return to the terminal.</p>
-              </div>
-            </body>
-          </html>
-        `);
+        res.end(
+          "<!DOCTYPE html><html><head><script>window.close()</script></head><body></body></html>"
+        );
 
         // Verify state
         if (state !== expectedState) {
@@ -69,9 +66,24 @@ export const startCallbackServer = (
         callbackPromiseResolve({ code, state });
       } else {
         res.writeHead(404);
-        res.end("Not found");
+        res.end();
       }
     });
+
+    // Track connections for fast shutdown
+    server.on("connection", (socket: Socket) => {
+      connections.add(socket);
+      socket.on("close", () => connections.delete(socket));
+    });
+
+    // Force-close all connections and shutdown server immediately
+    const forceClose = () => {
+      for (const socket of connections) {
+        socket.destroy();
+      }
+      connections.clear();
+      server.close();
+    };
 
     // Use port 0 to get a random available port
     server.listen(0, "127.0.0.1", () => {
@@ -89,7 +101,7 @@ export const startCallbackServer = (
           callbackPromiseReject(
             new Error("Authentication timed out. Please try again.")
           );
-          server.close();
+          forceClose();
         },
         5 * 60 * 1000
       );
@@ -102,12 +114,12 @@ export const startCallbackServer = (
             clearTimeout(timeout);
             return result;
           } finally {
-            server.close();
+            forceClose();
           }
         },
         close: () => {
           clearTimeout(timeout);
-          server.close();
+          forceClose();
         },
       });
     });

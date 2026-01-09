@@ -9,6 +9,9 @@ import {
 } from "../../lib/auth.js";
 import type { Credentials } from "../../lib/credentials.js";
 import { isLoggedIn, saveCredentials } from "../../lib/credentials.js";
+import { ANSI_RESET, colors, hexToAnsi } from "../../tui/styles.js";
+
+const brand = hexToAnsi(colors.brand);
 
 const handleDeviceAuthError = (error: unknown): never => {
   if (error instanceof Error && error.message.includes("WORKOS_CLIENT_ID")) {
@@ -26,41 +29,32 @@ const handleDeviceAuthError = (error: unknown): never => {
 };
 
 const runHeadlessFlow = async (): Promise<TokenResponse> => {
-  console.log("Requesting device authorization...\n");
-
   const auth = await requestDeviceAuthorization().catch((error: unknown) =>
     handleDeviceAuthError(error)
   );
 
   console.log("To authenticate, visit:");
-  console.log(`  ${auth.verification_uri_complete}\n`);
-  console.log(
-    `Or go to ${auth.verification_uri} and enter code: ${auth.user_code}\n`
+  console.log(`  ${brand}${auth.verification_uri_complete}${ANSI_RESET}\n`);
+  console.log(`Or enter code: ${brand}${auth.user_code}${ANSI_RESET}\n`);
+
+  const tokens = await pollForTokens(auth.device_code, auth.interval).catch(
+    (error: unknown) => {
+      console.error(
+        "\nAuthentication failed:",
+        error instanceof Error ? error.message : String(error)
+      );
+      process.exit(1);
+    }
   );
-  console.log("Waiting for authentication...");
 
-  const tokens = await pollForTokens(auth.device_code, auth.interval, () => {
-    process.stdout.write(".");
-  }).catch((error: unknown) => {
-    console.log("\n");
-    console.error(
-      "Authentication failed:",
-      error instanceof Error ? error.message : String(error)
-    );
-    process.exit(1);
-  });
-
-  console.log("\n");
   return tokens;
 };
 
 const runNavigatorFlow = async (): Promise<TokenResponse> => {
-  console.log("Opening browser to authenticate...\n");
+  console.log("Opening browser...");
 
   try {
-    return await authenticateViaNavigator((status) => {
-      console.log(status);
-    });
+    return await authenticateViaNavigator();
   } catch (error) {
     console.error(
       "Authentication failed:",
@@ -76,16 +70,15 @@ const runNavigatorFlow = async (): Promise<TokenResponse> => {
 const showLoginSuccess = async (accessToken: string): Promise<void> => {
   try {
     const identity = await syncIdentity(accessToken);
+    const email = `${brand}${identity.email}${ANSI_RESET}`;
 
     if (identity.github_username) {
-      console.log(
-        `Successfully logged in as ${identity.email} (GitHub: @${identity.github_username})`
-      );
+      console.log(`Logged in as ${email} (@${identity.github_username})`);
     } else {
-      console.log(`Successfully logged in as ${identity.email}`);
+      console.log(`Welcome back ${email}`);
     }
   } catch {
-    console.log("Successfully logged in!");
+    console.log("Logged in successfully");
   }
 };
 
