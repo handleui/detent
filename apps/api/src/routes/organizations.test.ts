@@ -89,6 +89,7 @@ const createOrganization = (
   suspendedAt: "suspendedAt" in overrides ? overrides.suspendedAt : null,
   deletedAt: "deletedAt" in overrides ? overrides.deletedAt : null,
   lastSyncedAt: "lastSyncedAt" in overrides ? overrides.lastSyncedAt : null,
+  allowAutoJoin: true,
   createdAt: new Date("2024-01-01"),
   updatedAt: new Date("2024-01-01"),
 });

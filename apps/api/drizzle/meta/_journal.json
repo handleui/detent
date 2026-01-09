@@ -50,6 +50,13 @@
       "when": 1767985482928,
       "tag": "0006_young_silver_centurion",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1767987206484,
+      "tag": "0007_lethal_squadron_sinister",
+      "breakpoints": true
     }
   ]
 }

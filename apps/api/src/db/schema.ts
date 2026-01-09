@@ -115,6 +115,10 @@ export const organizations = pgTable(
     // Sync tracking - when we last verified state with the provider
     lastSyncedAt: timestamp("last_synced_at"),
 
+    // Settings
+    // Whether GitHub org members can auto-join or require invitation
+    allowAutoJoin: boolean("allow_auto_join").default(true).notNull(),
+
     // Timestamps
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),

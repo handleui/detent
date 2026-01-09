@@ -32,6 +32,7 @@ export interface OrgAccessContext {
     providerAccountType: "organization" | "user";
     providerInstallationId: string | null;
     installerGithubId: string | null;
+    allowAutoJoin: boolean;
   };
   githubIdentity: GitHubIdentity;
   role: OrgAccessRole;
@@ -109,6 +110,14 @@ const resolveGitHubOrgRole = async (
         .where(eq(organizationMembers.id, existingMember.id));
     }
     return { role: existingMember.role };
+  }
+
+  // New member: check if auto-join is allowed
+  if (!org.allowAutoJoin) {
+    return {
+      error: "Organization requires invitation to join",
+      status: 403,
+    };
   }
 
   // New member: seed role from GitHub, then create record
@@ -244,6 +253,7 @@ export const githubOrgAccessMiddleware = async (
         providerAccountType: org.providerAccountType,
         providerInstallationId: org.providerInstallationId,
         installerGithubId: org.installerGithubId,
+        allowAutoJoin: org.allowAutoJoin,
       },
       githubIdentity,
       role,
