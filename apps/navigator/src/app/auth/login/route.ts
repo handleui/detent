@@ -3,6 +3,7 @@ import {
   createSecureCookieOptions,
   generateOAuthState,
   getWorkOSClientId,
+  isValidReturnUrl,
 } from "@/lib/auth";
 import { AUTH_DURATIONS, COOKIE_NAMES } from "@/lib/constants";
 import { workos } from "@/lib/workos";
@@ -40,8 +41,8 @@ export const GET = async (request: Request) => {
     })
   );
 
-  // Store returnTo URL if provided
-  if (returnTo) {
+  // Store returnTo URL only if it's a valid relative path (prevents open redirect)
+  if (isValidReturnUrl(returnTo)) {
     response.cookies.set(
       createSecureCookieOptions({
         name: COOKIE_NAMES.returnTo,

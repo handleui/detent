@@ -1,6 +1,6 @@
 import { Button } from "@detent/ui/button";
 import { redirect } from "next/navigation";
-import { getUser } from "@/lib/auth";
+import { getUser, isValidReturnUrl, sanitizeReturnUrl } from "@/lib/auth";
 
 interface LoginPageProps {
   searchParams: Promise<{
@@ -30,12 +30,15 @@ const LoginPage = async ({ searchParams }: LoginPageProps) => {
   const { returnTo } = params;
   const { isAuthenticated } = await getUser();
 
+  // Sanitize returnTo to prevent open redirect attacks
+  const safeReturnTo = sanitizeReturnUrl(returnTo);
+
   if (isAuthenticated) {
-    redirect(returnTo ?? "/");
+    redirect(safeReturnTo);
   }
 
-  // Build auth URL with returnTo if provided
-  const authUrl = returnTo
+  // Build auth URL with returnTo only if it's a valid relative path
+  const authUrl = isValidReturnUrl(returnTo)
     ? `/auth/login?returnTo=${encodeURIComponent(returnTo)}`
     : "/auth/login";
 

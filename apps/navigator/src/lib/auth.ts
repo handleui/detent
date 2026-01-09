@@ -239,3 +239,59 @@ export const maskEmail = (email: string): string => {
   }
   return `${local[0]}***@${domain}`;
 };
+
+/**
+ * Validate returnTo URL to prevent open redirect vulnerabilities
+ *
+ * Only allows safe relative paths:
+ * - Must start with a single "/" (relative path)
+ * - Must NOT start with "//" (protocol-relative URL → open redirect)
+ * - Must NOT contain ":" before first "/" (blocks http:, https:, javascript:, etc.)
+ *
+ * This is a type guard that narrows the type to `string` when returning `true`.
+ *
+ * @example
+ * isValidReturnUrl("/dashboard")           // true
+ * isValidReturnUrl("/settings?tab=profile") // true
+ * isValidReturnUrl("https://evil.com")     // false
+ * isValidReturnUrl("//evil.com")           // false
+ * isValidReturnUrl("javascript:alert(1)")  // false
+ */
+export const isValidReturnUrl = (
+  url: string | null | undefined
+): url is string => {
+  if (!url || typeof url !== "string") {
+    return false;
+  }
+
+  // Must start with exactly one forward slash (relative path)
+  if (!url.startsWith("/")) {
+    return false;
+  }
+
+  // Block protocol-relative URLs (//evil.com)
+  if (url.startsWith("//")) {
+    return false;
+  }
+
+  // Block any URL with a protocol scheme before the first slash
+  // This catches edge cases like "/\evil.com" which some browsers may interpret oddly
+  // and ensures no protocol-like patterns exist
+  const colonIndex = url.indexOf(":");
+  const slashIndex = url.indexOf("/", 1); // Find slash after the leading one
+  if (colonIndex !== -1 && (slashIndex === -1 || colonIndex < slashIndex)) {
+    return false;
+  }
+
+  return true;
+};
+
+/**
+ * Sanitize returnTo URL - returns the URL if valid, otherwise returns fallback
+ */
+export const sanitizeReturnUrl = (
+  url: string | null | undefined,
+  fallback = "/"
+): string => {
+  return isValidReturnUrl(url) ? url : fallback;
+};

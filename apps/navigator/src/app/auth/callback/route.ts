@@ -5,6 +5,7 @@ import {
   createSession,
   getWorkOSClientId,
   getWorkOSCookiePassword,
+  sanitizeReturnUrl,
   verifyAndClearOAuthState,
 } from "@/lib/auth";
 import { AUTH_DURATIONS, COOKIE_NAMES } from "@/lib/constants";
@@ -152,9 +153,9 @@ export const GET = async (request: Request) => {
     );
     const { user } = authResponse;
 
-    // Get returnTo URL if set
+    // Get returnTo URL and sanitize it (defense in depth against open redirect)
     const returnTo = await getAndClearReturnTo();
-    const redirectUrl = returnTo ?? "/";
+    const redirectUrl = sanitizeReturnUrl(returnTo);
 
     const response = NextResponse.redirect(new URL(redirectUrl, request.url));
 
