@@ -21,6 +21,13 @@ export const organizationRoleEnum = pgEnum("organization_role", [
   "member",
 ]);
 
+export const invitationStatusEnum = pgEnum("invitation_status", [
+  "pending",
+  "accepted",
+  "expired",
+  "revoked",
+]);
+
 // Provider short codes for handles (used in slugs/URLs)
 export const providerShortCodes: Record<"github" | "gitlab", string> = {
   github: "gh",
@@ -166,6 +173,37 @@ export const organizationMembers = pgTable(
 );
 
 // ============================================================================
+// Invitations (Email-based organization invitations)
+// ============================================================================
+
+export const invitations = pgTable(
+  "invitations",
+  {
+    id: varchar("id", { length: 36 }).primaryKey(),
+    organizationId: varchar("organization_id", { length: 36 })
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    email: varchar("email", { length: 255 }).notNull(),
+    role: organizationRoleEnum("role").default("member").notNull(),
+    token: varchar("token", { length: 64 }).notNull().unique(),
+    status: invitationStatusEnum("status").default("pending").notNull(),
+    expiresAt: timestamp("expires_at").notNull(),
+    invitedBy: varchar("invited_by", { length: 255 }).notNull(),
+    acceptedAt: timestamp("accepted_at"),
+    acceptedByUserId: varchar("accepted_by_user_id", { length: 255 }),
+    revokedAt: timestamp("revoked_at"),
+    revokedBy: varchar("revoked_by", { length: 255 }),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("invitations_token_idx").on(table.token),
+    index("invitations_org_status_idx").on(table.organizationId, table.status),
+    index("invitations_email_idx").on(table.email),
+  ]
+);
+
+// ============================================================================
 // Projects (Detent project ↔ CI Provider Repo)
 // ============================================================================
 
@@ -232,6 +270,7 @@ export const organizationsRelations = relations(
       references: [enterprises.id],
     }),
     members: many(organizationMembers),
+    invitations: many(invitations),
     projects: many(projects),
   })
 );
@@ -245,6 +284,13 @@ export const organizationMembersRelations = relations(
     }),
   })
 );
+
+export const invitationsRelations = relations(invitations, ({ one }) => ({
+  organization: one(organizations, {
+    fields: [invitations.organizationId],
+    references: [organizations.id],
+  }),
+}));
 
 export const projectsRelations = relations(projects, ({ one }) => ({
   organization: one(organizations, {
@@ -265,6 +311,9 @@ export type NewOrganization = typeof organizations.$inferInsert;
 
 export type OrganizationMember = typeof organizationMembers.$inferSelect;
 export type NewOrganizationMember = typeof organizationMembers.$inferInsert;
+
+export type Invitation = typeof invitations.$inferSelect;
+export type NewInvitation = typeof invitations.$inferInsert;
 
 export type Project = typeof projects.$inferSelect;
 export type NewProject = typeof projects.$inferInsert;

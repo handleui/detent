@@ -1,3 +1,5 @@
+// biome-ignore lint/performance/noNamespaceImport: Sentry SDK official pattern
+import * as Sentry from "@sentry/cloudflare";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
@@ -7,6 +9,7 @@ import { rateLimitMiddleware } from "./middleware/rate-limit";
 import authRoutes from "./routes/auth";
 import healRoutes from "./routes/heal";
 import healthRoutes from "./routes/health";
+import { invitationRoutes, orgInvitationsRoutes } from "./routes/invitations";
 import organizationMembersRoutes from "./routes/organization-members";
 import organizationsRoutes from "./routes/organizations";
 import parseRoutes from "./routes/parse";
@@ -89,10 +92,18 @@ api.route("/heal", healRoutes);
 api.route("/projects", projectsRoutes);
 api.route("/organization-members", organizationMembersRoutes);
 api.route("/organizations", organizationsRoutes);
+api.route("/invitations", invitationRoutes);
+api.route("/orgs/:orgId/invitations", orgInvitationsRoutes);
 
 app.route("/v1", api);
 
 // Export type for potential RPC client
 export type AppType = typeof app;
 
-export default app;
+export default Sentry.withSentry(
+  (env: Env) => ({
+    dsn: env.SENTRY_DSN,
+    tracesSampleRate: 1.0,
+  }),
+  app
+);

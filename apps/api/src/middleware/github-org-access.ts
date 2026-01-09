@@ -1,7 +1,13 @@
 import { and, eq, isNull } from "drizzle-orm";
+import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { Context, Next } from "hono";
 import { createDb } from "../db/client";
-import { organizations } from "../db/schema";
+import type * as schema from "../db/schema";
+import {
+  type Organization,
+  organizationMembers,
+  organizations,
+} from "../db/schema";
 import { getVerifiedGitHubIdentity } from "../lib/github-identity";
 import { verifyGitHubMembership } from "../lib/github-membership";
 import type { Env } from "../types/env";
@@ -10,6 +16,11 @@ import "../middleware/auth";
 
 // Role assigned based on GitHub membership + installer status
 export type OrgAccessRole = "owner" | "admin" | "member";
+
+interface GitHubIdentity {
+  userId: string;
+  username: string;
+}
 
 export interface OrgAccessContext {
   organization: {
@@ -22,10 +33,7 @@ export interface OrgAccessContext {
     providerInstallationId: string | null;
     installerGithubId: string | null;
   };
-  githubIdentity: {
-    userId: string;
-    username: string;
-  };
+  githubIdentity: GitHubIdentity;
   role: OrgAccessRole;
 }
 
@@ -35,6 +43,93 @@ declare module "hono" {
     orgAccess: OrgAccessContext;
   }
 }
+
+// Determine initial role for new members based on GitHub state
+const seedRoleFromGitHub = (
+  org: Organization,
+  githubIdentity: GitHubIdentity,
+  githubRole: "admin" | "member"
+): OrgAccessRole => {
+  // If user is the installer, they get "owner" regardless of GitHub role
+  if (org.installerGithubId === githubIdentity.userId) {
+    return "owner";
+  }
+  if (githubRole === "admin") {
+    return "admin";
+  }
+  return "member";
+};
+
+// Handle GitHub organization membership check and role determination
+const resolveGitHubOrgRole = async (
+  db: NodePgDatabase<typeof schema>,
+  org: Organization,
+  userId: string,
+  githubIdentity: GitHubIdentity,
+  env: Env
+): Promise<{ role: OrgAccessRole } | { error: string; status: number }> => {
+  // Check for existing Detent membership first
+  const existingMember = await db.query.organizationMembers.findFirst({
+    where: and(
+      eq(organizationMembers.userId, userId),
+      eq(organizationMembers.organizationId, org.id)
+    ),
+  });
+
+  // Verify membership via GitHub API (access gate)
+  const membership = await verifyGitHubMembership(
+    githubIdentity.username,
+    org.providerAccountLogin,
+    org.providerInstallationId as string,
+    env
+  );
+
+  if (!membership.isMember) {
+    return {
+      error: "You are not a member of this GitHub organization",
+      status: 403,
+    };
+  }
+
+  if (existingMember) {
+    // Existing member: use DB role for authorization
+    // Update GitHub identity if changed
+    if (
+      existingMember.providerUserId !== githubIdentity.userId ||
+      existingMember.providerUsername !== githubIdentity.username
+    ) {
+      await db
+        .update(organizationMembers)
+        .set({
+          providerUserId: githubIdentity.userId,
+          providerUsername: githubIdentity.username,
+          providerLinkedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(organizationMembers.id, existingMember.id));
+    }
+    return { role: existingMember.role };
+  }
+
+  // New member: seed role from GitHub, then create record
+  const role = seedRoleFromGitHub(
+    org,
+    githubIdentity,
+    membership.role ?? "member"
+  );
+
+  await db.insert(organizationMembers).values({
+    id: crypto.randomUUID(),
+    organizationId: org.id,
+    userId,
+    role,
+    providerUserId: githubIdentity.userId,
+    providerUsername: githubIdentity.username,
+    providerLinkedAt: new Date(),
+  });
+
+  return { role };
+};
 
 // Middleware that verifies GitHub org membership on-demand
 // Sets "orgAccess" in context with verified role
@@ -112,10 +207,7 @@ export const githubOrgAccessMiddleware = async (
 
     if (org.providerAccountType === "user") {
       // Personal GitHub account: only the owner can access
-      // Check if user's GitHub ID matches the account owner
-      if (githubIdentity.userId === org.providerAccountId) {
-        role = "owner";
-      } else {
+      if (githubIdentity.userId !== org.providerAccountId) {
         return c.json(
           {
             error: "Access denied",
@@ -124,34 +216,21 @@ export const githubOrgAccessMiddleware = async (
           403
         );
       }
+      role = "owner";
     } else {
-      // GitHub Organization: verify membership via API
-      const membership = await verifyGitHubMembership(
-        githubIdentity.username,
-        org.providerAccountLogin,
-        org.providerInstallationId,
+      // GitHub Organization: resolve role via DB or GitHub
+      const result = await resolveGitHubOrgRole(
+        db,
+        org,
+        auth.userId,
+        githubIdentity,
         c.env
       );
 
-      if (!membership.isMember) {
-        return c.json(
-          {
-            error: "Access denied",
-            message: "You are not a member of this GitHub organization",
-          },
-          403
-        );
+      if ("error" in result) {
+        return c.json({ error: "Access denied", message: result.error }, 403);
       }
-
-      // Map GitHub role to Detent role
-      // If user is the installer, they get "owner" regardless of GitHub role
-      if (org.installerGithubId === githubIdentity.userId) {
-        role = "owner";
-      } else if (membership.role === "admin") {
-        role = "admin";
-      } else {
-        role = "member";
-      }
+      role = result.role;
     }
 
     // Set context for downstream handlers

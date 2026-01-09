@@ -150,3 +150,40 @@ export const sanitizeHandle = (input: string): string => {
     .replace(/-+/g, "-") // Collapse multiple hyphens
     .replace(/^-|-$/g, ""); // Remove leading/trailing hyphens
 };
+
+// Email validation pattern (RFC 5322 simplified)
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/**
+ * Validate an email address
+ */
+export const validateEmail = (
+  email: string,
+  fieldName = "email"
+): ValidationResult => {
+  if (!email || typeof email !== "string") {
+    return { valid: false, error: `${fieldName} is required` };
+  }
+
+  const trimmed = email.trim().toLowerCase();
+
+  if (trimmed.length === 0) {
+    return { valid: false, error: `${fieldName} cannot be empty` };
+  }
+
+  if (trimmed.length > 255) {
+    return {
+      valid: false,
+      error: `${fieldName} must be 255 characters or less`,
+    };
+  }
+
+  if (!EMAIL_PATTERN.test(trimmed)) {
+    return {
+      valid: false,
+      error: `${fieldName} must be a valid email address`,
+    };
+  }
+
+  return { valid: true };
+};

@@ -1,10 +1,9 @@
 /**
  * Organization Members API routes
  *
- * SECURITY MODEL: GitHub is the single source of truth for membership.
- * Membership is verified on-demand via GitHub API using the App's installation token.
- * The organization_members table stores Detent-specific data (settings, audit, etc.)
- * but is NOT the source of truth for membership.
+ * SECURITY MODEL: GitHub is the access gate, Detent DB is authorization.
+ * - GitHub membership is verified on-demand via GitHub API (can you enter?)
+ * - Roles are read from organization_members table (what can you do?)
  *
  * The vulnerable /join endpoint has been REMOVED. Users access orgs by:
  * 1. Being a member of the GitHub org (verified on each request)
@@ -19,10 +18,14 @@ import { validateUUID } from "../lib/validation";
 import {
   githubOrgAccessMiddleware,
   type OrgAccessContext,
+  type OrgAccessRole,
+  requireRole,
 } from "../middleware/github-org-access";
 import type { Env } from "../types/env";
 
 const app = new Hono<{ Bindings: Env }>();
+
+const VALID_ROLES: OrgAccessRole[] = ["owner", "admin", "member"];
 
 /**
  * POST /leave
@@ -205,6 +208,130 @@ app.get("/:orgId/me", githubOrgAccessMiddleware, async (c) => {
     await client.end();
   }
 });
+
+/**
+ * PUT /:orgId/members/:userId/role
+ * Update a member's role in the organization
+ * Authorization: Owner only
+ */
+app.put(
+  "/:orgId/members/:userId/role",
+  githubOrgAccessMiddleware,
+  requireRole("owner"),
+  async (c) => {
+    const orgAccess = c.get("orgAccess") as OrgAccessContext;
+    const { organization } = orgAccess;
+    const auth = c.get("auth");
+    const targetUserId = c.req.param("userId");
+
+    // Validate target user ID
+    const validation = validateUUID(targetUserId, "userId");
+    if (!validation.valid) {
+      return c.json({ error: validation.error }, 400);
+    }
+
+    // Parse request body
+    const body = await c.req.json<{ role: string }>();
+    const { role: newRole } = body;
+
+    // Validate role
+    if (!(newRole && VALID_ROLES.includes(newRole as OrgAccessRole))) {
+      return c.json(
+        {
+          error: "Invalid role",
+          valid_roles: VALID_ROLES,
+        },
+        400
+      );
+    }
+
+    // Cannot change your own role
+    if (targetUserId === auth.userId) {
+      return c.json(
+        {
+          error: "Cannot change your own role",
+        },
+        400
+      );
+    }
+
+    const { db, client } = await createDb(c.env);
+    try {
+      // Find the target member
+      const targetMember = await db.query.organizationMembers.findFirst({
+        where: and(
+          eq(organizationMembers.userId, targetUserId),
+          eq(organizationMembers.organizationId, organization.id)
+        ),
+      });
+
+      if (!targetMember) {
+        return c.json(
+          {
+            error: "Member not found",
+          },
+          404
+        );
+      }
+
+      const oldRole = targetMember.role;
+
+      // No change needed
+      if (oldRole === newRole) {
+        return c.json({
+          success: true,
+          user_id: targetUserId,
+          old_role: oldRole,
+          new_role: newRole,
+        });
+      }
+
+      // If demoting an owner, check if they're the last owner
+      if (oldRole === "owner" && newRole !== "owner") {
+        const ownerCountResult = await db
+          .select({ count: count() })
+          .from(organizationMembers)
+          .where(
+            and(
+              eq(organizationMembers.organizationId, organization.id),
+              eq(organizationMembers.role, "owner")
+            )
+          );
+
+        if (ownerCountResult[0]?.count === 1) {
+          return c.json(
+            {
+              error: "Cannot demote the last owner",
+            },
+            400
+          );
+        }
+      }
+
+      // Update the role
+      await db
+        .update(organizationMembers)
+        .set({
+          role: newRole as OrgAccessRole,
+          updatedAt: new Date(),
+        })
+        .where(eq(organizationMembers.id, targetMember.id));
+
+      console.log(
+        `[role-update] ${auth.userId} changed ${targetUserId} role from ${oldRole} to ${newRole} in ${organization.slug}`
+      );
+
+      return c.json({
+        success: true,
+        user_id: targetUserId,
+        old_role: oldRole,
+        new_role: newRole,
+      });
+    } finally {
+      await client.end();
+    }
+  }
+);
 
 /**
  * GET /by-org/:orgId

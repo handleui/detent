@@ -43,6 +43,13 @@
       "when": 1767823224069,
       "tag": "0005_peaceful_firedrake",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1767985482928,
+      "tag": "0006_young_silver_centurion",
+      "breakpoints": true
     }
   ]
 }
