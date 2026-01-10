@@ -3,6 +3,7 @@
   "private": true,
   "scripts": {
     "build": "turbo run build",
+    "build:api": "turbo run build --filter=@detent/api",
     "dev": "turbo run dev",
     "dev:core": "turbo run dev --filter=@detent/api --filter=@detent/web --filter=@detent/navigator",
     "lint": "ultracite check",
