@@ -1,4 +1,4 @@
-import { jwtDecrypt } from "jose";
+import { decodeJwt, jwtDecrypt } from "jose";
 import { NextResponse } from "next/server";
 import { getWorkOSCookiePassword } from "@/lib/auth";
 
@@ -65,9 +65,11 @@ export const POST = async (request: Request) => {
       );
     }
 
-    // Return tokens with expiration info
-    // WorkOS access tokens typically expire in 24 hours
-    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    // Extract actual expiration from JWT exp claim
+    const { exp } = decodeJwt(accessToken);
+    const expiresAt = exp
+      ? new Date(exp * 1000).toISOString()
+      : new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
 
     return NextResponse.json({
       access_token: accessToken,

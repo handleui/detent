@@ -57,11 +57,11 @@ const isEmailVerificationError = (
     return false;
   }
   const err = error as Record<string, unknown>;
-  if (err.code !== "email_verification_required" && err.rawData) {
-    const rawData = err.rawData as Record<string, unknown>;
-    return rawData.code === "email_verification_required";
-  }
-  return err.code === "email_verification_required";
+  const rawData = err.rawData as Record<string, unknown> | undefined;
+  const codeMatches =
+    err.code === "email_verification_required" ||
+    rawData?.code === "email_verification_required";
+  return codeMatches && !!rawData?.pending_authentication_token;
 };
 
 /**
