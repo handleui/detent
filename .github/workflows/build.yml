@@ -61,6 +61,8 @@ jobs:
 
       - name: Build workspace
         run: bun run build
+        env:
+          WORKOS_API_KEY: ${{ secrets.WORKOS_API_KEY }}
 
       - name: Build binaries
         run: bun run build:binaries
