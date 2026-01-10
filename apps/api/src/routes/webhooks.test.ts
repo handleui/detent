@@ -79,6 +79,8 @@ const createInstallationPayload = (
     accountLogin: string;
     accountType: "Organization" | "User";
     avatarUrl: string;
+    senderId: number;
+    senderLogin: string;
   }> = {}
 ) => ({
   action,
@@ -90,6 +92,11 @@ const createInstallationPayload = (
       type: overrides.accountType ?? ("Organization" as const),
       avatar_url: overrides.avatarUrl ?? "https://avatars.example.com/u/123",
     },
+  },
+  sender: {
+    id: overrides.senderId ?? 11_111_111,
+    login: overrides.senderLogin ?? "installer-user",
+    type: "User" as const,
   },
 });
 
@@ -212,6 +219,7 @@ describe("webhooks - installation events", () => {
         providerAccountType: "organization",
         providerInstallationId: "12345678",
         providerAvatarUrl: "https://avatars.example.com/u/123",
+        installerGithubId: "11111111",
       });
     });
 
@@ -285,6 +293,7 @@ describe("webhooks - installation events", () => {
         organization_id: "existing-organization-id",
         organization_slug: "existing-organization",
         account: "test-org",
+        reactivated: false,
       });
 
       // Verify no insert was attempted
@@ -298,19 +307,22 @@ describe("webhooks - installation events", () => {
     // These tests verify the slug suffix logic works correctly.
 
     it("appends suffix when slug already exists", async () => {
-      // First query: no existing organization with this installation
-      mockLimit.mockResolvedValueOnce([]);
+      // Queries: (1) check by account ID, (2) check by installation ID, (3) slug lookup,
+      // (4) autoLinkInstaller check. Queries 1, 2, 4 use .limit(), query 3 awaits directly.
+      mockLimit.mockResolvedValueOnce([]); // query 1: no existing org by account
+      mockLimit.mockResolvedValueOnce([]); // query 2: no existing org by installation
+      mockLimit.mockResolvedValueOnce([]); // query 4: autoLinkInstaller - no existing user
 
       // Create a mock for the optimized slug query that returns one conflict
       let queryCount = 0;
       mockWhere.mockImplementation(() => {
         queryCount++;
-        if (queryCount === 1) {
-          // First call: check for existing installation (no conflict)
-          return { limit: mockLimit };
+        if (queryCount === 3) {
+          // Third call: slug lookup returns one existing slug (awaited directly, no .limit())
+          return Promise.resolve([{ slug: "gh/test-org" }]);
         }
-        // Second call: slug lookup returns one existing slug
-        return Promise.resolve([{ slug: "gh/test-org" }]);
+        // All other calls need .limit()
+        return { limit: mockLimit };
       });
 
       const payload = createInstallationPayload("created", {
@@ -325,21 +337,25 @@ describe("webhooks - installation events", () => {
     });
 
     it("increments suffix for multiple collisions", async () => {
-      // First query: no existing organization with this installation
-      mockLimit.mockResolvedValueOnce([]);
+      // Queries: (1) check by account ID, (2) check by installation ID, (3) slug lookup,
+      // (4) autoLinkInstaller check. Queries 1, 2, 4 use .limit(), query 3 awaits directly.
+      mockLimit.mockResolvedValueOnce([]); // query 1: no existing org by account
+      mockLimit.mockResolvedValueOnce([]); // query 2: no existing org by installation
+      mockLimit.mockResolvedValueOnce([]); // query 4: autoLinkInstaller - no existing user
 
       let queryCount = 0;
       mockWhere.mockImplementation(() => {
         queryCount++;
-        if (queryCount === 1) {
-          return { limit: mockLimit };
+        if (queryCount === 3) {
+          // Third call: slug lookup returns multiple existing slugs (awaited directly, no .limit())
+          return Promise.resolve([
+            { slug: "gh/popular-name" },
+            { slug: "gh/popular-name-1" },
+            { slug: "gh/popular-name-2" },
+          ]);
         }
-        // Return multiple existing slugs
-        return Promise.resolve([
-          { slug: "gh/popular-name" },
-          { slug: "gh/popular-name-1" },
-          { slug: "gh/popular-name-2" },
-        ]);
+        // All other calls need .limit()
+        return { limit: mockLimit };
       });
 
       const payload = createInstallationPayload("created", {
@@ -354,29 +370,33 @@ describe("webhooks - installation events", () => {
     });
 
     it("falls back to UUID suffix after max attempts", async () => {
-      // First query: no existing organization with this installation
-      mockLimit.mockResolvedValueOnce([]);
+      // Queries: (1) check by account ID, (2) check by installation ID, (3) slug lookup,
+      // (4) autoLinkInstaller check. Queries 1, 2, 4 use .limit(), query 3 awaits directly.
+      mockLimit.mockResolvedValueOnce([]); // query 1: no existing org by account
+      mockLimit.mockResolvedValueOnce([]); // query 2: no existing org by installation
+      mockLimit.mockResolvedValueOnce([]); // query 4: autoLinkInstaller - no existing user
 
       let queryCount = 0;
       mockWhere.mockImplementation(() => {
         queryCount++;
-        if (queryCount === 1) {
-          return { limit: mockLimit };
+        if (queryCount === 3) {
+          // Third call: all 11 potential slugs are taken (awaited directly, no .limit())
+          return Promise.resolve([
+            { slug: "gh/super-popular" },
+            { slug: "gh/super-popular-1" },
+            { slug: "gh/super-popular-2" },
+            { slug: "gh/super-popular-3" },
+            { slug: "gh/super-popular-4" },
+            { slug: "gh/super-popular-5" },
+            { slug: "gh/super-popular-6" },
+            { slug: "gh/super-popular-7" },
+            { slug: "gh/super-popular-8" },
+            { slug: "gh/super-popular-9" },
+            { slug: "gh/super-popular-10" },
+          ]);
         }
-        // All 11 potential slugs are taken
-        return Promise.resolve([
-          { slug: "gh/super-popular" },
-          { slug: "gh/super-popular-1" },
-          { slug: "gh/super-popular-2" },
-          { slug: "gh/super-popular-3" },
-          { slug: "gh/super-popular-4" },
-          { slug: "gh/super-popular-5" },
-          { slug: "gh/super-popular-6" },
-          { slug: "gh/super-popular-7" },
-          { slug: "gh/super-popular-8" },
-          { slug: "gh/super-popular-9" },
-          { slug: "gh/super-popular-10" },
-        ]);
+        // All other calls need .limit()
+        return { limit: mockLimit };
       });
 
       const payload = createInstallationPayload("created", {
@@ -818,6 +838,11 @@ describe("webhooks - installation.created with repositories", () => {
           avatar_url: "https://avatars.example.com/u/123",
         },
       },
+      sender: {
+        id: 11_111_111,
+        login: "installer-user",
+        type: "User" as const,
+      },
       repositories: [],
     };
 
@@ -844,6 +869,11 @@ describe("webhooks - installation.created with repositories", () => {
           login: "test-org",
           type: "Organization" as const,
         },
+      },
+      sender: {
+        id: 11_111_111,
+        login: "installer-user",
+        type: "User" as const,
       },
       repositories: [
         {
@@ -910,6 +940,11 @@ describe("webhooks - installation.created with repositories", () => {
           login: "test-org",
           type: "Organization" as const,
         },
+      },
+      sender: {
+        id: 11_111_111,
+        login: "installer-user",
+        type: "User" as const,
       },
       repositories: [
         {

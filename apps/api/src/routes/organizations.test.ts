@@ -13,8 +13,23 @@ vi.mock("../services/github", () => ({
   })),
 }));
 
+// Mock GitHub identity verification
+const mockGetVerifiedGitHubIdentity = vi.fn();
+vi.mock("../lib/github-identity", () => ({
+  getVerifiedGitHubIdentity: (...args: unknown[]) =>
+    mockGetVerifiedGitHubIdentity(...args),
+}));
+
+// Mock GitHub membership verification
+const mockVerifyGitHubMembership = vi.fn();
+vi.mock("../lib/github-membership", () => ({
+  verifyGitHubMembership: (...args: unknown[]) =>
+    mockVerifyGitHubMembership(...args),
+}));
+
 // Mock the database client
 const mockFindFirst = vi.fn();
+const mockOrgFindFirst = vi.fn();
 const mockSelect = vi.fn();
 const mockFrom = vi.fn();
 const mockWhere = vi.fn();
@@ -27,6 +42,9 @@ const mockDb = {
   query: {
     organizationMembers: {
       findFirst: mockFindFirst,
+    },
+    organizations: {
+      findFirst: mockOrgFindFirst,
     },
   },
   select: mockSelect,
@@ -188,6 +206,7 @@ describe("organizations - POST /:organizationId/sync", () => {
 
     // Reset all mock implementations
     mockFindFirst.mockReset();
+    mockOrgFindFirst.mockReset();
     mockSelect.mockReset();
     mockFrom.mockReset();
     mockWhere.mockReset();
@@ -197,6 +216,8 @@ describe("organizations - POST /:organizationId/sync", () => {
     mockSet.mockReset();
     mockGetInstallationInfo.mockReset();
     mockGetInstallationRepos.mockReset();
+    mockGetVerifiedGitHubIdentity.mockReset();
+    mockVerifyGitHubMembership.mockReset();
 
     // Setup mock chain for select
     mockSelect.mockReturnValue({ from: mockFrom });
@@ -210,11 +231,30 @@ describe("organizations - POST /:organizationId/sync", () => {
     // Setup mock chain for update
     mockUpdate.mockReturnValue({ set: mockSet });
     mockSet.mockReturnValue({ where: mockWhere });
+
+    // Default GitHub identity - user has linked GitHub account
+    mockGetVerifiedGitHubIdentity.mockResolvedValue({
+      userId: "gh-user-123",
+      username: "testuser",
+    });
+
+    // Default GitHub membership - user is a member
+    mockVerifyGitHubMembership.mockResolvedValue({
+      isMember: true,
+      role: "admin",
+    });
+
+    // Default organization lookup - return a valid org
+    mockOrgFindFirst.mockResolvedValue(createOrganization());
   });
 
   describe("authorization", () => {
     it("returns 403 when user is not a member of the organization", async () => {
       mockFindFirst.mockResolvedValue(undefined);
+      mockVerifyGitHubMembership.mockResolvedValue({
+        isMember: false,
+        role: null,
+      });
 
       const res = await makeRequest(
         "POST",
@@ -224,11 +264,18 @@ describe("organizations - POST /:organizationId/sync", () => {
       const json = await res.json();
 
       expect(res.status).toBe(403);
-      expect(json).toEqual({ error: "Not a member of this organization" });
+      expect(json).toEqual({
+        error: "Access denied",
+        message: "You are not a member of this GitHub organization",
+      });
     });
 
     it("returns 403 when user has member role (not admin or owner)", async () => {
       mockFindFirst.mockResolvedValue(createMember("member"));
+      mockVerifyGitHubMembership.mockResolvedValue({
+        isMember: true,
+        role: "member",
+      });
 
       const res = await makeRequest(
         "POST",
@@ -239,7 +286,9 @@ describe("organizations - POST /:organizationId/sync", () => {
 
       expect(res.status).toBe(403);
       expect(json).toEqual({
-        error: "Only organization owners and admins can trigger sync",
+        error: "Insufficient permissions",
+        required: ["owner", "admin"],
+        current: "member",
       });
     });
 
@@ -363,32 +412,20 @@ describe("organizations - POST /:organizationId/sync", () => {
       );
     });
 
-    it("clears suspendedAt when GitHub shows unsuspended", async () => {
+    it("blocks access when organization is suspended", async () => {
       const org = createOrganization({ suspendedAt: new Date("2024-06-01") });
+      mockOrgFindFirst.mockResolvedValue(org);
       mockFindFirst.mockResolvedValue(createMember("owner", org));
-      mockGetInstallationInfo.mockResolvedValue({
-        id: 123,
-        suspended_at: null,
-        account: { login: "test-org" },
-      });
-      mockGetInstallationRepos.mockResolvedValue([]);
-      mockWhere.mockResolvedValue([]);
 
       const res = await makeRequest(
         "POST",
         `/organizations/${TEST_ORG_ID}/sync`
       );
-      const json = (await res.json()) as SyncResponse;
+      const json = await res.json();
 
-      expect(res.status).toBe(200);
-      expect(json.suspended).toBe(false);
-
-      // Verify suspendedAt was cleared
-      expect(mockSet).toHaveBeenCalledWith(
-        expect.objectContaining({
-          suspendedAt: null,
-        })
-      );
+      // Middleware blocks suspended orgs before sync route runs
+      expect(res.status).toBe(403);
+      expect(json).toEqual({ error: "Organization is suspended" });
     });
 
     it("does not update when suspension status is unchanged", async () => {
@@ -715,8 +752,8 @@ describe("organizations - POST /:organizationId/sync", () => {
 
   describe("edge cases", () => {
     it("returns 404 when organization has been deleted", async () => {
-      const org = createOrganization({ deletedAt: new Date("2024-06-01") });
-      mockFindFirst.mockResolvedValue(createMember("owner", org));
+      // Deleted orgs are filtered out by the middleware query (isNull(deletedAt))
+      mockOrgFindFirst.mockResolvedValue(undefined);
 
       const res = await makeRequest(
         "POST",
@@ -725,11 +762,12 @@ describe("organizations - POST /:organizationId/sync", () => {
       const json = await res.json();
 
       expect(res.status).toBe(404);
-      expect(json).toEqual({ error: "Organization has been deleted" });
+      expect(json).toEqual({ error: "Organization not found" });
     });
 
     it("returns 400 for GitLab organizations", async () => {
       const org = createOrganization({ provider: "gitlab" });
+      mockOrgFindFirst.mockResolvedValue(org);
       mockFindFirst.mockResolvedValue(createMember("owner", org));
 
       const res = await makeRequest(
@@ -740,12 +778,13 @@ describe("organizations - POST /:organizationId/sync", () => {
 
       expect(res.status).toBe(400);
       expect(json).toEqual({
-        error: "Sync only supported for GitHub organizations",
+        error: "GitLab organizations use token-based access",
       });
     });
 
     it("returns 400 when no GitHub App installation exists", async () => {
       const org = createOrganization({ providerInstallationId: null });
+      mockOrgFindFirst.mockResolvedValue(org);
       mockFindFirst.mockResolvedValue(createMember("owner", org));
 
       const res = await makeRequest(
@@ -755,15 +794,19 @@ describe("organizations - POST /:organizationId/sync", () => {
       const json = await res.json();
 
       expect(res.status).toBe(400);
-      expect(json).toEqual({ error: "No GitHub App installation found" });
+      expect(json).toEqual({
+        error: "GitHub App not installed for this organization",
+      });
     });
 
     it("returns 400 for invalid organization ID format", async () => {
+      mockOrgFindFirst.mockResolvedValue(undefined);
+
       const res = await makeRequest("POST", "/organizations/invalid-id/sync");
       const json = await res.json();
 
-      expect(res.status).toBe(400);
-      expect(json).toHaveProperty("error");
+      expect(res.status).toBe(404);
+      expect(json).toEqual({ error: "Organization not found" });
     });
 
     it("closes database connection on success", async () => {
