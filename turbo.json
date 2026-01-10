@@ -4,7 +4,7 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
-      "inputs": ["$TURBO_DEFAULT$", ".env*"],
+      "inputs": ["$TURBO_DEFAULT$"],
       "outputs": [".next/**", "!.next/cache/**", "dist/**"]
     },
     "@detent/cli#build": {
@@ -16,6 +16,28 @@
         "package.json"
       ],
       "outputs": ["dist/**"]
+    },
+    "@detent/api#build": {
+      "dependsOn": ["^build"],
+      "inputs": ["src/**", "wrangler.jsonc", "tsconfig.json", "package.json"],
+      "outputs": ["dist/**"]
+    },
+    "@detent/navigator#build": {
+      "dependsOn": ["^build"],
+      "inputs": ["$TURBO_DEFAULT$", ".env", ".env.local"],
+      "outputs": [".next/**", "!.next/cache/**"],
+      "env": [
+        "WORKOS_API_KEY",
+        "WORKOS_CLIENT_ID",
+        "JWT_SECRET_KEY",
+        "NEXT_PUBLIC_APP_URL",
+        "WORKOS_COOKIE_PASSWORD"
+      ]
+    },
+    "@detent/web#build": {
+      "dependsOn": ["^build"],
+      "inputs": ["$TURBO_DEFAULT$"],
+      "outputs": [".next/**", "!.next/cache/**"]
     },
     "check-types": {
       "dependsOn": ["^build"]
