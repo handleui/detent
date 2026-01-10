@@ -170,6 +170,9 @@ app.get("/:organizationId/status", githubOrgAccessMiddleware, async (c) => {
       project_count: projectCount,
       created_at: fullOrg.createdAt.toISOString(),
       last_synced_at: fullOrg.lastSyncedAt?.toISOString() ?? null,
+      settings: {
+        allow_auto_join: fullOrg.allowAutoJoin,
+      },
     });
   } finally {
     await client.end();
@@ -329,6 +332,53 @@ app.post(
         },
         500
       );
+    } finally {
+      await client.end();
+    }
+  }
+);
+
+/**
+ * PATCH /:organizationId/settings
+ * Update organization settings (owner only)
+ */
+app.patch(
+  "/:organizationId/settings",
+  githubOrgAccessMiddleware,
+  requireRole("owner"),
+  async (c) => {
+    const orgAccess = c.get("orgAccess") as OrgAccessContext;
+    const { organization } = orgAccess;
+
+    const body = await c.req.json<{ allow_auto_join?: boolean }>();
+
+    // Validate request body
+    if (typeof body.allow_auto_join !== "boolean") {
+      return c.json(
+        {
+          error: "Invalid request body",
+          message: "allow_auto_join must be a boolean",
+        },
+        400
+      );
+    }
+
+    const { db, client } = await createDb(c.env);
+    try {
+      await db
+        .update(organizations)
+        .set({
+          allowAutoJoin: body.allow_auto_join,
+          updatedAt: new Date(),
+        })
+        .where(eq(organizations.id, organization.id));
+
+      return c.json({
+        success: true,
+        settings: {
+          allow_auto_join: body.allow_auto_join,
+        },
+      });
     } finally {
       await client.end();
     }

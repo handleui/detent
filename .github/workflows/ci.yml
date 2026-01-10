@@ -43,6 +43,8 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run build
       - run: bun run test
+    env:
+      WORKOS_API_KEY: ${{ secrets.WORKOS_API_KEY }}
 
   build:
     name: Build
@@ -53,6 +55,8 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
       - run: bun run build
+    env:
+      WORKOS_API_KEY: ${{ secrets.WORKOS_API_KEY }}
 
   install-script:
     name: Install Script

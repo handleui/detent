@@ -4,18 +4,26 @@ import type { Env } from "../types/env";
 
 // Mock the database client
 const mockFindFirst = vi.fn();
+const mockFindMany = vi.fn();
 const mockUpdate = vi.fn();
+const mockInsert = vi.fn();
 const mockSet = vi.fn();
 const mockWhere = vi.fn();
 const mockReturning = vi.fn();
+const mockValues = vi.fn();
 
 const mockDb = {
   query: {
     organizationMembers: {
       findFirst: mockFindFirst,
+      findMany: mockFindMany,
+    },
+    organizations: {
+      findMany: mockFindMany,
     },
   },
   update: mockUpdate,
+  insert: mockInsert,
 };
 
 const mockClient = {
@@ -111,6 +119,13 @@ describe("auth routes", () => {
     mockWhere.mockReturnValue({ returning: mockReturning });
     mockReturning.mockResolvedValue([]);
 
+    // Setup mock chain for insert
+    mockInsert.mockReturnValue({ values: mockValues });
+    mockValues.mockResolvedValue([]);
+
+    // Setup mock for findMany (organizations and organizationMembers)
+    mockFindMany.mockResolvedValue([]);
+
     // Replace global fetch with mock
     global.fetch = mockFetch;
   });
@@ -133,7 +148,16 @@ describe("auth routes", () => {
               ])
             ),
         })
-        // Mock GitHub user fetch
+        // Mock WorkOS Pipes token fetch
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              active: true,
+              access_token: { token: "gho_test_token" },
+            }),
+        })
+        // Mock GitHub user fetch (authenticated)
         .mockResolvedValueOnce({
           ok: true,
           json: () => Promise.resolve({ login: "testuser" }),
@@ -157,6 +181,7 @@ describe("auth routes", () => {
         github_user_id: "12345",
         github_username: "testuser",
         organizations_updated: 2,
+        installer_orgs_linked: 0,
       });
 
       // Verify database was updated
@@ -217,7 +242,7 @@ describe("auth routes", () => {
       });
     });
 
-    it("syncs identity even when GitHub username fetch fails", async () => {
+    it("syncs identity even when WorkOS Pipes token fetch fails", async () => {
       mockFetch
         .mockResolvedValueOnce({
           ok: true,
@@ -232,6 +257,53 @@ describe("auth routes", () => {
               ])
             ),
         })
+        // WorkOS Pipes token fetch fails
+        .mockResolvedValueOnce({
+          ok: false,
+          json: () => Promise.reject(new Error("Unauthorized")),
+        });
+
+      mockReturning.mockResolvedValue([
+        { organizationId: "organization-1", providerUsername: null },
+      ]);
+
+      const res = await makeRequest("POST", "/auth/sync-identity");
+      const json = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(json).toMatchObject({
+        github_synced: true,
+        github_user_id: "12345",
+        github_username: null,
+        organizations_updated: 1,
+      });
+    });
+
+    it("syncs identity even when GitHub API fetch fails", async () => {
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve(createWorkOSUser()),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () =>
+            Promise.resolve(
+              createIdentitiesResponse([
+                { idp_id: "12345", type: "OAuth", provider: "GitHubOAuth" },
+              ])
+            ),
+        })
+        // WorkOS Pipes token fetch succeeds
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              active: true,
+              access_token: { token: "gho_test_token" },
+            }),
+        })
+        // GitHub API fetch fails
         .mockResolvedValueOnce({
           ok: false,
           json: () => Promise.reject(new Error("Not found")),

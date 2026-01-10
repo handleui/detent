@@ -15,6 +15,10 @@ import {
 
 const WORKOS_API_BASE = "https://api.workos.com";
 
+const getAuthUrl = (): string => {
+  return process.env.DETENT_AUTH_URL ?? "https://app.detent.sh";
+};
+
 /**
  * Get WorkOS client ID at runtime (not module load time)
  * This ensures dotenv has been loaded before we read the env variable
@@ -218,4 +222,53 @@ export const getExpiresAt = (accessToken: string): Date | null => {
     return new Date(payload.exp * 1000);
   }
   return null;
+};
+
+/**
+ * Authenticate via Navigator (browser-based flow)
+ * Opens browser to Navigator app which handles WorkOS auth,
+ * then receives callback on localhost with encrypted tokens.
+ */
+export const authenticateViaNavigator = async (): Promise<TokenResponse> => {
+  const { openBrowser } = await import("./browser.js");
+  const { generateState, startCallbackServer } = await import(
+    "./localhost-server.js"
+  );
+
+  const authBaseUrl = getAuthUrl();
+  const state = generateState();
+  const server = await startCallbackServer(state);
+  const authUrl = `${authBaseUrl}/cli/auth?port=${server.port}&state=${state}`;
+
+  try {
+    await openBrowser(authUrl);
+  } catch {
+    console.log(`\nPlease open this URL in your browser:\n  ${authUrl}\n`);
+  }
+
+  const { code } = await server.waitForCallback();
+
+  const response = await fetch(`${authBaseUrl}/api/cli/token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code }),
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`Token exchange failed: ${error}`);
+  }
+
+  const tokens = (await response.json()) as {
+    access_token: string;
+    refresh_token: string;
+    expires_at: number;
+  };
+
+  return {
+    access_token: tokens.access_token,
+    refresh_token: tokens.refresh_token,
+    token_type: "Bearer",
+    expires_in: Math.floor((tokens.expires_at - Date.now()) / 1000),
+  };
 };

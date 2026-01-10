@@ -1,0 +1,1 @@
+ALTER TABLE "organizations" ADD COLUMN "allow_auto_join" boolean DEFAULT true NOT NULL;

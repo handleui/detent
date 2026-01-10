@@ -11,6 +11,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "cf-typegen": "wrangler types --env-interface CloudflareBindings",
+    "db:setup": "./scripts/db-setup.sh",
+    "db:setup:clean": "./scripts/db-setup.sh --clean",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",
@@ -19,12 +21,14 @@
   "dependencies": {
     "@detent/healing": "*",
     "@detent/parser": "*",
+    "@sentry/cloudflare": "^10.32.1",
     "@upstash/ratelimit": "^2.0.7",
     "@upstash/redis": "^1.36.0",
     "drizzle-orm": "^0.45.1",
     "hono": "^4.11.3",
     "jose": "^6.0.10",
-    "pg": "^8.16.3"
+    "pg": "^8.16.3",
+    "resend": "^6.7.0"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250106.0",

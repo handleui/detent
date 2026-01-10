@@ -36,4 +36,13 @@ export interface Env {
   // OpenStatus monitoring (optional)
   // Your OpenStatus status page slug for public status checks
   OPENSTATUS_SLUG?: string;
+
+  // Email (Resend) configuration
+  RESEND_API_KEY: string;
+
+  // Application URL for invitation links
+  APP_BASE_URL: string;
+
+  // Sentry error monitoring
+  SENTRY_DSN?: string;
 }

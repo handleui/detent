@@ -61,6 +61,59 @@ const app = new Hono<{ Bindings: Env }>();
 const NUMERIC_REGEX = /^\d+$/;
 
 /**
+ * Fetch GitHub username via WorkOS Pipes (authenticated)
+ * Uses the user's OAuth token to avoid GitHub API rate limits (5000/hr vs 60/hr)
+ */
+const fetchGitHubUsername = async (
+  userId: string,
+  workosApiKey: string
+): Promise<string | null> => {
+  try {
+    const tokenResponse = await fetch(
+      "https://api.workos.com/data-integrations/github/token",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${workosApiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ user_id: userId }),
+      }
+    );
+
+    if (!tokenResponse.ok) {
+      return null;
+    }
+
+    const tokenData = (await tokenResponse.json()) as {
+      active: boolean;
+      access_token?: { token: string };
+    };
+
+    if (!(tokenData.active && tokenData.access_token)) {
+      return null;
+    }
+
+    const githubResponse = await fetch("https://api.github.com/user", {
+      headers: {
+        Authorization: `Bearer ${tokenData.access_token.token}`,
+        Accept: "application/vnd.github.v3+json",
+        "User-Agent": "Detent-API",
+      },
+    });
+
+    if (!githubResponse.ok) {
+      return null;
+    }
+
+    const githubUser = (await githubResponse.json()) as { login: string };
+    return githubUser.login;
+  } catch {
+    return null;
+  }
+};
+
+/**
  * POST /sync-identity
  * Sync GitHub identity from WorkOS to all organization memberships for the authenticated user.
  * This is called after successful device code authentication to capture GitHub identity
@@ -131,29 +184,11 @@ app.post("/sync-identity", async (c) => {
   }
 
   // We have the GitHub idp_id (numeric GitHub user ID)
-  // To get the username, we need to query GitHub API
   const githubUserId = githubIdentity.idp_id;
-  let githubUsername: string | null = null;
-
-  try {
-    const githubResponse = await fetch(
-      `https://api.github.com/user/${githubUserId}`,
-      {
-        headers: {
-          Accept: "application/vnd.github.v3+json",
-          "User-Agent": "Detent-API",
-        },
-      }
-    );
-
-    if (githubResponse.ok) {
-      const githubUser = (await githubResponse.json()) as { login: string };
-      githubUsername = githubUser.login;
-    }
-  } catch {
-    // GitHub API call failed, continue without username
-    console.error("Failed to fetch GitHub username for user:", githubUserId);
-  }
+  const githubUsername = await fetchGitHubUsername(
+    auth.userId,
+    c.env.WORKOS_API_KEY
+  );
 
   // Update all organization memberships for this user with GitHub identity
   const { db, client } = await createDb(c.env);
